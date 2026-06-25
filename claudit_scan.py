@@ -21,6 +21,7 @@ Flags: --interval N (watch poll secs, default 30), --delay N (secs between posts
 
 import argparse
 import atexit
+import collections
 import hashlib
 import json
 import os
@@ -41,6 +42,7 @@ STATE_DIR = os.path.expanduser("~/.claude/claudit")
 STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
+ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
 DEFAULT_REPO = "anthropics/claude-code"
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
 DEFAULT_NOTE = ("False positive — in-scope, authorized security work; not out of scope. "
@@ -108,6 +110,20 @@ def reqs_of(f):
     return out
 
 
+def assistant_text(entry):
+    """Text of a normal (non-error) assistant turn, for capturing conversation leadup."""
+    if entry.get("type") != "assistant" or entry.get("isApiErrorMessage"):
+        return None
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        t = "\n".join(b.get("text", "") for b in content
+                      if isinstance(b, dict) and b.get("type") == "text").strip()
+        return t or None
+    return None
+
+
 def scan():
     """Walk all sessions -> (findings dict[sig]->finding, logged-only counts)."""
     findings, logged, log_lines = {}, {"overloaded": 0, "limit": 0, "other": 0}, []
@@ -116,6 +132,7 @@ def scan():
             if not name.endswith(".jsonl"):
                 continue
             last_prompt = None
+            recent = collections.deque(maxlen=6)   # rolling conversation leadup
             try:
                 with open(os.path.join(root, name), encoding="utf-8") as fh:
                     for line in fh:
@@ -126,9 +143,13 @@ def scan():
                         hp = human_text(entry)
                         if hp:
                             last_prompt = hp
+                            recent.append(("user", hp[:300]))
                             continue
                         err = error_text(entry)
                         if err is None:
+                            at = assistant_text(entry)
+                            if at:
+                                recent.append(("assistant", at[:300]))
                             continue
                         kind = classify(err)
                         ts = entry.get("timestamp", "")
@@ -141,7 +162,7 @@ def scan():
                         prompt = last_prompt or "(triggering prompt not recoverable)"
                         s = sig(kind, prompt)
                         f = findings.setdefault(s, {"sig": s, "kind": kind, "prompt": prompt,
-                                                    "occ": [], "block_text": err})
+                                                    "occ": [], "block_text": err, "leadup": list(recent)})
                         f["occ"].append({"req": req, "ts": ts, "session": name,
                                          "proj": os.path.basename(root)})
             except OSError:
@@ -233,6 +254,9 @@ def build_issue(f, note):
     proj_lines = "\n".join(f"- `{p}`" for p in projects) or "- (unknown)"
     hint, _ = scrub(re.sub(r"\s+", " ", f["prompt"])[:200])
     block_clean = TOKEN.sub("token=[SCRUBBED]", f["block_text"]).strip()[:500]
+    leadup = f.get("leadup") or []
+    leadup_md = "\n".join(f"**{role}:** {scrub(re.sub(chr(10), ' ', txt))[0]}"
+                          for role, txt in leadup) or "_(not captured)_"
     body = f"""**Type:** {FILE_KINDS[f['kind']]}
 
 A server-side safety/policy block fired during authorized, in-scope security work in
@@ -252,6 +276,11 @@ Project path(s) where the block fired (username scrubbed):
 ### Block message
 > {block_clean}
 
+<details><summary>Conversation leadup (PII-scrubbed, best-effort)</summary>
+
+{leadup_md}
+</details>
+
 <details><summary>Best-effort prompt hint (unreliable — may be a poisoned-session retry)</summary>
 
 `{hint}`
@@ -259,6 +288,21 @@ Project path(s) where the block fired (username scrubbed):
 
 **Environment:** Claude Code, Linux."""
     return title, body
+
+
+def log_issue(f, repo, url):
+    """Append a filed issue to the local issues DB (with PII-scrubbed leadup)."""
+    rec = {
+        "sig": f["sig"], "kind": f["kind"], "repo": repo, "url": url,
+        "issue": url.rsplit("/", 1)[-1],
+        "reqs": [o["req"] for o in reqs_of(f)],
+        "first_ts": min((o["ts"] for o in f["occ"] if o["ts"]), default=""),
+        "projects": sorted({project_label(o["proj"]) for o in f["occ"] if o.get("proj")}),
+        "leadup": [[role, scrub(txt)[0]] for role, txt in (f.get("leadup") or [])],
+    }
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(ISSUES_DB, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")
 
 
 def gh_create(repo, title, body):
@@ -290,6 +334,7 @@ def file_one(f, note, repo, state):
             save_state(state)
             raise
         state[f["sig"]].update(issue=url.rsplit("/", 1)[-1], url=url)
+        log_issue(f, repo, url)
         return ("new", title, url)
     fresh = [r for r in cur_reqs if r not in rec.get("reqs", [])]
     if fresh and rec.get("issue"):
@@ -409,6 +454,44 @@ def auto_cycle(state, repo, delay, on_event):
     return acted
 
 
+def backfill_one(f, repo, state):
+    """File ONE baselined-but-unfiled finding (a backlog item). Returns event tuple or None."""
+    rec = state.get(f["sig"])
+    if rec is None or rec.get("issue"):
+        return None                       # not a backlog item (new, or already filed)
+    title, body = build_issue(f, "")
+    url = gh_create(repo, title, body)
+    rec.update(issue=url.rsplit("/", 1)[-1], url=url)
+    save_state(state)
+    log_issue(f, repo, url)
+    return ("backfilled", title, url)
+
+
+def backlog_size(state):
+    return sum(1 for s, r in state.items()
+               if not s.startswith("__") and r.get("issue") is None)
+
+
+def backfill_step(state, repo, n, on_event):
+    """File up to n backlog items this call. Returns how many were filed."""
+    findings, _ = scan()
+    done = 0
+    for f in findings.values():
+        if done >= n:
+            break
+        rec = state.get(f["sig"])
+        if rec and rec.get("issue") is None:
+            try:
+                ev = backfill_one(f, repo, state)
+            except Exception as e:
+                print(f"  ! backfill {f['sig']}: {e}", file=sys.stderr)
+                continue
+            if ev:
+                on_event(*ev)
+                done += 1
+    return done
+
+
 def file_pending(state, repo, review_flag, delay, on_event):
     """File everything queued by the watcher (user-initiated). Clears the queue."""
     pend = set(state.get("__pending__", []))
@@ -463,6 +546,10 @@ def main():
     p.add_argument("--baseline", action="store_true", help="mark all current findings seen, file nothing")
     p.add_argument("--watch", action="store_true", help="poll forever (notify-only): detect + queue new blocks")
     p.add_argument("--auto", action="store_true", help="with --watch: auto-file new blocks instead of queuing")
+    p.add_argument("--backfill", action="store_true",
+                   help="with --watch: slowly drip-file the baselined backlog while monitoring")
+    p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
+                   help="minutes between each backfilled issue (default 10)")
     p.add_argument("--pending", action="store_true", help="list blocks queued by the watcher")
     p.add_argument("--file-pending", dest="file_pending", action="store_true",
                    help="file everything the watcher queued (user-initiated)")
@@ -497,23 +584,29 @@ def main():
             sys.exit("claudit: another watcher is already running — refusing to start a second.")
         ensure_baseline(state, lambda a, r, u: print(f"  {r}", file=sys.stderr))
 
-        mode = "AUTO-FILING" if args.auto else "notify-only"
-        print(f"Watching {PROJECTS} every {args.interval}s ({mode}). Ctrl-C to stop.", file=sys.stderr)
+        mode = "AUTO-FILING new" if args.auto else "notify-only"
+        bf = f" + backfill 1/{args.backfill_interval}min ({backlog_size(state)} queued)" if args.backfill else ""
+        print(f"Watching {PROJECTS} every {args.interval}s ({mode}{bf}). Ctrl-C to stop.", file=sys.stderr)
 
         def on_detect(fresh):
             announce_pending(state, args.repo, args.delay)
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
+        last_bf = 0.0
         try:
             while True:
                 if args.auto:
-                    n = auto_cycle(state, args.repo, args.delay, notify)
+                    n = auto_cycle(state, args.repo, args.delay, notify)   # insta-post new
                     if n:
                         print(f"  (+{n} filed)", file=sys.stderr)
                 else:
                     n = monitor_cycle(state, on_detect)
                     if n:
                         print(f"  (+{n} queued; run --file-pending to report)", file=sys.stderr)
+                if args.backfill and time.monotonic() - last_bf >= args.backfill_interval * 60:
+                    last_bf = time.monotonic()
+                    if backfill_step(state, args.repo, 1, notify):     # slow drip: 1 per interval
+                        print(f"  (backfilled 1; {backlog_size(state)} left)", file=sys.stderr)
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)

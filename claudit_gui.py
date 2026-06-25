@@ -29,16 +29,20 @@ STATE_LOCK = threading.Lock()
 
 # ----------------------------- background workers -----------------------------
 class Watcher(QtCore.QThread):
-    acted = QtCore.pyqtSignal(int, bool)   # (count, was_auto_filed)
+    acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill")
 
-    def __init__(self, state, repo, interval, auto):
+    def __init__(self, state, repo, interval, auto, backfill, backfill_interval):
         super().__init__()
         self.state, self.repo, self.interval, self._run = state, repo, interval, True
         self.auto = auto                   # toggled live from the tray menu
+        self.backfill = backfill
+        self.backfill_interval = backfill_interval
 
     def run(self):
+        import time as _t
         with STATE_LOCK:
             cs.ensure_baseline(self.state)
+        last_bf = 0.0
         while self._run:
             try:
                 with STATE_LOCK:
@@ -47,7 +51,13 @@ class Watcher(QtCore.QThread):
                     else:
                         n = cs.monitor_cycle(self.state, lambda fresh: None)
                 if n:
-                    self.acted.emit(n, self.auto)
+                    self.acted.emit(n, "auto" if self.auto else "queued")
+                if self.backfill and _t.monotonic() - last_bf >= self.backfill_interval * 60:
+                    last_bf = _t.monotonic()
+                    with STATE_LOCK:
+                        b = cs.backfill_step(self.state, self.repo, 1, lambda *a: None)
+                    if b:
+                        self.acted.emit(b, "backfill")
             except Exception as e:
                 print("watcher error:", e, file=sys.stderr)
             for _ in range(int(self.interval)):
@@ -98,7 +108,7 @@ class StatusFetcher(QtCore.QThread):
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Type", "Issue / Queue", "GitHub", "Req IDs", "Hits", "Detail"]
 
-    def __init__(self, repo, interval, auto):
+    def __init__(self, repo, interval, auto, backfill, backfill_interval):
         super().__init__()
         self.repo, self.state = repo, cs.load_state()
         self.findings, self.gh_states = {}, {}
@@ -130,14 +140,14 @@ class Main(QtWidgets.QMainWindow):
         lay.addLayout(bar)
         self.setCentralWidget(root)
 
-        self._build_tray(auto)
-        self.watcher = Watcher(self.state, repo, interval, auto)
+        self._build_tray(auto, backfill)
+        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval)
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.refresh()
 
     # ---- tray ----
-    def _build_tray(self, auto):
+    def _build_tray(self, auto, backfill):
         self.tray = QtWidgets.QSystemTrayIcon(self)
         self.tray.setIcon(QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                           else self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning))
@@ -149,6 +159,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_auto.setCheckable(True)
         self.act_auto.setChecked(auto)
         self.act_auto.toggled.connect(self._toggle_auto)
+        self.act_backfill = menu.addAction("Backfill old blocks (slow drip)")
+        self.act_backfill.setCheckable(True)
+        self.act_backfill.setChecked(backfill)
+        self.act_backfill.toggled.connect(self._toggle_backfill)
         menu.addAction("Show window", self.showNormal)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -165,6 +179,12 @@ class Main(QtWidgets.QMainWindow):
         self.watcher.auto = on
         self.tray.showMessage("ClAudit", "Auto-post ENABLED — new blocks file automatically."
                               if on else "Auto-post disabled — blocks queue for review.")
+
+    def _toggle_backfill(self, on):
+        self.watcher.backfill = on
+        self.tray.showMessage("ClAudit", f"Backfill ENABLED — drip-filing old backlog "
+                              f"(1 / {self.watcher.backfill_interval:g} min)." if on
+                              else "Backfill paused.")
 
     # ---- data ----
     def refresh(self):
@@ -214,11 +234,12 @@ class Main(QtWidgets.QMainWindow):
         self.gh_states = states
         self._repopulate()
 
-    def _on_acted(self, n, was_auto):
+    def _on_acted(self, n, kind):
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                 else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
-        msg = (f"Auto-filed {n} false-positive block(s) to {self.repo}." if was_auto
-               else f"{n} new false-positive block(s) queued — use ‘Report pending’.")
+        msg = {"auto": f"Auto-filed {n} new false-positive block(s) to {self.repo}.",
+               "queued": f"{n} new false-positive block(s) queued — use ‘Report pending’.",
+               "backfill": f"Backfilled {n} old block(s) to {self.repo}."}.get(kind, f"{n} filed.")
         self.tray.showMessage("ClAudit", msg, icon)
         self.refresh()
 
@@ -273,6 +294,9 @@ def main():
     p.add_argument("--interval", type=float, default=30)
     p.add_argument("-R", "--repo", default=cs.DEFAULT_REPO)
     p.add_argument("--auto", action="store_true", help="auto-file new blocks (default: queue for review)")
+    p.add_argument("--backfill", action="store_true", help="slowly drip-file the baselined backlog")
+    p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
+                   help="minutes between backfilled issues (default 10)")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
     args = p.parse_args()
 
@@ -282,7 +306,7 @@ def main():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
         return
-    w = Main(args.repo, args.interval, args.auto)
+    w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval)
     if not args.hidden:
         w.show()
     sys.exit(app.exec())

@@ -1,0 +1,34 @@
+name: Bug report
+description: Something in ClAudit isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command / mode
+      placeholder: "e.g. claudit_scan.py --watch --auto  /  claudit_gui.py"
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Linux, macOS, Windows]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste any traceback or stderr. Scrub anything sensitive.
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: Python / gh versions
+      placeholder: "python --version ; gh --version"

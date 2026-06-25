@@ -45,6 +45,10 @@ and defaults to **review-before-send**.
   collapse into one issue with all Request IDs attached. A persistent state file
   (`~/.claude/claudit/filed.json`) means reruns never double-post.
 - **Single-instance:** a PID lockfile guarantees only one watcher runs — no races, no doubles.
+- **Conversation leadup:** the few turns *before* each block are captured, PII-scrubbed, and
+  included in the issue (and a local `~/.claude/claudit/issues.jsonl` database of everything filed).
+- **Backfill:** drip-file your existing backlog slowly (one issue every N minutes) *while* the
+  watcher keeps insta-posting genuinely new blocks — so you catch up without tripping spam limits.
 
 ## Install
 
@@ -79,6 +83,7 @@ keeps it watching in the tray. Toggle auto-post from the tray menu.
 python3 claudit_scan.py --baseline     # mark existing blocks as seen (run once; files nothing)
 python3 claudit_scan.py --watch        # notify-only: detect + queue new blocks
 python3 claudit_scan.py --watch --auto # auto-file new blocks
+python3 claudit_scan.py --watch --auto --backfill   # also drip-file the old backlog slowly
 python3 claudit_scan.py --pending      # list what's queued
 python3 claudit_scan.py --file-pending # file the queue (user-initiated)
 python3 claudit_scan.py --post         # one-shot: review the backlog in $EDITOR, then file
@@ -88,6 +93,7 @@ python3 claudit_scan.py --post         # one-shot: review the backlog in $EDITOR
 |------|---------|
 | `--watch` | Poll forever (default: notify-only) |
 | `--auto` | With `--watch`: auto-file instead of queuing |
+| `--backfill` | With `--watch`: slowly drip-file the baselined backlog (`--backfill-interval N` min, default 10) |
 | `--baseline` | Mark all current findings seen, file nothing |
 | `--pending` / `--file-pending` | List / file the queue |
 | `--post` | Review backlog in `$EDITOR` then file |
