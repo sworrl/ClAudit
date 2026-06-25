@@ -557,6 +557,8 @@ def main():
                    help="with --watch: slowly drip-file the baselined backlog while monitoring")
     p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
                    help="minutes between each backfilled issue (default 10)")
+    p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
+                   help="stop backfilling after N issues this run (0 = no cap)")
     p.add_argument("--pending", action="store_true", help="list blocks queued by the watcher")
     p.add_argument("--file-pending", dest="file_pending", action="store_true",
                    help="file everything the watcher queued (user-initiated)")
@@ -599,7 +601,7 @@ def main():
             announce_pending(state, args.repo, args.delay)
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
-        last_bf = 0.0
+        last_bf, bf_done = 0.0, 0
         try:
             while True:
                 if args.auto:
@@ -610,10 +612,15 @@ def main():
                     n = monitor_cycle(state, on_detect)
                     if n:
                         print(f"  (+{n} queued; run --file-pending to report)", file=sys.stderr)
-                if args.backfill and time.monotonic() - last_bf >= args.backfill_interval * 60:
+                capped = args.backfill_max and bf_done >= args.backfill_max
+                if args.backfill and not capped and time.monotonic() - last_bf >= args.backfill_interval * 60:
                     last_bf = time.monotonic()
                     if backfill_step(state, args.repo, 1, notify):     # slow drip: 1 per interval
-                        print(f"  (backfilled 1; {backlog_size(state)} left)", file=sys.stderr)
+                        bf_done += 1
+                        print(f"  (backfilled {bf_done}; {backlog_size(state)} left)", file=sys.stderr)
+                        if args.backfill_max and bf_done >= args.backfill_max:
+                            print(f"  backfill cap ({args.backfill_max}) reached — pausing backfill.",
+                                  file=sys.stderr)
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)

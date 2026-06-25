@@ -31,12 +31,14 @@ STATE_LOCK = threading.Lock()
 class Watcher(QtCore.QThread):
     acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill")
 
-    def __init__(self, state, repo, interval, auto, backfill, backfill_interval):
+    def __init__(self, state, repo, interval, auto, backfill, backfill_interval, backfill_max):
         super().__init__()
         self.state, self.repo, self.interval, self._run = state, repo, interval, True
         self.auto = auto                   # toggled live from the tray menu
         self.backfill = backfill
         self.backfill_interval = backfill_interval
+        self.backfill_max = backfill_max
+        self.bf_done = 0
 
     def run(self):
         import time as _t
@@ -52,11 +54,13 @@ class Watcher(QtCore.QThread):
                         n = cs.monitor_cycle(self.state, lambda fresh: None)
                 if n:
                     self.acted.emit(n, "auto" if self.auto else "queued")
-                if self.backfill and _t.monotonic() - last_bf >= self.backfill_interval * 60:
+                capped = self.backfill_max and self.bf_done >= self.backfill_max
+                if self.backfill and not capped and _t.monotonic() - last_bf >= self.backfill_interval * 60:
                     last_bf = _t.monotonic()
                     with STATE_LOCK:
                         b = cs.backfill_step(self.state, self.repo, 1, lambda *a: None)
                     if b:
+                        self.bf_done += b
                         self.acted.emit(b, "backfill")
             except Exception as e:
                 print("watcher error:", e, file=sys.stderr)
@@ -108,7 +112,7 @@ class StatusFetcher(QtCore.QThread):
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Type", "Issue / Queue", "GitHub", "Req IDs", "Hits", "Detail"]
 
-    def __init__(self, repo, interval, auto, backfill, backfill_interval):
+    def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max):
         super().__init__()
         self.repo, self.state = repo, cs.load_state()
         self.findings, self.gh_states = {}, {}
@@ -141,7 +145,7 @@ class Main(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
 
         self._build_tray(auto, backfill)
-        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval)
+        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.refresh()
@@ -297,6 +301,8 @@ def main():
     p.add_argument("--backfill", action="store_true", help="slowly drip-file the baselined backlog")
     p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
                    help="minutes between backfilled issues (default 10)")
+    p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
+                   help="stop backfilling after N issues (0 = no cap)")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
     args = p.parse_args()
 
@@ -306,7 +312,7 @@ def main():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
         return
-    w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval)
+    w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval, args.backfill_max)
     if not args.hidden:
         w.show()
     sys.exit(app.exec())

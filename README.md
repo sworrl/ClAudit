@@ -96,7 +96,7 @@ python3 claudit_scan.py --post         # one-shot: review the backlog in $EDITOR
 |------|---------|
 | `--watch` | Poll forever (default: notify-only) |
 | `--auto` | With `--watch`: auto-file instead of queuing |
-| `--backfill` | With `--watch`: slowly drip-file the baselined backlog (`--backfill-interval N` min, default 10) |
+| `--backfill` | With `--watch`: slowly drip-file the baselined backlog (`--backfill-interval N` min, default 10; `--backfill-max N` to cap) |
 | `--baseline` | Mark all current findings seen, file nothing |
 | `--pending` / `--file-pending` | List / file the queue |
 | `--post` | Review backlog in `$EDITOR` then file |
