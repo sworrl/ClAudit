@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.12"
+__version__ = "2.0.13"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -825,9 +825,10 @@ def dedup_guard(state, repo, limit, apply, on_done=None):
     return distinct + dupes
 
 
-def _push_not_dup(repo, num, comment_id, of, reason, issue_body):
+def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True):
     """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue.
-    Returns True only if the 👎 reaction actually landed (failures are logged, not swallowed)."""
+    Returns True only if the 👎 reaction actually landed (failures are logged, not swallowed).
+    compose=False uses the templated note (no LLM) — for bulk runs where N claude calls is silly."""
     reacted = False
     if comment_id:
         r = subprocess.run(["gh", "api", "graphql", "-f",
@@ -845,7 +846,7 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body):
     bc = claudit.llm_compose(
         f"Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this issue "
         f"is NOT a duplicate of {of or 'the flagged issue'}. Reason: {reason}. Note it's a distinct "
-        f"block with its own Request ID.", issue_body[:1500])
+        f"block with its own Request ID.", issue_body[:1500]) if compose else None
     if bc:
         body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
@@ -874,6 +875,58 @@ def mark_not_duplicate(state, repo, num):
     state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
     save_state(state)
     return reacted
+
+
+def _dup_flag(comments):
+    """The dup-bot's flag comment among an issue's comments, or None."""
+    return next((c for c in (comments or [])
+                 if "possible duplicate" in c.get("body", "").lower()
+                 or "closed as a duplicate" in c.get("body", "").lower()), None)
+
+
+def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
+    """Local dedup-defender: on EVERY open issue you authored that the dup-bot flagged, 👎 the flag
+    and post a factual 'not a duplicate' note — ONCE per issue. Idempotent (skips issues already
+    defended, recorded in state['__deduped__']) and paced (delay secs between issues) so it can't
+    double-post or trip GitHub's abuse limits. No LLM gate: each ClAudit issue is already a distinct
+    prompt + Request ID, so the duplicate flag is itself a false positive. Returns count defended."""
+    deduped = state.setdefault("__deduped__", {})
+    try:
+        issues = json.loads(subprocess.run(
+            ["gh", "issue", "list", "-R", repo, "--author", "@me", "--state", "open",
+             "--limit", str(limit or 300), "--json", "number,body"],
+            capture_output=True, text=True, check=True).stdout or "[]")
+    except Exception as e:
+        print(f"defend_all: cannot list issues: {e}", file=sys.stderr)
+        return 0
+    done = 0
+    for it in issues:
+        num = it["number"]
+        if deduped.get(str(num)) == "not-duplicate":
+            continue                                    # already defended in a prior run
+        cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "comments"],
+                            capture_output=True, text=True).stdout
+        comments = (json.loads(cj or "{}").get("comments") or [])
+        flag = _dup_flag(comments)
+        if not flag:
+            continue                                    # not flagged — nothing to defend
+        if any("not a duplicate" in c.get("body", "").lower() for c in comments):
+            deduped[str(num)] = "not-duplicate"         # already noted (e.g. before state tracked it)
+            save_state(state)
+            continue
+        m = re.search(r"#(\d+)", flag["body"])
+        of = f"#{m.group(1)}" if m else ""
+        reacted = _push_not_dup(repo, num, flag.get("id"), of,
+                                "each ClAudit issue is a distinct block with its own Request ID",
+                                it.get("body", ""), compose=compose)
+        deduped[str(num)] = "not-duplicate"
+        save_state(state)
+        done += 1
+        if on_done:
+            on_done(num, reacted)
+        time.sleep(delay)
+    print(f"defend_all: defended {done} issue(s).", file=sys.stderr)
+    return done
 
 
 def main():
@@ -906,6 +959,12 @@ def main():
     p.add_argument("--apply", action="store_true", help="with --dedup-guard: actually post the comments")
     p.add_argument("--gate", action="store_true",
                    help="opt-in: LLM pre-judges blocks and skips ones it deems CORRECT (off by default)")
+    p.add_argument("--defend-all", dest="defend_all", action="store_true",
+                   help="defend EVERY open issue the dup-bot flagged: 👎 + 'not a duplicate' note, once each (live)")
+    p.add_argument("--defend", action="store_true",
+                   help="with --watch: periodically run the dedup-defender locally in the background")
+    p.add_argument("--defend-interval", dest="defend_interval", type=float, default=600,
+                   help="with --watch --defend: seconds between defender sweeps (default 600)")
     args = p.parse_args()
     cfg = load_config()
     if args.llm_scrub or cfg.get("llm_scrub"):
@@ -918,6 +977,13 @@ def main():
 
     if args.dedup_guard:
         dedup_guard(state, args.repo, args.limit, args.apply)
+        return
+
+    if args.defend_all:
+        n = defend_all(args.repo, state, limit=args.limit,
+                       on_done=lambda num, ok: print(f"  #{num}: {'👎 + note' if ok else 'note only'}",
+                                                     file=sys.stderr))
+        print(f"Defended {n} flagged issue(s).", file=sys.stderr)
         return
 
     if args.baseline:
@@ -951,6 +1017,7 @@ def main():
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
         last_live, last_bf, bf_done = 0.0, 0.0, 0
+        last_defend = 0.0
         bf_delay = max(4.0, float(args.backfill_interval))
         try:
             while True:
@@ -979,6 +1046,11 @@ def main():
                               file=sys.stderr)
                         if args.backfill_max and bf_done >= args.backfill_max:
                             print(f"  backfill cap ({args.backfill_max}) reached.", file=sys.stderr)
+                if args.defend and now - last_defend >= max(60.0, args.defend_interval):
+                    last_defend = now                  # local dedup-defender sweep (idempotent)
+                    d = defend_all(args.repo, state)
+                    if d:
+                        print(f"  (defended {d} newly-flagged issue(s))", file=sys.stderr)
                 time.sleep(2)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)
