@@ -81,7 +81,21 @@ def classify(text):
     t = text.lower()
     if "safety measures that flagged this message for a cybersecurity topic" in t:
         return "cyber"
+    if "flagged this message as a cybersecurity" in t:
+        return "cyber"
+    if "safety filter detected cybersecurity" in t:
+        return "cyber"
     if "violate our usage policy" in t or "unable to respond to this request" in t:
+        return "aup"
+    if "against our usage policy" in t:
+        return "aup"
+    if "usage policy violation" in t:
+        return "aup"
+    if "content policy violation" in t:
+        return "aup"
+    if "inappropriate content" in t or "harmful content" in t:
+        return "aup"
+    if "i'm not able to assist with" in t or "i cannot help with that request" in t:
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
@@ -151,6 +165,12 @@ def harness_denial(entry):
             text = ""
         low = text.lower()
         if "auto mode classifier" in low or "permission for this action was denied" in low:
+            return text.strip()
+        if "denied by the auto mode classifier" in low:
+            return text.strip()
+        if "permission was denied by the auto mode" in low:
+            return text.strip()
+        if "action denied by auto mode" in low:
             return text.strip()
     return None
 
