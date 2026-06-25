@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build ONE consolidated, actionable pattern report from everything ClAudit has filed.
+"""Build a consolidated pattern report from everything ClAudit has filed — a LOCAL artifact.
 
-113 scattered issues are easy to dismiss as duplicates. A single report that states the root
-cause and lists every server-side-lookup-able Request ID, grouped by failure mode, is not.
+NOTE: a single aggregate/tracking issue is NOT bespoke (it has no incident Request ID of its own),
+so it is deliberately NOT part of the default flow — every block is filed as its own distinct issue
+with its own Request ID. This script stays as an opt-in local roll-up (docs/pattern-report.md);
+--file / --update remain available but are not used by the watcher.
 
-  python3 scripts/pattern_report.py                       # write docs/pattern-report.md
-  python3 scripts/pattern_report.py --file -R <repo>      # file it as one tracking issue
-  python3 scripts/pattern_report.py --update 70895        # refresh an existing tracking issue
+  python3 scripts/pattern_report.py                       # write docs/pattern-report.md (local)
+  python3 scripts/pattern_report.py --file -R <repo>      # (opt-in) file it as one tracking issue
+  python3 scripts/pattern_report.py --update <issue#>     # (opt-in) refresh an existing one
 """
 import argparse
 import os
