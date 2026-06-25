@@ -241,7 +241,9 @@ class Reporter(QtCore.QThread):
 
 
 class CommunityFetcher(QtCore.QThread):
-    """Fetch ALL false-positive issues on the repo (every author, open + closed) + your login."""
+    """Fetch EVERY ClAudit-filed issue on the repo (all authors, open + closed) + your login.
+    Keyed on the 'Filed automatically by ClAudit' body marker — so it shows ALL kinds (cyber, aup,
+    harness) and bespoke titles, not just ones with 'false positive' in the title."""
     fetched = QtCore.pyqtSignal(list, str)
 
     def __init__(self, repo):
@@ -257,11 +259,14 @@ class CommunityFetcher(QtCore.QThread):
             pass
         try:
             out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "300",
-                 "--search", "false positive in:title",
-                 "--json", "number,state,stateReason,title,author,url,createdAt"],
+                ["gh", "search", "issues", "--repo", self.repo, '"Filed automatically by ClAudit"',
+                 "--limit", "500", "--sort", "created", "--order", "desc",
+                 "--json", "number,state,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
+            # gh search issues doesn't expose stateReason — fetch it only for the closed ones (cheap)
+            for it in items:
+                it.setdefault("stateReason", "")
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
         self.fetched.emit(items, me)
