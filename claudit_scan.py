@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -367,13 +367,18 @@ def build_issue(f, note):
     if claudit.BURN_TOKENS:   # spend tokens to craft a bespoke, specific title + explanation
         ctx = f"work domain: {categorize(f)}\nblock message: {block_clean}\nconversation leadup:\n{leadup_md}"
         bt = claudit.llm_compose(
-            f"Write ONE specific GitHub issue title (max ~95 chars), starting exactly with "
-            f"'[Bug][{f['kind']}]', describing the concrete legitimate work this Claude Code safety "
-            f"block wrongly stopped. No quotes, no placeholder text.", ctx)
+            f"Write ONE specific GitHub issue title (max ~95 chars) that starts EXACTLY with "
+            f"'[Bug][{f['kind']}]' and describes the concrete legitimate work this Claude Code safety "
+            f"block wrongly stopped. Output ONLY that title line — no preamble, no 'here is', no quotes, "
+            f"no explanation.", ctx)
         if bt:
-            bt = scrub(bt.splitlines()[0].strip().strip('"'))[0][:110]
-            lead_req = reqs[0]["req"] if reqs else ""
-            title = bt if (not lead_req or lead_req in bt) else f"{bt} ({lead_req})"
+            # the model sometimes adds a chatty preamble line — take the line that's actually a title
+            lines = [ln.strip().strip('"').strip("`") for ln in bt.splitlines() if ln.strip()]
+            cand = next((ln for ln in lines if ln.lower().startswith("[bug]")), "")
+            if cand:                       # only trust a real title; else keep the deterministic one
+                cand = scrub(cand)[0][:110]
+                lead_req = reqs[0]["req"] if reqs else ""
+                title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
         bw = claudit.llm_compose(
             "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
             "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.", ctx)

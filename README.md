@@ -7,7 +7,7 @@
 **Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues — automatically, continuously, and safely.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.6.2-brightgreen)
+![Version](https://img.shields.io/badge/version-1.6.3-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -108,8 +108,24 @@ scrub, and file dozens of these by hand. ClAudit does it for you.
    into **one** issue with all its Request IDs attached. A persistent state file means reruns never
    double-post, and a single-instance lock means two watchers can't race.
 4. **Scrub.** Three layers (see below).
-5. **File.** A new issue per distinct finding, or a comment when a known one recurs with new Request
+5. **Gate (honesty).** With the LLM enabled, each block is judged *before* filing. Blocks that were
+   **clearly, unambiguously correct** — an agent told not to mass-post to an external repo, steal
+   credentials, deploy malware, or evade safety controls — are **skipped**, so ClAudit never
+   mislabels a correct block as a "false positive." Ambiguous and plausibly-legitimate blocks **are**
+   reported: your lived experience of being wrongly blocked counts.
+6. **File.** A new issue per distinct finding, or a comment when a known one recurs with new Request
    IDs. Every issue links back to this repo and records the ClAudit version that filed it.
+
+## The honesty gate
+
+ClAudit's credibility depends on every report being **true**. The single dishonest thing it could do
+is call a block a "false positive" when it plainly wasn't — and a stream of "the safety system
+correctly stopped me" reports would (rightly) get all your reports ignored. So the gate exists to
+prevent exactly that, and **only** that. It is deliberately **conservative**: it skips a block only
+when the LLM is confident it was a correct, justified block; everything ambiguous or plausibly
+in-scope is reported. It is **not** a volume filter — reporting your genuine experiences, even many of
+them, is legitimate; mislabeling a correct block is not. (Requires the `claude` CLI; without it, the
+gate is a no-op and everything is filed.)
 
 ## PII protection (read this)
 
@@ -234,9 +250,11 @@ python3 claudit_scan.py --dedup-guard          # dry-run: print the LLM's verdic
 python3 claudit_scan.py --dedup-guard --apply  # comment ONLY on the genuinely-distinct ones
 ```
 
-It is **judge-first by default** — it prints verdicts and posts nothing until you add `--apply`. It
-cooperates with the maintainers' bot (it does not blanket-fight auto-closure); it only pushes back,
-with a bespoke factual comment, where the LLM finds a clear distinction.
+It is **judge-first by default** — it prints verdicts and posts nothing until you add `--apply`. With
+`--apply`, on the genuinely-distinct issues it leaves a bespoke factual comment **and** reacts 👎 to
+the dup-bot (the exact mechanism the bot offers — *"to prevent auto-closure… 👎 this comment"*); on
+real duplicates it does nothing, so they consolidate onto the canonical issue. It does **not**
+blanket-fight auto-closure — only where the LLM finds a clear, factual distinction.
 
 ## Manual one-off filing
 
@@ -304,6 +322,19 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 | `scripts/gen-icon.py` | Regenerate `claudit_icon.png` |
 | `scripts/install-linux.sh` | Install desktop launcher / autostart |
 | `scripts/githooks/pre-commit` | Auto-bump the version on every commit |
+
+## Help wanted (good first issues)
+
+New here? These are the best places to jump in — all tagged **good first issue / help wanted**:
+
+- **[Test the tray app on Windows and macOS](https://github.com/sworrl/ClAudit/issues/1)** — it's only
+  been run on Linux; confirm the tray, notifications, and dashboard work elsewhere.
+- **[Packaging: Homebrew / AUR / Flatpak](https://github.com/sworrl/ClAudit/issues/2)** — make it
+  installable without `git clone`.
+- **[Add new block-classification signatures](https://github.com/sworrl/ClAudit/issues/3)** — teach
+  `classify()` about block phrasings it doesn't recognize yet.
+- **[Autostart helpers for macOS & Windows](https://github.com/sworrl/ClAudit/issues/4)** — Login Item
+  / Startup equivalents of the Linux installer.
 
 ## Contributing
 

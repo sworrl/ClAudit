@@ -537,6 +537,8 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)
+    if os.path.exists(cs.ICON):
+        app.setWindowIcon(QtGui.QIcon(cs.ICON))   # ClAudit icon on every window + modal titlebar
 
     # Claude-assisted PII scrubbing: CLI flag > saved choice > ask at startup (with "remember").
     cfg = cs.load_config()
@@ -549,6 +551,8 @@ def main():
                                     "Enable Claude-assisted PII scrubbing?\n\nUses the `claude` CLI to catch "
                                     "names, org abbreviations, and hostnames the regex can't (slower, uses "
                                     "tokens). Strongly recommended before posting publicly.")
+        if os.path.exists(cs.ICON):
+            box.setIconPixmap(QtGui.QIcon(cs.ICON).pixmap(56, 56))
         remember = QtWidgets.QCheckBox("Remember my choice")
         box.setCheckBox(remember)
         box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
