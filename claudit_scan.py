@@ -43,7 +43,9 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
+__version__ = "1.0.0"
 DEFAULT_REPO = "anthropics/claude-code"
+PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
 DEFAULT_NOTE = ("False positive — in-scope, authorized security work; not out of scope. "
                 "Filed automatically by claudit.")
@@ -286,7 +288,10 @@ Project path(s) where the block fired (username scrubbed):
 `{hint}`
 </details>
 
-**Environment:** Claude Code, Linux."""
+**Environment:** Claude Code, Linux.
+
+---
+<sub>🔎 Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) — a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
     return title, body
 
 
@@ -294,6 +299,7 @@ def log_issue(f, repo, url):
     """Append a filed issue to the local issues DB (with PII-scrubbed leadup)."""
     rec = {
         "sig": f["sig"], "kind": f["kind"], "repo": repo, "url": url,
+        "version": __version__,
         "issue": url.rsplit("/", 1)[-1],
         "reqs": [o["req"] for o in reqs_of(f)],
         "first_ts": min((o["ts"] for o in f["occ"] if o["ts"]), default=""),
@@ -543,6 +549,7 @@ def review(findings):
 
 def main():
     p = argparse.ArgumentParser(description="Watch Claude Code sessions for safety/AUP blocks.")
+    p.add_argument("--version", action="version", version=f"ClAudit {__version__}")
     p.add_argument("--baseline", action="store_true", help="mark all current findings seen, file nothing")
     p.add_argument("--watch", action="store_true", help="poll forever (notify-only): detect + queue new blocks")
     p.add_argument("--auto", action="store_true", help="with --watch: auto-file new blocks instead of queuing")

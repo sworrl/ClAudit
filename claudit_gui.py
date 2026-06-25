@@ -112,7 +112,7 @@ class Main(QtWidgets.QMainWindow):
         super().__init__()
         self.repo, self.state = repo, cs.load_state()
         self.findings, self.gh_states = {}, {}
-        self.setWindowTitle("ClAudit — false-positive blocks")
+        self.setWindowTitle(f"ClAudit v{cs.__version__} — false-positive blocks")
         self.resize(880, 460)
         if os.path.exists(cs.ICON):
             self.setWindowIcon(QtGui.QIcon(cs.ICON))
