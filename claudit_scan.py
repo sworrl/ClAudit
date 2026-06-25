@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.36"
+__version__ = "2.0.37"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -417,24 +417,37 @@ def build_issue(f, note):
         elif bw and _is_refusal(bw):       # model wouldn't vouch -> assert NOTHING, file facts only
             neutral = True
 
+    is_harness = f["kind"] == "harness"
     recur = (f"Recurred **{len(f['occ'])}×** across {sessions} session(s); first seen {first_ts}.")
+    # harness denials are LOCAL auto-mode-classifier blocks — no server-side Request ID exists.
+    if reqs:
+        reqs_block = f"### Request IDs (lookup-able server-side)\n{req_lines}"
+        verify = "the triggering request is verifiable server-side via the Request ID(s) below"
+    else:
+        reqs_block = (
+            "### No Request ID (auto-mode-classifier denial)\n"
+            "This is a Claude Code **auto-mode-classifier denial** — a local harness block, not a "
+            "server-side API error — so it carries **no Request ID** to look up. The classifier's "
+            "stated reason is in the Block message below.")
+        verify = "the classifier's stated reason is in the Block message below"
+    blocked_phrase = ("A Claude Code **auto-mode-classifier denial** stopped authorized, in-scope work"
+                      if is_harness else
+                      "A server-side safety/policy block fired during authorized, in-scope work in Claude Code")
     if neutral:
-        why_block = (f"A server-side **{f['kind']}** block fired in Claude Code. No rationale is "
-                     f"asserted — the triggering request is verifiable server-side via the Request "
-                     f"ID(s) below. {recur}")
+        kindphrase = ("A Claude Code auto-mode-classifier denial" if is_harness
+                      else f"A server-side **{f['kind']}** block")
+        why_block = f"{kindphrase} fired in Claude Code. No rationale is asserted — {verify}. {recur}"
         note_block = ""
     else:
         why_block = (f"### Why this is a false positive\n{why_text}\n\n"
-                     f"A server-side safety/policy block fired during authorized, in-scope work in "
-                     f"Claude Code. Filing as a false positive. {recur}")
+                     f"{blocked_phrase}. Filing as a false positive. {recur}")
         note_block = f"\n### In-scope justification\n{note_clean}\n"
 
     body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
 {why_block}
 
-### Request IDs (lookup-able server-side)
-{req_lines}
+{reqs_block}
 {note_block}
 ### Block message
 > {block_clean}
