@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.6.5"
+__version__ = "2.0.0"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -716,14 +716,16 @@ def _llm_dupe_verdict(title, body, flagtext):
         return {"duplicate": True, "reason": f"verdict error: {e}"}
 
 
-def dedup_guard(repo, limit, apply):
+def dedup_guard(state, repo, limit, apply, on_done=None):
     """For each of YOUR open issues the dup-bot flagged, have the LLM judge it on facts.
-    Dry-run prints verdicts; with apply=True it posts a PII-scrubbed 'not a duplicate' comment
-    ONLY on issues the LLM judges genuinely distinct (which also prevents the auto-closure)."""
+    With apply=True it 👎s the dup-bot + posts a PII-scrubbed 'not a duplicate' comment ONLY on
+    issues the LLM judges genuinely distinct. Records per-issue status in state['__deduped__']
+    so the GUI can show it. Calls on_done(num, status) per handled issue."""
+    deduped = state.setdefault("__deduped__", {})
     try:
         issues = json.loads(subprocess.run(
             ["gh", "issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-             "--limit", str(limit or 50), "--json", "number,title,body"],
+             "--limit", str(limit or 100), "--json", "number,title,body"],
             capture_output=True, text=True, check=True).stdout or "[]")
     except Exception as e:
         print(f"dedup_guard: cannot list issues: {e}", file=sys.stderr)
@@ -743,33 +745,59 @@ def dedup_guard(repo, limit, apply):
         print(f"  #{num}: {'DUPLICATE of ' + v.get('of', '?') if is_dup else 'DISTINCT'} — {v.get('reason', '')[:140]}")
         if is_dup:
             dupes += 1
+            deduped[str(num)] = "duplicate"
+            if on_done:
+                on_done(num, "duplicate")
             continue
         distinct += 1
         if apply:
-            cid = flag.get("id")   # 👎 the dup-bot comment (its own offered "not a dupe" signal)
-            if cid:
-                subprocess.run(["gh", "api", "graphql", "-f",
-                                f'query=mutation{{addReaction(input:{{subjectId:"{cid}",'
-                                f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
-                               capture_output=True, text=True)
-            body = scrub(f"Not a duplicate {('of ' + v.get('of', '')) if v.get('of') else ''} — "
-                         f"{v.get('reason', '')} Distinct operation; see the Request IDs above. "
-                         f"(Auto-assessed by ClAudit; PII-scrubbed.)")[0]
-            bc = claudit.llm_compose(
-                "Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this "
-                f"issue is NOT a duplicate of {v.get('of', 'the flagged issue')}. Distinguishing reason: "
-                f"{v.get('reason', '')}. Note it is a distinct block with its own Request ID.",
-                it.get("body", "")[:1500])
-            if bc:
-                body = scrub(bc)[0]
-            body = claudit.llm_redact(body)
-            subprocess.run(["gh", "issue", "comment", str(num), "-R", repo, "--body", body],
-                           capture_output=True, text=True)
+            _push_not_dup(repo, num, flag.get("id"), v.get("of", ""), v.get("reason", ""), it.get("body", ""))
+            deduped[str(num)] = "not-duplicate"
+            if on_done:
+                on_done(num, "not-duplicate")
             time.sleep(3)
-    print(f"\n{distinct} judged DISTINCT, {dupes} judged duplicate."
-          f"{' Comments posted on the distinct ones.' if apply else ' (dry-run — re-run with --apply to comment on the distinct ones)'}",
-          file=sys.stderr)
+    save_state(state)
+    print(f"\n{distinct} judged DISTINCT, {dupes} judged duplicate.", file=sys.stderr)
     return distinct + dupes
+
+
+def _push_not_dup(repo, num, comment_id, of, reason, issue_body):
+    """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue."""
+    if comment_id:
+        subprocess.run(["gh", "api", "graphql", "-f",
+                        f'query=mutation{{addReaction(input:{{subjectId:"{comment_id}",'
+                        f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
+                       capture_output=True, text=True)
+    body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
+                 f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
+    bc = claudit.llm_compose(
+        f"Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this issue "
+        f"is NOT a duplicate of {of or 'the flagged issue'}. Reason: {reason}. Note it's a distinct "
+        f"block with its own Request ID.", issue_body[:1500])
+    if bc:
+        body = scrub(bc)[0]
+    subprocess.run(["gh", "issue", "comment", str(num), "-R", repo, "--body", claudit.llm_redact(body)],
+                   capture_output=True, text=True)
+
+
+def mark_not_duplicate(state, repo, num):
+    """MANUAL per-issue dedup (the GUI calls this when YOU click 👎 on a specific issue you judge is
+    not a duplicate). 👎s the dup-bot comment + posts a factual note, live. Records status."""
+    cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "body,comments"],
+                        capture_output=True, text=True).stdout
+    data = json.loads(cj or "{}")
+    flag = next((c for c in (data.get("comments") or [])
+                 if "possible duplicate" in c.get("body", "").lower()
+                 or "closed as a duplicate" in c.get("body", "").lower()), None)
+    of = ""
+    if flag:
+        m = re.search(r"#(\d+)", flag["body"])
+        of = f"#{m.group(1)}" if m else ""
+    _push_not_dup(repo, num, (flag or {}).get("id"), of, "you reviewed it and it is a distinct block",
+                  data.get("body", ""))
+    state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
+    save_state(state)
+    return True
 
 
 def main():
@@ -809,7 +837,7 @@ def main():
     state = load_state()
 
     if args.dedup_guard:
-        dedup_guard(args.repo, args.limit, args.apply)
+        dedup_guard(state, args.repo, args.limit, args.apply)
         return
 
     if args.baseline:

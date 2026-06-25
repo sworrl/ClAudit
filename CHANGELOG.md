@@ -3,6 +3,13 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.0] — 2026-06-25
+Major release.
+- GUI: **Project stats** tab (stars + who starred, forks, watchers, your followers).
+- **Manual per-issue dedup** — select an issue, click 👎 to mark it not-a-duplicate (live); a 👎✓ marker shows which you've handled. (No blanket auto-fighting of the dup-bot.)
+- The honesty gate, burn-tokens bespoke reports, adaptive backfill, the community board with filters/colors/exact-times, and full PII hardening from the 1.x line.
+- Self-restart now triggers on a real git commit/pull (not every local edit) — no more restart thrashing.
+
 ## [1.6.0] — 2026-06-25
 - **Burn-tokens mode** (`--burn-tokens`): Claude writes a bespoke, specific title + explanation per report — the strongest PII defense (composed, not copied). On by default for the local config.
 - **PII hardening:** removed conversation-leadup, project-path, and prompt-hint sections from public posts (kept locally); scrub dash-encoded usernames; username/org added to the local denylist.

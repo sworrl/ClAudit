@@ -87,6 +87,13 @@ QComboBox::drop-down { border: 0; width: 18px; }
 QComboBox QAbstractItemView { background: #1e2128; color: #e6e8ec;
     selection-background-color: #3a2f63; border: 1px solid #2a2e37; }
 QLineEdit { selection-background-color: #3a2f63; }
+QTabWidget::pane { border: 1px solid #2a2e37; border-radius: 8px; top: -1px; }
+QTabBar::tab { background: #1b1e25; color: #9aa0a6; padding: 7px 18px; border: 1px solid #2a2e37;
+    border-bottom: 0; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+QTabBar::tab:selected { background: #232733; color: #e6e8ec; }
+QListWidget { background: #1b1e25; color: #e6e8ec; border: 1px solid #2a2e37; border-radius: 8px; }
+QListWidget::item { padding: 4px 6px; }
+QListWidget::item:selected { background: #3a2f63; }
 """
 
 
@@ -190,6 +197,64 @@ class CommunityFetcher(QtCore.QThread):
         self.fetched.emit(items, me)
 
 
+class DedupWorker(QtCore.QThread):
+    """Manual per-issue dedup: 👎 the dup-bot + post a 'not a duplicate' note on ONE issue (live)."""
+    done = QtCore.pyqtSignal(int, bool)
+
+    def __init__(self, state, repo, num):
+        super().__init__()
+        self.state, self.repo, self.num = state, repo, num
+
+    def run(self):
+        ok = False
+        try:
+            with STATE_LOCK:
+                ok = cs.mark_not_duplicate(self.state, self.repo, self.num)
+        except Exception as e:
+            print("dedup error:", e, file=sys.stderr)
+        self.done.emit(self.num, ok)
+
+
+class RepoStatsFetcher(QtCore.QThread):
+    """Fetch ClAudit's own repo stats: stars (+ who starred), forks, watchers, owner followers."""
+    fetched = QtCore.pyqtSignal(dict)
+
+    def __init__(self, repo):
+        super().__init__()
+        self.repo = repo
+
+    def run(self):
+        d = {"stargazers": [], "followers": []}
+        try:
+            j = subprocess.run(["gh", "api", f"repos/{self.repo}", "--jq",
+                                "{stars:.stargazers_count, forks:.forks_count, watchers:.subscribers_count, "
+                                "issues:.open_issues_count, updated:.pushed_at}"],
+                               capture_output=True, text=True).stdout
+            d.update(json.loads(j or "{}"))
+        except Exception as e:
+            print("stats fetch failed:", e, file=sys.stderr)
+        try:
+            sg = subprocess.run(["gh", "api", "-H", "Accept: application/vnd.github.star+json",
+                                 f"repos/{self.repo}/stargazers?per_page=100",
+                                 "--jq", "[.[] | {login:.user.login, at:.starred_at}]"],
+                                capture_output=True, text=True).stdout
+            d["stargazers"] = json.loads(sg or "[]")
+        except Exception:
+            pass
+        try:
+            owner = self.repo.split("/")[0]
+            o = subprocess.run(["gh", "api", f"users/{owner}", "--jq",
+                                "{followers:.followers, following:.following, public_repos:.public_repos}"],
+                               capture_output=True, text=True).stdout
+            d["owner"] = json.loads(o or "{}")
+            fl = subprocess.run(["gh", "api", f"users/{owner}/followers?per_page=100", "--jq", "[.[].login]"],
+                                capture_output=True, text=True).stdout
+            d["followers"] = json.loads(fl or "[]")
+        except Exception:
+            pass
+        self.fetched.emit(d)
+
+
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Issue", "Author", "Created", "Title"]
@@ -270,14 +335,28 @@ class Main(QtWidgets.QMainWindow):
         self.bf_bar.setObjectName("bf")
         self.bf_bar.setTextVisible(True)
         self.bf_bar.setMinimumHeight(24)
+        self.btn_dedup = QtWidgets.QPushButton("👎 Not a dupe")
+        self.btn_dedup.setToolTip("On the selected issue, 👎 the dup-bot + post a 'not a duplicate' note (live)")
+        self.btn_dedup.clicked.connect(self._dedup_selected)
+        bar.insertWidget(2, self.btn_dedup)
+
+        board = QtWidgets.QWidget()
+        bl = QtWidgets.QVBoxLayout(board)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(self.bf_bar)
+        bl.addLayout(filt)
+        bl.addWidget(self.table, 1)
+        bl.addLayout(bar)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(board, "Issues")
+        self.tabs.addTab(self._build_stats_tab(), "Project")
+        self.tabs.currentChanged.connect(lambda i: self._fetch_stats() if i == 1 else None)
 
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
         lay.addWidget(header)
-        lay.addWidget(self.bf_bar)
-        lay.addLayout(filt)
-        lay.addWidget(self.table, 1)
-        lay.addLayout(bar)
+        lay.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
 
         self._build_tray(auto, backfill)
@@ -290,22 +369,18 @@ class Main(QtWidgets.QMainWindow):
         self.board_timer = QtCore.QTimer(self)        # refresh the board as backfill posts
         self.board_timer.timeout.connect(self.refresh)
         self.board_timer.start(45000)
-        # self-restart on update: if the source files change (e.g. a git pull), relaunch with them
-        self._src = {f: os.path.getmtime(f) for f in (claudit.__file__, cs.__file__,
-                     os.path.abspath(__file__)) if os.path.exists(f)}
+        # self-restart on a REAL update (a new commit / git pull) — not on every local edit
+        self._head = git_commit()
         self.update_timer = QtCore.QTimer(self)
         self.update_timer.timeout.connect(self._check_updates)
-        self.update_timer.start(15000)
+        self.update_timer.start(60000)
+        self._fetch_stats()
         self.refresh()
 
     def _check_updates(self):
-        for f, mt in self._src.items():
-            try:
-                if os.path.getmtime(f) != mt:
-                    self._restart()
-                    return
-            except OSError:
-                pass
+        cur = git_commit()
+        if cur and self._head and cur != self._head:   # a real commit/pull, not a transient edit
+            self._restart()
 
     def _restart(self):
         self.tray.showMessage("ClAudit", "Update detected — restarting with the new version…")
@@ -390,6 +465,75 @@ class Main(QtWidgets.QMainWindow):
                               f"(1 / {self.watcher.backfill_interval:g} min)." if on
                               else "Backfill paused.")
 
+    # ---- project stats tab ----
+    def _build_stats_tab(self):
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        self.stats_summary = QtWidgets.QLabel("Loading project stats…")
+        self.stats_summary.setObjectName("brand")
+        self.stats_summary.setWordWrap(True)
+        v.addWidget(self.stats_summary)
+        cols = QtWidgets.QHBoxLayout()
+        self.lst_stars = QtWidgets.QListWidget()
+        self.lst_followers = QtWidgets.QListWidget()
+        for title, lst in (("⭐ Stargazers", self.lst_stars), ("👥 Your followers", self.lst_followers)):
+            c = QtWidgets.QVBoxLayout()
+            c.addWidget(QtWidgets.QLabel(title))
+            c.addWidget(lst)
+            cw = QtWidgets.QWidget()
+            cw.setLayout(c)
+            cols.addWidget(cw)
+        v.addLayout(cols, 1)
+        b = QtWidgets.QPushButton("Refresh stats")
+        b.clicked.connect(self._fetch_stats)
+        v.addWidget(b)
+        return w
+
+    def _fetch_stats(self):
+        f = RepoStatsFetcher(cs.PROJECT_URL.split("github.com/")[-1])
+        f.fetched.connect(self._on_stats)
+        f.start()
+        self._sf = f
+
+    def _on_stats(self, d):
+        o = d.get("owner", {}) or {}
+        self.stats_summary.setText(
+            f"⭐ {d.get('stars', 0)} stars  ·  🍴 {d.get('forks', 0)} forks  ·  👁 {d.get('watchers', 0)} watchers"
+            f"  ·  👥 {o.get('followers', 0)} followers  ·  📦 {o.get('public_repos', '?')} repos")
+        self.lst_stars.clear()
+        for s in d.get("stargazers", []):
+            self.lst_stars.addItem(f"⭐ {s.get('login', '?')}   {(s.get('at') or '')[:10]}")
+        if not d.get("stargazers"):
+            self.lst_stars.addItem("(no stars yet — be the first!)")
+        self.lst_followers.clear()
+        for fl in d.get("followers", []):
+            self.lst_followers.addItem(f"👤 {fl}")
+
+    # ---- manual per-issue dedup ----
+    def _dedup_selected(self):
+        row = self.table.currentRow()
+        item = self.table.item(row, 1) if row >= 0 else None
+        num = (item.text().lstrip("#").split()[0] if item else "")
+        if not num.isdigit():
+            QtWidgets.QMessageBox.information(self, "ClAudit", "Select one of your own issue rows (a #number) first.")
+            return
+        if QtWidgets.QMessageBox.question(
+                self, "Not a duplicate",
+                f"👎 the dup-bot and post a 'not a duplicate' note on #{num}?\n"
+                "This is a live action on the public repo, made under your account.") \
+                != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self.btn_dedup.setEnabled(False)
+        self._dw = DedupWorker(self.state, self.repo, int(num))
+        self._dw.done.connect(self._on_deduped)
+        self._dw.start()
+
+    def _on_deduped(self, num, ok):
+        self.btn_dedup.setEnabled(True)
+        self.tray.showMessage("ClAudit", f"#{num}: 👎'd the dup-bot + posted 'not a duplicate'." if ok
+                              else f"#{num}: dedup failed (see logs).")
+        self.refresh()
+
     # ---- data ----
     def refresh(self):
         threading.Thread(target=self._scan_then, daemon=True).start()
@@ -433,7 +577,9 @@ class Main(QtWidgets.QMainWindow):
             if needle and needle not in title.lower():
                 continue
             created = fmt_ts(it.get("createdAt", ""))
-            rows.append((it.get("createdAt", ""), st, f"#{it['number']}", author, created, title, it.get("url", "")))
+            ded = (self.state.get("__deduped__", {}) or {}).get(str(it["number"]))
+            label = f"#{it['number']}" + (" 👎✓" if ded == "not-duplicate" else "")
+            rows.append((it.get("createdAt", ""), st, label, author, created, title, it.get("url", "")))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
 
