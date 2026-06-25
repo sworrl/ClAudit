@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.8"
+__version__ = "2.0.9"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -826,12 +826,20 @@ def dedup_guard(state, repo, limit, apply, on_done=None):
 
 
 def _push_not_dup(repo, num, comment_id, of, reason, issue_body):
-    """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue."""
+    """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue.
+    Returns True only if the 👎 reaction actually landed (failures are logged, not swallowed)."""
+    reacted = False
     if comment_id:
-        subprocess.run(["gh", "api", "graphql", "-f",
-                        f'query=mutation{{addReaction(input:{{subjectId:"{comment_id}",'
-                        f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
-                       capture_output=True, text=True)
+        r = subprocess.run(["gh", "api", "graphql", "-f",
+                            f'query=mutation{{addReaction(input:{{subjectId:"{comment_id}",'
+                            f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
+                           capture_output=True, text=True)
+        reacted = r.returncode == 0 and "THUMBS_DOWN" in r.stdout
+        if not reacted:
+            print(f"  ! 👎 reaction failed on #{num}: {(r.stderr or r.stdout).strip()[:200]}",
+                  file=sys.stderr)
+    else:
+        print(f"  ! #{num}: no dup-bot comment found to 👎 (only posting the note)", file=sys.stderr)
     body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
                  f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
     bc = claudit.llm_compose(
@@ -840,8 +848,12 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body):
         f"block with its own Request ID.", issue_body[:1500])
     if bc:
         body = scrub(bc)[0]
-    subprocess.run(["gh", "issue", "comment", str(num), "-R", repo, "--body", claudit.llm_redact(body)],
-                   capture_output=True, text=True)
+    c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
+                        "--body", claudit.llm_redact(body)], capture_output=True, text=True)
+    if c.returncode != 0:
+        print(f"  ! note comment failed on #{num}: {(c.stderr or c.stdout).strip()[:200]}",
+              file=sys.stderr)
+    return reacted
 
 
 def mark_not_duplicate(state, repo, num):
@@ -857,11 +869,11 @@ def mark_not_duplicate(state, repo, num):
     if flag:
         m = re.search(r"#(\d+)", flag["body"])
         of = f"#{m.group(1)}" if m else ""
-    _push_not_dup(repo, num, (flag or {}).get("id"), of, "you reviewed it and it is a distinct block",
-                  data.get("body", ""))
+    reacted = _push_not_dup(repo, num, (flag or {}).get("id"), of,
+                            "you reviewed it and it is a distinct block", data.get("body", ""))
     state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
     save_state(state)
-    return True
+    return reacted
 
 
 def main():

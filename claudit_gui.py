@@ -614,8 +614,18 @@ class Main(QtWidgets.QMainWindow):
 
     def _on_deduped(self, num, ok):
         self.btn_dedup.setEnabled(True)
-        self.tray.showMessage("ClAudit", f"#{num}: 👎'd the dup-bot + posted 'not a duplicate'." if ok
-                              else f"#{num}: dedup failed (see logs).")
+        icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
+                else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
+        if ok:
+            self.tray.showMessage(
+                "ClAudit · 👎 dedup posted",
+                f"Posted 👎 on the dup-bot + a 'not a duplicate' note on issue "
+                f"{self.repo}#{num}.", icon)
+        else:
+            self.tray.showMessage(
+                "ClAudit · dedup NOT posted",
+                f"The 👎 did not land on #{num} (no dup-bot comment, or the reaction "
+                "failed). Check the logs.", icon)
         self.refresh()
 
     # ---- data ----
