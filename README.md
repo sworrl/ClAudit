@@ -7,7 +7,7 @@
 **Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues — automatically, continuously, and safely.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.6.3-brightgreen)
+![Version](https://img.shields.io/badge/version-1.6.4-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -41,6 +41,7 @@ pattern is to ignore. **That's** how this gets fixed.
 - [What ClAudit is](#what-claudit-is)
 - [Why it exists](#why-it-exists)
 - [How it works](#how-it-works-end-to-end)
+- [The honesty gate](#the-honesty-gate)
 - [PII protection (read this)](#pii-protection-read-this)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -57,6 +58,7 @@ pattern is to ignore. **That's** how this gets fixed.
 - [Responsible use](#responsible-use)
 - [Troubleshooting](#troubleshooting)
 - [Project layout](#project-layout)
+- [Help wanted](#help-wanted-good-first-issues)
 - [Contributing](#contributing)
 - [License](#license)
 
