@@ -99,18 +99,23 @@ QListWidget::item:selected { background: #3a2f63; }
 
 # ----------------------------- background workers -----------------------------
 class Watcher(QtCore.QThread):
-    acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill")
+    acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill"|"defend")
 
-    def __init__(self, state, repo, interval, auto, backfill, backfill_interval, backfill_max):
+    DEFEND_INTERVAL = 600                   # seconds between dedup-defender sweeps
+
+    def __init__(self, state, repo, interval, auto, backfill, backfill_interval, backfill_max,
+                 defend=True):
         super().__init__()
         self.state, self.repo, self.interval, self._run = state, repo, interval, True
         self.auto = auto                   # toggled live from the tray menu
         self.backfill = backfill
         self.backfill_interval = backfill_interval
         self.backfill_max = backfill_max
+        self.defend = defend               # auto-defend dup-bot flags; toggled from the tray menu
         self.bf_done = 0
         self.last_live = 0.0
         self.last_bf = 0.0
+        self.last_defend = 0.0
         self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
 
     def run(self):
@@ -148,6 +153,16 @@ class Watcher(QtCore.QThread):
                     self.bf_done += b
                     self.bf_delay = max(self.bf_delay * 0.8, 4.0)    # creep faster while it's safe
                     self.acted.emit(b, "backfill")
+            # DEFEND: periodically 👎 + note every dup-bot-flagged issue (idempotent, paced inside).
+            if self.defend and now - self.last_defend >= self.DEFEND_INTERVAL:
+                self.last_defend = now
+                try:
+                    with STATE_LOCK:
+                        d = cs.defend_all(self.repo, self.state)
+                    if d:
+                        self.acted.emit(d, "defend")
+                except Exception as e:
+                    print("defend error:", e, file=sys.stderr)
             for _ in range(2):                                       # ~2s tick
                 if not self._run:
                     return
@@ -545,6 +560,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_backfill.setCheckable(True)
         self.act_backfill.setChecked(backfill)
         self.act_backfill.toggled.connect(self._toggle_backfill)
+        self.act_defend = menu.addAction("Auto-defend dup-bot flags")
+        self.act_defend.setCheckable(True)
+        self.act_defend.setChecked(True)   # Watcher defaults defend=True
+        self.act_defend.toggled.connect(self._toggle_defend)
         self.act_llm = menu.addAction("Claude PII scrubbing")
         self.act_llm.setCheckable(True)
         self.act_llm.setChecked(claudit.LLM_SCRUB)
@@ -587,6 +606,16 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit", f"Backfill ENABLED — drip-filing old backlog "
                               f"(1 / {self.watcher.backfill_interval:g} min)." if on
                               else "Backfill paused.")
+
+    def _toggle_defend(self, on):
+        if not self.watcher:
+            return
+        self.watcher.defend = on
+        if on:
+            self.watcher.last_defend = 0.0   # sweep on the next tick
+        self.tray.showMessage("ClAudit", "Auto-defend ENABLED — every dup-bot flag gets 👎 + a "
+                              "'not a duplicate' note automatically." if on
+                              else "Auto-defend paused.")
 
     # ---- project stats tab ----
     def _build_poll_panel(self):
@@ -868,6 +897,10 @@ class Main(QtWidgets.QMainWindow):
             self.tray.showMessage("ClAudit · 📦 HISTORICAL",
                                   f"Backfilled {n} block(s) from your backlog.", icon)
             return   # board_timer handles the list refresh (no per-drip refetch)
+        if kind == "defend":     # auto-defended dup-bot flags
+            self.tray.showMessage("ClAudit · 🛡 DEFENDED",
+                                  f"Auto-defended {n} dup-bot-flagged issue(s) (👎 + note).", icon)
+            return
         if kind == "auto":       # live: a block that just happened
             self.tray.setToolTip("ClAudit — watching live")
             self.tray.showMessage("ClAudit · 🔴 LIVE",
