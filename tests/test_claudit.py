@@ -76,6 +76,17 @@ def test_legit_refusals_are_not_reportable(text):
     assert cs.classify(text) == "other"
 
 
+@pytest.mark.parametrize("text,refusal", [
+    ("I can't write that report. The block is not a false positive.", True),
+    ("This is a true positive; the policy block is accurate.", True),
+    ("I won't do that — it would be dishonest.", True),
+    ("Legitimate in-scope audit of my own host was wrongly blocked.", False),
+])
+def test_refusal_guard(text, refusal):
+    # the burn-tokens composer must never post the model's refusal/editorial into a report
+    assert cs._is_refusal(text) is refusal
+
+
 def test_harness_denial_detection():
     denied = {"type": "user", "message": {"content": [
         {"type": "tool_result", "content": "Permission for this action was denied by the "

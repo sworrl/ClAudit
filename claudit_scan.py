@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.22"
+__version__ = "2.0.23"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -350,6 +350,21 @@ def project_label(encoded):
     return scrub("/" + encoded.strip("-").replace("-", "/"))[0]
 
 
+_REFUSAL_MARKERS = (
+    "i can't", "i cannot", "i can not", "i won't", "i will not", "i refuse",
+    "i'm not able", "i am not able", "i'm unable", "i am unable", "i won't do that",
+    "not a false positive", "true positive", "block is accurate", "block is correct",
+    "block was accurate", "block was correct", "policy block is accurate", "would be dishonest",
+    "circumvent", "i don't feel comfortable", "i do not feel comfortable", "as an ai")
+
+
+def _is_refusal(text):
+    """True if LLM output is a refusal / editorializes that the block was CORRECT — never post it;
+    the model second-guessing the false-positive premise is exactly what must not reach a report."""
+    low = (text or "").lower()
+    return any(m in low for m in _REFUSAL_MARKERS)
+
+
 def build_issue(f, note):
     reqs = reqs_of(f)
     first_ts = min((o["ts"] for o in f["occ"] if o["ts"]), default="")
@@ -378,6 +393,7 @@ def build_issue(f, note):
                           for role, txt in leadup) or "_(not captured)_"
 
     why_text = WHY.get(f["kind"], WHY["cyber"])
+    neutral = False                        # when the LLM refuses, file FACTS ONLY (type + Request IDs)
     if claudit.BURN_TOKENS:   # spend tokens to craft a bespoke, specific title + explanation
         ctx = f"work domain: {categorize(f)}\nblock message: {block_clean}\nconversation leadup:\n{leadup_md}"
         bt = claudit.llm_compose(
@@ -396,24 +412,30 @@ def build_issue(f, note):
         bw = claudit.llm_compose(
             "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
             "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.", ctx)
-        if bw:
+        if bw and not _is_refusal(bw):     # never post the model's refusal/editorial
             why_text = scrub(bw)[0]
+        elif bw and _is_refusal(bw):       # model wouldn't vouch -> assert NOTHING, file facts only
+            neutral = True
+
+    recur = (f"Recurred **{len(f['occ'])}×** across {sessions} session(s); first seen {first_ts}.")
+    if neutral:
+        why_block = (f"A server-side **{f['kind']}** block fired in Claude Code. No rationale is "
+                     f"asserted — the triggering request is verifiable server-side via the Request "
+                     f"ID(s) below. {recur}")
+        note_block = ""
+    else:
+        why_block = (f"### Why this is a false positive\n{why_text}\n\n"
+                     f"A server-side safety/policy block fired during authorized, in-scope work in "
+                     f"Claude Code. Filing as a false positive. {recur}")
+        note_block = f"\n### In-scope justification\n{note_clean}\n"
 
     body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
-### Why this is a false positive
-{why_text}
-
-A server-side safety/policy block fired during authorized, in-scope work in Claude Code.
-Filing as a false positive. Recurred **{len(f['occ'])}×** across {sessions}
-session(s); first seen {first_ts}.
+{why_block}
 
 ### Request IDs (lookup-able server-side)
 {req_lines}
-
-### In-scope justification
-{note_clean}
-
+{note_block}
 ### Block message
 > {block_clean}
 
@@ -852,6 +874,8 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True):
         f"Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this issue "
         f"is NOT a duplicate of {of or 'the flagged issue'}. Reason: {reason}. Note it's a distinct "
         f"block with its own Request ID.", issue_body[:1500]) if compose else None
+    if bc and _is_refusal(bc):
+        bc = None                          # never post the model's refusal — keep the template note
     if bc:
         body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
