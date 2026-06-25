@@ -55,6 +55,12 @@ QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 QWidget#header { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 8px; }
 QLabel#brand { color: #f0f1f3; font-size: 17px; font-weight: 700; }
 QLabel#subtle { color: #9aa0a6; font-size: 12px; }
+QComboBox, QLineEdit { background: #1b1e25; color: #e6e8ec; border: 1px solid #353b47;
+    border-radius: 6px; padding: 5px 8px; }
+QComboBox::drop-down { border: 0; width: 18px; }
+QComboBox QAbstractItemView { background: #1e2128; color: #e6e8ec;
+    selection-background-color: #3a2f63; border: 1px solid #2a2e37; }
+QLineEdit { selection-background-color: #3a2f63; }
 """
 
 
@@ -118,34 +124,40 @@ class Reporter(QtCore.QThread):
 
 
 class CommunityFetcher(QtCore.QThread):
-    """Fetch ALL false-positive issues on the repo (every author, open + closed)."""
-    fetched = QtCore.pyqtSignal(list)
+    """Fetch ALL false-positive issues on the repo (every author, open + closed) + your login."""
+    fetched = QtCore.pyqtSignal(list, str)
 
     def __init__(self, repo):
         super().__init__()
         self.repo = repo
 
     def run(self):
-        items = []
+        items, me = [], ""
+        try:
+            me = subprocess.run(["gh", "api", "user", "--jq", ".login"],
+                                capture_output=True, text=True).stdout.strip()
+        except Exception:
+            pass
         try:
             out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "200",
-                 "--search", "false positive in:title", "--json", "number,state,title,author,url"],
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "300",
+                 "--search", "false positive in:title",
+                 "--json", "number,state,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
-        self.fetched.emit(items)
+        self.fetched.emit(items, me)
 
 
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
-    COLS = ["", "Issue", "Author", "Title"]
+    COLS = ["", "Issue", "Author", "Created", "Title"]
 
     def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max, view=False):
         super().__init__()
         self.repo, self.state, self.view = repo, cs.load_state(), view
-        self.findings, self.community = {}, []
+        self.findings, self.community, self.me = {}, [], ""
         self.setWindowTitle(f"ClAudit v{cs.__version__} — false-positive blocks")
         self.resize(880, 460)
         if os.path.exists(cs.ICON):
@@ -164,6 +176,22 @@ class Main(QtWidgets.QMainWindow):
                                       self.table.viewport())
         self.empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.empty.setStyleSheet("color:#6b7280; font-size:15px; background:transparent;")
+
+        self.f_scope = QtWidgets.QComboBox()
+        self.f_scope.addItems(["All issues", "Mine only"])
+        self.f_state = QtWidgets.QComboBox()
+        self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
+        self.f_search = QtWidgets.QLineEdit()
+        self.f_search.setPlaceholderText("Filter by title…")
+        self.f_search.setClearButtonEnabled(True)
+        for w in (self.f_scope, self.f_state):
+            w.currentIndexChanged.connect(self._repopulate)
+        self.f_search.textChanged.connect(self._repopulate)
+        filt = QtWidgets.QHBoxLayout()
+        filt.addWidget(QtWidgets.QLabel("Show:"))
+        filt.addWidget(self.f_scope)
+        filt.addWidget(self.f_state)
+        filt.addWidget(self.f_search, 1)
 
         self.status = QtWidgets.QLabel("Loading…")
         btn_refresh = QtWidgets.QPushButton("Refresh")
@@ -197,6 +225,7 @@ class Main(QtWidgets.QMainWindow):
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
         lay.addWidget(header)
+        lay.addLayout(filt)
         lay.addWidget(self.table, 1)
         lay.addLayout(bar)
         self.setCentralWidget(root)
@@ -284,41 +313,73 @@ class Main(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot()
     def _repopulate(self):
         DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922"}
-        rows = []   # (state, issue_label, author, title, url)
+        scope = self.f_scope.currentText()
+        statef = self.f_state.currentText()
+        needle = self.f_search.text().strip().lower()
+
+        rows = []   # (sort_ts, state, issue_label, author, created, title, url)
         pend = set(cs.pending_sigs(self.state))
-        for sig in pend:                                   # your queued-but-unfiled blocks
+        for sig in pend:   # your queued-but-unfiled blocks always count as "yours"
             f = self.findings.get(sig, {})
             kind = f.get("kind", "?")
             snippet = (cs.scrub(f.get("prompt", ""))[0])[:80] if f else ""
-            rows.append(("queued", "QUEUED", "you", f"[{kind}] {snippet}", ""))
-        for it in self.community:                          # everyone's reported issues
-            rows.append((it.get("state", "").lower(), f"#{it['number']}",
-                         (it.get("author") or {}).get("login", "—"), it.get("title", ""), it.get("url", "")))
+            title = f"[{kind}] {snippet}"
+            if statef != "Closed only" and (not needle or needle in title.lower()):
+                rows.append(("9999", "queued", "QUEUED", "you", "—", title, ""))
+
+        for it in self.community:
+            st = it.get("state", "").lower()
+            author = (it.get("author") or {}).get("login", "—")
+            title = it.get("title", "")
+            if scope == "Mine only" and self.me and author != self.me:
+                continue
+            if statef == "Open only" and st != "open":
+                continue
+            if statef == "Closed only" and st != "closed":
+                continue
+            if needle and needle not in title.lower():
+                continue
+            created = (it.get("createdAt", "") or "")[:10]
+            rows.append((it.get("createdAt", ""), st, f"#{it['number']}", author, created, title, it.get("url", "")))
+
+        rows.sort(key=lambda r: r[0], reverse=True)   # newest first
 
         self.table.setRowCount(len(rows))
-        for r, (st, num, author, title, url) in enumerate(rows):
-            for c, val in enumerate(["●", num, author, title]):
+        for r, (_, st, num, author, created, title, url) in enumerate(rows):
+            is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
+            if author == "you" or (self.me and author == self.me):
+                owner = "#b794f6"          # yours = purple
+            elif is_claudit:
+                owner = "#5eead4"          # another ClAudit user = teal
+            else:
+                owner = None
+            for c, val in enumerate(["●", num, author, created, title]):
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
                 item.setToolTip("Click to open in browser" if url else "Not filed yet")
                 if c == 0:
                     item.setForeground(QtGui.QColor(DOT.get(st, "#6b7280")))
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                elif owner:
+                    item.setForeground(QtGui.QColor(owner))
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
-        self.table.setColumnWidth(3, max(360, self.table.columnWidth(3)))
+        self.table.setColumnWidth(4, max(340, self.table.columnWidth(4)))
         self.empty.setGeometry(self.table.viewport().rect())
-        self.empty.setText("No false-positive issues found.")
+        self.empty.setText("No issues match this filter.")
         self.empty.setVisible(len(rows) == 0)
         nopen = sum(1 for it in self.community if it.get("state", "").lower() == "open")
-        self.status.setText(f"{len(pend)} queued · {len(self.community)} community issues "
-                            f"({nopen} open) · {self.repo}")
+        mine = sum(1 for it in self.community if (it.get("author") or {}).get("login") == self.me)
+        self.status.setText(
+            f"{len(self.community)} issues · {nopen} open · showing {len(rows)} &nbsp;|&nbsp; "
+            f"<span style='color:#b794f6'>■ yours ({mine})</span> &nbsp; "
+            f"<span style='color:#5eead4'>■ other ClAudit</span>")
         self.btn_report.setEnabled(len(pend) > 0)
         self.act_pending.setText(f"Report {len(pend)} pending")
         self.act_pending.setEnabled(len(pend) > 0)
 
-    def _on_community(self, items):
-        self.community = items
+    def _on_community(self, items, me):
+        self.community, self.me = items, me
         self._repopulate()
 
     def _open_row(self, idx):
