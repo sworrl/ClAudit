@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClAudit — Will Anthropic fix it?</title>
+<style>
+:root{--bg:#16181d;--card:#1e2128;--ink:#e8eaed;--muted:#9aa0a6;--accent:#8b5cf6;
+      --fix:#3fb950;--broken:#f85149;--soon:#4aa3ff}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+.wrap{max-width:720px;margin:0 auto;padding:32px 22px}
+a{color:var(--soon)}
+h1{font-size:26px;margin:0 0 6px}
+.sub{color:var(--muted);margin:0 0 26px}
+.card{background:var(--card);border:1px solid #2a2e37;border-radius:14px;padding:22px;margin:0 0 18px}
+.opt{margin:0 0 18px}
+.opt .lab{display:flex;justify-content:space-between;margin-bottom:6px;font-weight:600}
+.opt .lab .pct{color:var(--muted);font-weight:600}
+.track{background:#12141a;border-radius:8px;height:26px;overflow:hidden;border:1px solid #2a2e37}
+.fillbar{height:100%;border-radius:8px 0 0 8px;transition:width .6s ease;min-width:2px}
+.fix .fillbar{background:var(--fix)} .broken .fillbar{background:var(--broken)} .soon .fillbar{background:var(--soon)}
+.total{color:var(--muted);font-size:14px;text-align:center;margin-top:4px}
+.vote{display:block;text-align:center;background:var(--accent);color:#fff;text-decoration:none;
+      font-weight:700;padding:13px;border-radius:10px;margin-top:8px}
+.vote:hover{filter:brightness(1.12)}
+.foot{color:var(--muted);font-size:13px;text-align:center;margin-top:26px}
+.head{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.head img{width:54px;height:54px}
+</style></head>
+<body><div class="wrap">
+<div class="head"><img src="../claudit_icon.png" alt="ClAudit"
+     onerror="this.style.display='none'">
+  <div><h1>Will Anthropic fix it?</h1>
+  <p class="sub" style="margin:0">Does Anthropic fix Claude Code's false-positive blocking — or does it stay broken?</p></div>
+</div>
+
+<div class="card" id="poll"><p class="total">Loading the live tally…</p></div>
+<a class="vote" id="voteBtn" href="https://github.com/sworrl/ClAudit/issues/6" target="_blank" rel="noopener">🗳️ Cast your vote on GitHub →</a>
+
+<p class="foot">
+  Live community poll from <a href="https://github.com/sworrl/ClAudit">ClAudit</a> ·
+  vote with a 👍 / 👎 / 👀 reaction on the
+  <a href="https://github.com/sworrl/ClAudit/issues/6">pinned issue</a> ·
+  <span id="updated"></span>
+</p>
+
+<script>
+const REPO = "sworrl/ClAudit", ISSUE = 6;
+const META = {
+  plus:  {cls:"fix",    emoji:"👍", label:"Anthropic will fix it"},
+  minus: {cls:"broken", emoji:"👎", label:"Claude Code stays broken"},
+  eyes:  {cls:"soon",   emoji:"👀", label:"Too soon to tell"},
+};
+function render(c, updated){
+  const total = (c.plus||0)+(c.minus||0)+(c.eyes||0);
+  const t = total||1;
+  const order = ["plus","minus","eyes"];
+  document.getElementById("poll").innerHTML =
+    order.map(k=>{
+      const n=c[k]||0, pct=Math.round(100*n/t), m=META[k];
+      return `<div class="opt ${m.cls}">
+        <div class="lab"><span>${m.emoji} ${m.label}</span><span class="pct">${pct}% · ${n}</span></div>
+        <div class="track"><div class="fillbar" style="width:${pct}%"></div></div></div>`;
+    }).join("") + `<div class="total">${total} vote${total===1?"":"s"}</div>`;
+  if(updated) document.getElementById("updated").textContent = "updated "+updated;
+}
+// 1) instant paint from the Action-committed snapshot
+fetch("poll.json",{cache:"no-store"}).then(r=>r.json())
+  .then(d=>render(d, d.updated)).catch(()=>{});
+// 2) then try a live (unauthenticated) refresh straight from GitHub
+fetch(`https://api.github.com/repos/${REPO}/issues/${ISSUE}`,
+      {headers:{Accept:"application/vnd.github+json"}})
+  .then(r=>r.ok?r.json():Promise.reject())
+  .then(d=>render({plus:d.reactions["+1"],minus:d.reactions["-1"],eyes:d.reactions.eyes}, "just now"))
+  .catch(()=>{});
+</script>
+</div></body></html>

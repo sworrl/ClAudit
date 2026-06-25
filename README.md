@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.7-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.8-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -34,6 +34,24 @@ You don't change how you work. ClAudit quietly builds the case. The more devs ru
 pattern is to ignore. **That's** how this gets fixed.
 
 → It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
+
+---
+
+### 🔮 Will Anthropic fix it?
+
+Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
+
+<!-- POLL:START -->
+**Will Anthropic fix Claude Code's false-positive blocking — or will it stay broken?**  ·  _1 vote(s), updated 2026-06-25 09:33 UTC_
+
+| | | |
+|---|---:|---|
+| 👍 Anthropic will fix it | `░░░░░░░░░░` | **0%** (0) |
+| 👎 Claude Code stays broken | `░░░░░░░░░░` | **0%** (0) |
+| 👀 Too soon to tell | `██████████` | **100%** (1) |
+
+🗳️ **[Cast your vote →](https://github.com/sworrl/ClAudit/issues/6)** — react 👍 / 👎 / 👀 on the pinned issue (or vote in one click from the ClAudit app).
+<!-- POLL:END -->
 
 <div align="center">
 

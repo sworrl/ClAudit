@@ -255,6 +255,23 @@ class RepoStatsFetcher(QtCore.QThread):
         self.fetched.emit(d)
 
 
+class PollWorker(QtCore.QThread):
+    """Fetch the community-poll tally, or cast/switch the user's vote, off the UI thread."""
+    done = QtCore.pyqtSignal(dict)
+
+    def __init__(self, vote=None):
+        super().__init__()
+        self.vote = vote   # None -> just read counts; else 'plus'/'minus'/'eyes'
+
+    def run(self):
+        try:
+            counts = cs.poll_vote(self.vote) if self.vote else cs.poll_counts()
+        except Exception as e:
+            print("poll:", e, file=sys.stderr)
+            counts = {}
+        self.done.emit(counts or {})
+
+
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Issue", "Author", "Created", "Title"]
@@ -351,7 +368,8 @@ class Main(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(board, "Issues")
         self.tabs.addTab(self._build_stats_tab(), "Project")
-        self.tabs.currentChanged.connect(lambda i: self._fetch_stats() if i == 1 else None)
+        self.tabs.currentChanged.connect(
+            lambda i: (self._fetch_stats(), self._fetch_poll()) if i == 1 else None)
 
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
@@ -375,6 +393,7 @@ class Main(QtWidgets.QMainWindow):
         self.update_timer.timeout.connect(self._check_updates)
         self.update_timer.start(60000)
         self._fetch_stats()
+        self._fetch_poll()
         self.refresh()
 
     def _check_updates(self):
@@ -466,9 +485,53 @@ class Main(QtWidgets.QMainWindow):
                               else "Backfill paused.")
 
     # ---- project stats tab ----
+    def _build_poll_panel(self):
+        box = QtWidgets.QGroupBox("🔮 Will Anthropic fix it?  —  community vote")
+        g = QtWidgets.QVBoxLayout(box)
+        self.poll_total = QtWidgets.QLabel("Loading the vote…")
+        self.poll_total.setObjectName("subtle")
+        self.poll_total.setWordWrap(True)
+        g.addWidget(self.poll_total)
+        row = QtWidgets.QHBoxLayout()
+        self.poll_btns = {}
+        for key, _content, emoji, meaning in cs.POLL_OPTS:
+            b = QtWidgets.QPushButton(f"{emoji} {meaning}\n—")
+            b.setMinimumHeight(48)
+            b.clicked.connect(lambda _, k=key: self._cast_vote(k))
+            self.poll_btns[key] = b
+            row.addWidget(b)
+        g.addLayout(row)
+        return box
+
+    def _fetch_poll(self):
+        self._pw = PollWorker()
+        self._pw.done.connect(self._on_poll)
+        self._pw.start()
+
+    def _cast_vote(self, key):
+        for b in self.poll_btns.values():
+            b.setEnabled(False)
+        self.poll_total.setText("Casting your vote on the pinned issue…")
+        self._pw = PollWorker(vote=key)
+        self._pw.done.connect(self._on_poll)
+        self._pw.start()
+
+    def _on_poll(self, c):
+        for b in self.poll_btns.values():
+            b.setEnabled(True)
+        total = c.get("total", 0)
+        t = total or 1
+        for key, _content, emoji, meaning in cs.POLL_OPTS:
+            n = c.get(key, 0)
+            self.poll_btns[key].setText(f"{emoji} {meaning}\n{round(100 * n / t)}%  ·  {n}")
+        self.poll_total.setText(
+            f"{total} vote(s) · click an option to cast or switch your vote "
+            "(one 👍/👎/👀 reaction on the pinned issue)")
+
     def _build_stats_tab(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
+        v.addWidget(self._build_poll_panel())
         self.stats_summary = QtWidgets.QLabel("Loading project stats…")
         self.stats_summary.setObjectName("brand")
         self.stats_summary.setWordWrap(True)

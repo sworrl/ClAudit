@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.7"
+__version__ = "2.0.8"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -446,6 +446,58 @@ def gh_create(repo, title, body):
 def gh_comment(repo, issue, body):
     subprocess.run(["gh", "issue", "comment", issue, "-R", repo, "--body", body],
                    capture_output=True, text=True, check=True)
+
+
+# ---------------- community poll (reaction-based vote on the pinned issue) ----------------
+POLL_REPO = "sworrl/ClAudit"
+POLL_ISSUE = 6
+# label, GitHub reaction `content`, emoji, short meaning
+POLL_OPTS = [("plus", "+1", "👍", "Anthropic will fix it"),
+             ("minus", "-1", "👎", "Claude Code stays broken"),
+             ("eyes", "eyes", "👀", "Too soon to tell")]
+
+
+def _gh_json(args):
+    """Run `gh <args>` and parse stdout as JSON; return None on any failure."""
+    try:
+        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=30)
+        return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
+    except Exception:
+        return None
+
+
+def gh_login():
+    """Current authenticated GitHub login, or '' if unknown."""
+    d = _gh_json(["api", "user", "--jq", "{login: .login}"])
+    return (d or {}).get("login", "") if isinstance(d, dict) else ""
+
+
+def poll_counts():
+    """{'plus','minus','eyes','total'} from the pinned poll issue's reaction summary."""
+    d = _gh_json(["api", f"/repos/{POLL_REPO}/issues/{POLL_ISSUE}",
+                  "--jq", '{plus: .reactions."+1", minus: .reactions."-1", eyes: .reactions.eyes}']) or {}
+    c = {k: int(d.get(k) or 0) for k in ("plus", "minus", "eyes")}
+    c["total"] = c["plus"] + c["minus"] + c["eyes"]
+    return c
+
+
+def poll_vote(choice, me=None):
+    """Cast/switch the user's vote. `choice` in {'plus','minus','eyes'}. Enforces one vote per
+    user: add the chosen reaction, then remove that user's OTHER poll reactions. Returns counts."""
+    content = dict((o[0], o[1]) for o in POLL_OPTS)[choice]
+    me = me or gh_login()
+    subprocess.run(["gh", "api", "-X", "POST",
+                    f"/repos/{POLL_REPO}/issues/{POLL_ISSUE}/reactions", "-f", f"content={content}"],
+                   capture_output=True, text=True)
+    valid = {o[1] for o in POLL_OPTS}
+    for r in (_gh_json(["api", "--paginate",
+                        f"/repos/{POLL_REPO}/issues/{POLL_ISSUE}/reactions"]) or []):
+        if ((r.get("user") or {}).get("login") == me and r.get("content") in valid
+                and r.get("content") != content):
+            subprocess.run(["gh", "api", "-X", "DELETE",
+                            f"/repos/{POLL_REPO}/issues/{POLL_ISSUE}/reactions/{r['id']}"],
+                           capture_output=True, text=True)
+    return poll_counts()
 
 
 def file_one(f, note, repo, state):

@@ -1,0 +1,25 @@
+{
+  "plus": 0,
+  "minus": 0,
+  "eyes": 1,
+  "total": 1,
+  "updated": "2026-06-25 09:33 UTC",
+  "issue": "https://github.com/sworrl/ClAudit/issues/6",
+  "options": [
+    {
+      "key": "plus",
+      "emoji": "\ud83d\udc4d",
+      "meaning": "Anthropic will fix it"
+    },
+    {
+      "key": "minus",
+      "emoji": "\ud83d\udc4e",
+      "meaning": "Claude Code stays broken"
+    },
+    {
+      "key": "eyes",
+      "emoji": "\ud83d\udc40",
+      "meaning": "Too soon to tell"
+    }
+  ]
+}

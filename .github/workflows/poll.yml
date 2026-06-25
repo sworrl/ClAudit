@@ -1,0 +1,37 @@
+name: Refresh community poll
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly, on the :17
+  workflow_dispatch: {}     # manual "Run workflow" button
+
+permissions:
+  contents: write           # commit the refreshed README block + poll.json
+
+concurrency:
+  group: poll
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Render poll tally
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # gh api auth (reads issue reactions)
+        run: python scripts/render_poll.py
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- README.md docs/poll.json; then
+            git add README.md docs/poll.json
+            git commit -m "chore: refresh community poll tally [skip ci]"
+            git push
+          else
+            echo "poll unchanged"
+          fi
