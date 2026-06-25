@@ -484,6 +484,14 @@ class Main(QtWidgets.QMainWindow):
             cw.setLayout(c)
             cols.addWidget(cw)
         v.addLayout(cols, 1)
+        legend = QtWidgets.QLabel(
+            "Stargazers by recency: <span style='color:#3fb950'>■ today</span> &nbsp;"
+            "<span style='color:#5eead4'>■ this week</span> &nbsp;"
+            "<span style='color:#4aa3ff'>■ this month</span> &nbsp;"
+            "<span style='color:#a371f7'>■ this quarter</span> &nbsp;"
+            "<span style='color:#6b7280'>■ older</span>")
+        legend.setObjectName("subtle")
+        v.addWidget(legend)
         b = QtWidgets.QPushButton("Refresh stats")
         b.clicked.connect(self._fetch_stats)
         v.addWidget(b)
@@ -501,9 +509,22 @@ class Main(QtWidgets.QMainWindow):
             f"⭐ {d.get('stars', 0)} stars  ·  🍴 {d.get('forks', 0)} forks  ·  👁 {d.get('watchers', 0)} watchers"
             f"  ·  👥 {o.get('followers', 0)} followers  ·  📦 {o.get('public_repos', '?')} repos")
         self.lst_stars.clear()
-        for s in d.get("stargazers", []):
-            self.lst_stars.addItem(f"⭐ {s.get('login', '?')}   {(s.get('at') or '')[:10]}")
-        if not d.get("stargazers"):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # newest stars first, color-coded by recency
+        gazers = sorted(d.get("stargazers", []), key=lambda s: s.get("at") or "", reverse=True)
+        for s in gazers:
+            at = s.get("at") or ""
+            item = QtWidgets.QListWidgetItem(f"⭐ {s.get('login', '?')}   {at[:10]}")
+            try:
+                days = (now - datetime.datetime.fromisoformat(at.replace("Z", "+00:00"))).days
+                color = ("#3fb950" if days <= 1 else "#5eead4" if days <= 7 else
+                         "#4aa3ff" if days <= 30 else "#a371f7" if days <= 90 else "#6b7280")
+                item.setForeground(QtGui.QColor(color))
+                item.setToolTip(f"starred {days}d ago")
+            except Exception:
+                pass
+            self.lst_stars.addItem(item)
+        if not gazers:
             self.lst_stars.addItem("(no stars yet — be the first!)")
         self.lst_followers.clear()
         for fl in d.get("followers", []):
