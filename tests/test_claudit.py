@@ -113,3 +113,22 @@ def test_file_one_files_once(monkeypatch):
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)
+
+
+def test_block_message_is_scrubbed():
+    f = _finding()
+    f["block_text"] = "blocked while contacting 10.0.0.9 over ssh badhost"
+    _, body = cs.build_issue(f, "")
+    assert "10.0.0.9" not in body                   # block message must be PII-scrubbed too
+
+
+def test_harness_block_shows_reason_only_not_command():
+    f = _finding(kind="harness", req=None)
+    f["occ"][0]["req"] = None
+    f["block_text"] = ("Permission for this action was denied by the Claude Code auto mode classifier. "
+                       "Reason: writing to a production host. If you have other tasks that don't depend "
+                       "on this. scp /tmp/x HOST:/tmp/x && ssh HOST 'run it'")
+    _, body = cs.build_issue(f, "")
+    assert "writing to a production host" in body
+    assert "scp /tmp/x" not in body                 # never echo the quoted command
+    assert "If you have other tasks" not in body

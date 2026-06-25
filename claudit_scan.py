@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -358,7 +358,13 @@ def build_issue(f, note):
         title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
     req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
     note_clean, _ = scrub(note or DEFAULT_NOTE)
-    block_clean = TOKEN.sub("token=[SCRUBBED]", f["block_text"]).strip()[:500]
+    # Full PII scrub on the block message (was token-only — leaked IPs/hosts/paths).
+    block_clean = scrub(TOKEN.sub("token=[SCRUBBED]", f["block_text"]))[0].strip()[:500]
+    if f["kind"] == "harness":
+        # Show ONLY the classifier's stated reason — never the quoted command (infra/sketch risk).
+        m = re.search(r"Reason:\s*(.+?)(?:\.\s|\n|If you have|$)", f["block_text"])
+        block_clean = (scrub(m.group(1).strip())[0][:300] if m
+                       else "(auto-mode classifier denial — see Request IDs)")
     leadup = f.get("leadup") or []
     leadup_md = "\n".join(f"**{role}:** {scrub(re.sub(chr(10), ' ', txt))[0]}"
                           for role, txt in leadup) or "_(not captured)_"
