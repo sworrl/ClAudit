@@ -42,7 +42,7 @@ pattern is to ignore. **That's** how this gets fixed.
 Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
-**Will Anthropic fix Claude Code's false-positive blocking — or will it stay broken?**  ·  _1 vote(s), updated 2026-06-25 09:33 UTC_
+**Will Anthropic fix Claude Code's false-positive blocking — or will it stay broken?**  ·  _1 vote(s), updated 2026-06-25 09:34 UTC_
 
 | | | |
 |---|---:|---|
