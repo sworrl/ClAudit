@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -88,12 +89,12 @@ class Watcher(QtCore.QThread):
         self.backfill_interval = backfill_interval
         self.backfill_max = backfill_max
         self.bf_done = 0
+        self.last_bf = 0.0                  # monotonic time of last backfill drip (for the GUI countdown)
 
     def run(self):
-        import time as _t
+        _t = time
         with STATE_LOCK:
             cs.ensure_baseline(self.state)
-        last_bf = 0.0
         while self._run:
             try:
                 with STATE_LOCK:
@@ -104,8 +105,8 @@ class Watcher(QtCore.QThread):
                 if n:
                     self.acted.emit(n, "auto" if self.auto else "queued")
                 capped = self.backfill_max and self.bf_done >= self.backfill_max
-                if self.backfill and not capped and _t.monotonic() - last_bf >= self.backfill_interval * 60:
-                    last_bf = _t.monotonic()
+                if self.backfill and not capped and _t.monotonic() - self.last_bf >= self.backfill_interval * 60:
+                    self.last_bf = _t.monotonic()
                     with STATE_LOCK:
                         b = cs.backfill_step(self.state, self.repo, 1, lambda *a: None)
                     if b:
@@ -212,8 +213,11 @@ class Main(QtWidgets.QMainWindow):
         self.btn_report.setObjectName("primary")
         self.btn_report.clicked.connect(self.report_pending)
 
+        self.bf_label = QtWidgets.QLabel("Backfill: —")
+        self.bf_label.setObjectName("subtle")
         bar = QtWidgets.QHBoxLayout()
         bar.addWidget(self.status, 1)
+        bar.addWidget(self.bf_label)
         bar.addWidget(self.btn_report)
         bar.addWidget(btn_refresh)
         header = QtWidgets.QWidget()
@@ -246,7 +250,24 @@ class Main(QtWidgets.QMainWindow):
         self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
+        self.bf_timer = QtCore.QTimer(self)
+        self.bf_timer.timeout.connect(self._update_bf)
+        self.bf_timer.start(1000)
         self.refresh()
+
+    def _update_bf(self):
+        w = self.watcher
+        if not w or not w.backfill:
+            self.bf_label.setText("Backfill: off")
+            return
+        backlog = cs.backlog_size(self.state)
+        cap = f" (cap {w.backfill_max})" if w.backfill_max else ""
+        if backlog == 0:
+            self.bf_label.setText(f"Backfill: done · {w.bf_done} filed{cap}")
+            return
+        nxt = max(0, w.backfill_interval * 60 - (time.monotonic() - w.last_bf))
+        self.bf_label.setText(f"Backfill: {w.bf_done} filed · {backlog} left{cap} · next in "
+                              f"{int(nxt // 60)}:{int(nxt % 60):02d}")
 
     # ---- tray ----
     def _build_tray(self, auto, backfill):
