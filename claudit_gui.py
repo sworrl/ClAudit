@@ -235,6 +235,80 @@ class DefendAllWorker(QtCore.QThread):
         self.finished_n.emit(n)
 
 
+class ScrubListDialog(QtWidgets.QDialog):
+    """View / add / remove terms in the local PII denylist (~/.claude/claudit/scrub.txt)."""
+    PATH = os.path.expanduser("~/.claude/claudit/scrub.txt")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("PII denylist")
+        self.resize(440, 480)
+        if os.path.exists(cs.ICON):
+            self.setWindowIcon(QtGui.QIcon(cs.ICON))
+        v = QtWidgets.QVBoxLayout(self)
+        info = QtWidgets.QLabel(
+            "Names, orgs, hostnames, codenames — anything the regex can't know — are scrubbed from "
+            "<b>every</b> report before it's filed. Word-boundary, case-insensitive. This file is "
+            "<b>local only</b> and never committed.")
+        info.setObjectName("subtle")
+        info.setWordWrap(True)
+        v.addWidget(info)
+        self.lst = QtWidgets.QListWidget()
+        self.lst.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        v.addWidget(self.lst, 1)
+        row = QtWidgets.QHBoxLayout()
+        self.inp = QtWidgets.QLineEdit()
+        self.inp.setPlaceholderText("add a term and press Enter…")
+        self.inp.returnPressed.connect(self._add)
+        badd = QtWidgets.QPushButton("Add")
+        badd.setObjectName("primary")
+        badd.clicked.connect(self._add)
+        brem = QtWidgets.QPushButton("Remove selected")
+        brem.clicked.connect(self._remove)
+        row.addWidget(self.inp, 1)
+        row.addWidget(badd)
+        row.addWidget(brem)
+        v.addLayout(row)
+        self.count = QtWidgets.QLabel("")
+        self.count.setObjectName("subtle")
+        v.addWidget(self.count)
+        self._load()
+
+    def _terms(self):
+        return [self.lst.item(i).text() for i in range(self.lst.count())]
+
+    def _load(self):
+        self.lst.clear()
+        if os.path.exists(self.PATH):
+            for line in open(self.PATH):
+                t = line.strip()
+                if t and not t.startswith("#"):
+                    self.lst.addItem(t)
+        self.lst.sortItems()
+        self.count.setText(f"{self.lst.count()} term(s) · {self.PATH}")
+
+    def _save(self):
+        terms = self._terms()
+        os.makedirs(os.path.dirname(self.PATH), exist_ok=True)
+        with open(self.PATH, "w") as fh:
+            fh.write("\n".join(terms) + ("\n" if terms else ""))
+        claudit._EXTRA = None              # invalidate cache so the running watcher reloads it
+        self.count.setText(f"{len(terms)} term(s) · {self.PATH}")
+
+    def _add(self):
+        t = self.inp.text().strip()
+        if t and not self.lst.findItems(t, QtCore.Qt.MatchFlag.MatchFixedString):
+            self.lst.addItem(t)
+            self.lst.sortItems()
+            self.inp.clear()
+            self._save()
+
+    def _remove(self):
+        for it in self.lst.selectedItems():
+            self.lst.takeItem(self.lst.row(it))
+        self._save()
+
+
 class RepoStatsFetcher(QtCore.QThread):
     """Fetch ClAudit's own repo stats: stars (+ who starred), forks, watchers, owner followers."""
     fetched = QtCore.pyqtSignal(dict)
@@ -475,6 +549,8 @@ class Main(QtWidgets.QMainWindow):
         self.act_llm.setCheckable(True)
         self.act_llm.setChecked(claudit.LLM_SCRUB)
         self.act_llm.toggled.connect(self._toggle_llm)
+        menu.addSeparator()
+        menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
         menu.addAction("Show window", self.showNormal)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -486,6 +562,9 @@ class Main(QtWidgets.QMainWindow):
         self.tray.activated.connect(lambda r: self.setVisible(not self.isVisible())
                                     if r == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger else None)
         self.tray.show()
+
+    def _edit_scrub(self):
+        ScrubListDialog(self).exec()
 
     def _toggle_auto(self, on):
         if not self.watcher:
@@ -580,9 +659,16 @@ class Main(QtWidgets.QMainWindow):
             "<span style='color:#6b7280'>■ older</span>")
         legend.setObjectName("subtle")
         v.addWidget(legend)
+        brow = QtWidgets.QHBoxLayout()
         b = QtWidgets.QPushButton("Refresh stats")
         b.clicked.connect(self._fetch_stats)
-        v.addWidget(b)
+        bscrub = QtWidgets.QPushButton("🔒 Edit PII denylist…")
+        bscrub.setToolTip("Manage the local scrub.txt — names/orgs/hostnames redacted from every report")
+        bscrub.clicked.connect(self._edit_scrub)
+        brow.addWidget(b)
+        brow.addWidget(bscrub)
+        brow.addStretch(1)
+        v.addLayout(brow)
         return w
 
     def _fetch_stats(self):
