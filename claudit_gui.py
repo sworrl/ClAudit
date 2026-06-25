@@ -13,6 +13,7 @@ Run:  python3 claudit_gui.py [--interval 30] [-R owner/repo] [--auto]
 """
 
 import argparse
+import datetime
 import json
 import os
 import subprocess
@@ -26,6 +27,17 @@ import claudit  # noqa: E402  (LLM_SCRUB flag)
 import claudit_scan as cs  # noqa: E402
 
 STATE_LOCK = threading.Lock()
+
+
+def fmt_ts(iso):
+    """ISO 8601 UTC (e.g. 2026-06-25T06:45:24Z) -> local 'YYYY-MM-DD HH:MM:SS'."""
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return iso.replace("T", " ")[:19]
 
 STYLE = """
 * { font-size: 14px; }
@@ -154,9 +166,9 @@ class CommunityFetcher(QtCore.QThread):
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Issue", "Author", "Created", "Title"]
 
-    def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max, view=False):
+    def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max):
         super().__init__()
-        self.repo, self.state, self.view = repo, cs.load_state(), view
+        self.repo, self.state = repo, cs.load_state()
         self.findings, self.community, self.me = {}, [], ""
         self.setWindowTitle(f"ClAudit v{cs.__version__} — false-positive blocks")
         self.resize(880, 460)
@@ -231,14 +243,9 @@ class Main(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
 
         self._build_tray(auto, backfill)
-        self.watcher = None
-        if not view:        # --view is a read-only community dashboard: no watcher, posts nothing
-            self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
-            self.watcher.acted.connect(self._on_acted)
-            self.watcher.start()
-        else:
-            self.btn_report.setVisible(False)
-            sub.setText(f"v{cs.__version__} · community board (read-only)")
+        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
+        self.watcher.acted.connect(self._on_acted)
+        self.watcher.start()
         self.refresh()
 
     # ---- tray ----
@@ -298,8 +305,7 @@ class Main(QtWidgets.QMainWindow):
 
     # ---- data ----
     def refresh(self):
-        if not self.view:
-            threading.Thread(target=self._scan_then, daemon=True).start()
+        threading.Thread(target=self._scan_then, daemon=True).start()
         f = CommunityFetcher(self.repo)
         f.fetched.connect(self._on_community)
         f.start()
@@ -339,7 +345,7 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if needle and needle not in title.lower():
                 continue
-            created = (it.get("createdAt", "") or "")[:10]
+            created = fmt_ts(it.get("createdAt", ""))
             rows.append((it.get("createdAt", ""), st, f"#{it['number']}", author, created, title, it.get("url", "")))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
@@ -433,8 +439,6 @@ def main():
                    help="minutes between backfilled issues (default 10)")
     p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
                    help="stop backfilling after N issues (0 = no cap)")
-    p.add_argument("--view", action="store_true",
-                   help="read-only community dashboard (no watcher, posts nothing)")
     p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",
                    help="force Claude-assisted PII scrubbing on (skip the startup prompt)")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
@@ -464,13 +468,12 @@ def main():
         if remember.isChecked():
             cfg["llm_scrub"] = on
             cs.save_config(cfg)
-    # Only the watching modes are single-instance; the read-only viewer can run alongside.
-    if not args.view and not cs.acquire_singleton():
+    if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
         return
     w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval,
-             args.backfill_max, view=args.view)
+             args.backfill_max)
     if not args.hidden:
         w.show()
     sys.exit(app.exec())
