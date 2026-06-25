@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -741,6 +741,12 @@ def dedup_guard(repo, limit, apply):
             continue
         distinct += 1
         if apply:
+            cid = flag.get("id")   # 👎 the dup-bot comment (its own offered "not a dupe" signal)
+            if cid:
+                subprocess.run(["gh", "api", "graphql", "-f",
+                                f'query=mutation{{addReaction(input:{{subjectId:"{cid}",'
+                                f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
+                               capture_output=True, text=True)
             body = scrub(f"Not a duplicate {('of ' + v.get('of', '')) if v.get('of') else ''} — "
                          f"{v.get('reason', '')} Distinct operation; see the Request IDs above. "
                          f"(Auto-assessed by ClAudit; PII-scrubbed.)")[0]
