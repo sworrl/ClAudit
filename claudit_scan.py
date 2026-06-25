@@ -35,6 +35,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claudit  # noqa: E402  (LLM_SCRUB flag + llm_redact)
 from claudit import scrub  # noqa: E402  (reuse the PII scrubber)
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
@@ -43,7 +44,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -55,6 +56,17 @@ TOKEN = re.compile(r"token=[A-Za-z0-9_\-]+")
 FILE_KINDS = {
     "cyber": "Cybersecurity safety-filter false positive",
     "aup": "AUP / Usage-Policy block (false positive)",
+    "harness": "Claude Code harness / auto-mode classifier denial",
+}
+
+WHY = {
+    "cyber": ("Legitimate, in-scope security / defensive / administration work was flagged by the "
+              "cybersecurity-topic safety classifier — pattern-matched on terminology, not on any "
+              "harmful intent. Securing or administering one's own systems is the opposite of attacking them."),
+    "aup": ("A benign, in-scope request was flagged as a Usage-Policy violation — a false positive on "
+            "ordinary, authorized work."),
+    "harness": ("The Claude Code auto-mode classifier denied an action during legitimate, authorized work; "
+                "see the reason and leadup below."),
 }
 
 
@@ -112,6 +124,30 @@ def reqs_of(f):
     return out
 
 
+def harness_denial(entry):
+    """Text of a Claude Code auto-mode-classifier denial (a tool_result error), or None."""
+    if entry.get("type") != "user":
+        return None
+    content = (entry.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    for b in content:
+        if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+            continue
+        tc = b.get("content")
+        if isinstance(tc, str):
+            text = tc
+        elif isinstance(tc, list):
+            text = "\n".join(x.get("text", "") for x in tc
+                             if isinstance(x, dict) and x.get("type") == "text")
+        else:
+            text = ""
+        low = text.lower()
+        if "auto mode classifier" in low or "permission for this action was denied" in low:
+            return text.strip()
+    return None
+
+
 def assistant_text(entry):
     """Text of a normal (non-error) assistant turn, for capturing conversation leadup."""
     if entry.get("type") != "assistant" or entry.get("isApiErrorMessage"):
@@ -146,6 +182,18 @@ def scan():
                         if hp:
                             last_prompt = hp
                             recent.append(("user", hp[:300]))
+                            continue
+                        hd = harness_denial(entry)
+                        if hd:
+                            ts = entry.get("timestamp", "")
+                            log_lines.append(json.dumps({"kind": "harness", "ts": ts,
+                                                         "session": name, "req": None}))
+                            s = sig("harness", hd[:300])
+                            f = findings.setdefault(s, {"sig": s, "kind": "harness",
+                                                        "prompt": last_prompt or "(no preceding prompt)",
+                                                        "occ": [], "block_text": hd, "leadup": list(recent)})
+                            f["occ"].append({"req": None, "ts": ts, "session": name,
+                                             "proj": os.path.basename(root)})
                             continue
                         err = error_text(entry)
                         if err is None:
@@ -219,6 +267,23 @@ def acquire_singleton():
     return True
 
 
+CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
+
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=1)
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as fh:
@@ -236,6 +301,28 @@ def save_state(state):
         json.dump(state, fh, indent=1, sort_keys=True)
 
 
+DOMAIN_PATTERNS = [
+    ("cloud-iam", re.compile(r"\b(entra|azure ad|tenant|conditional access|app role|app registration|service principal|okta|oauth|iam)\b", re.I)),
+    ("defensive-hardening", re.compile(r"\b(harden|hardening|mfa|firewall|edr|blue team|patch|cis benchmark|least privilege|lockdown)\b", re.I)),
+    ("reverse-engineering", re.compile(r"\b(disassemble|decompile|ghidra|ida pro|opcode|unpack|reverse engineer)\b", re.I)),
+    ("infra-devops", re.compile(r"\b(kubernetes|docker|terraform|nginx|ansible|systemd|hypervisor|reverse proxy)\b", re.I)),
+    ("web-security", re.compile(r"\b(xss|sql injection|sqli|csrf|ssrf|burp|owasp)\b", re.I)),
+    ("offensive-pentest", re.compile(r"\b(exploit|payload|msfvenom|metasploit|shellcode|reverse shell|\bc2\b|privilege escalation|lateral movement)\b", re.I)),
+    ("crypto-secrets", re.compile(r"\b(encrypt|decrypt|private key|certificate|tls|keystore)\b", re.I)),
+    ("malware-forensics", re.compile(r"\b(malware|forensic|memory dump|yara|incident response|ioc)\b", re.I)),
+]
+
+
+def categorize(f):
+    """Heuristic work-domain tag for the report (helps triage which classifier over-fires)."""
+    text = (f.get("prompt", "") + " " + f.get("block_text", "") + " "
+            + " ".join(t for _, t in (f.get("leadup") or []))).lower()
+    for cat, pat in DOMAIN_PATTERNS:
+        if pat.search(text):
+            return cat
+    return "general"
+
+
 def project_label(encoded):
     """Turn a ~/.claude/projects dir name into a readable path with the username scrubbed."""
     return scrub("/" + encoded.strip("-").replace("-", "/"))[0]
@@ -247,10 +334,14 @@ def build_issue(f, note):
     sessions = len({o["session"] for o in f["occ"]})
     projects = sorted({project_label(o["proj"]) for o in f["occ"] if o.get("proj")})
     proj = projects[0].rstrip("/").split("/")[-1] if projects else "unknown"
-    lead = reqs[0]["req"] if reqs else "no-req-id"
-    # [Bug] first (issue template), then kind; ClAudit-tagged + project + unique Request ID
-    # so distinct findings read as distinct.
-    title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
+    # [Bug] first (issue template), then kind; ClAudit-tagged + a distinct discriminator.
+    if f["kind"] == "harness":
+        m = re.search(r"Reason:\s*(.+?)(?:\.\s|\n|$)", f["block_text"])
+        reason = (m.group(1).strip()[:70] if m else f"#{f['sig']}")
+        title = f"[Bug][harness] ClAudit: auto-mode classifier denied — {reason}"
+    else:
+        lead = reqs[0]["req"] if reqs else f"#{f['sig']}"
+        title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
     req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
     note_clean, _ = scrub(note or DEFAULT_NOTE)
     proj_lines = "\n".join(f"- `{p}`" for p in projects) or "- (unknown)"
@@ -259,10 +350,13 @@ def build_issue(f, note):
     leadup = f.get("leadup") or []
     leadup_md = "\n".join(f"**{role}:** {scrub(re.sub(chr(10), ' ', txt))[0]}"
                           for role, txt in leadup) or "_(not captured)_"
-    body = f"""**Type:** {FILE_KINDS[f['kind']]}
+    body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
-A server-side safety/policy block fired during authorized, in-scope security work in
-Claude Code. Filing as a false positive. Recurred **{len(f['occ'])}×** across {sessions}
+### Why this is a false positive
+{WHY.get(f['kind'], WHY['cyber'])}
+
+A server-side safety/policy block fired during authorized, in-scope work in Claude Code.
+Filing as a false positive. Recurred **{len(f['occ'])}×** across {sessions}
 session(s); first seen {first_ts}.
 
 ### Request IDs (lookup-able server-side)
@@ -292,7 +386,8 @@ Project path(s) where the block fired (username scrubbed):
 
 ---
 <sub>🔎 Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) — a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
-    return title, body
+    # opt-in LLM pass catches PII the regex can't (no-op unless claudit.LLM_SCRUB is on)
+    return claudit.llm_redact(title), claudit.llm_redact(body)
 
 
 def log_issue(f, repo, url):
@@ -478,23 +573,29 @@ def backlog_size(state):
                if not s.startswith("__") and r.get("issue") is None)
 
 
+def _latest_ts(f):
+    return max((o["ts"] for o in f["occ"] if o["ts"]), default="")
+
+
 def backfill_step(state, repo, n, on_event):
-    """File up to n backlog items this call. Returns how many were filed."""
+    """File up to n backlog items this call, MOST-RECENT blocks first (so the blocks you're
+    actively hitting get reported before stale ones). Returns how many were filed."""
     findings, _ = scan()
+    backlog = [f for f in findings.values()
+               if (state.get(f["sig"]) or {}).get("issue", "x") is None]
+    backlog.sort(key=_latest_ts, reverse=True)
     done = 0
-    for f in findings.values():
+    for f in backlog:
         if done >= n:
             break
-        rec = state.get(f["sig"])
-        if rec and rec.get("issue") is None:
-            try:
-                ev = backfill_one(f, repo, state)
-            except Exception as e:
-                print(f"  ! backfill {f['sig']}: {e}", file=sys.stderr)
-                continue
-            if ev:
-                on_event(*ev)
-                done += 1
+        try:
+            ev = backfill_one(f, repo, state)
+        except Exception as e:
+            print(f"  ! backfill {f['sig']}: {e}", file=sys.stderr)
+            continue
+        if ev:
+            on_event(*ev)
+            done += 1
     return done
 
 
@@ -568,7 +669,11 @@ def main():
     p.add_argument("--delay", type=float, default=3, help="secs between posts (default 3)")
     p.add_argument("--limit", type=int, default=0, help="max findings this run (0 = all)")
     p.add_argument("-R", "--repo", default=DEFAULT_REPO, help=f"target repo (default {DEFAULT_REPO})")
+    p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",
+                   help="also use the `claude` CLI to scrub PII the regex can't (slower, uses tokens)")
     args = p.parse_args()
+    if args.llm_scrub:
+        claudit.LLM_SCRUB = True
     state = load_state()
 
     if args.baseline:

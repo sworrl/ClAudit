@@ -1,0 +1,12 @@
+# claudit scrub denylist — EXAMPLE. Copy to ~/.claude/claudit/scrub.txt and edit.
+#
+# Add any names the regex scrubbers can't know about: your company / org, Azure or Entra
+# tenant names, client names, internal hostnames, project codenames, people's names, etc.
+# Each non-comment line is redacted (whole-word, case-insensitive) to [REDACTED] before any
+# issue is posted. Keep this list LOCAL — do not commit your real names to a public repo.
+
+# AcmeCorp
+# Acme Corporation
+# contoso          # an Entra tenant name
+# build-server-01  # an internal hostname
+# Jane Doe         # a teammate's name

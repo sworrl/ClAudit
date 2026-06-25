@@ -22,6 +22,7 @@ import threading
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claudit  # noqa: E402  (LLM_SCRUB flag)
 import claudit_scan as cs  # noqa: E402
 
 STATE_LOCK = threading.Lock()
@@ -116,36 +117,35 @@ class Reporter(QtCore.QThread):
         self.done.emit(n)
 
 
-class StatusFetcher(QtCore.QThread):
-    """Fetch GitHub open/closed state for the authored issues, in one gh call."""
-    fetched = QtCore.pyqtSignal(dict)
+class CommunityFetcher(QtCore.QThread):
+    """Fetch ALL false-positive issues on the repo (every author, open + closed)."""
+    fetched = QtCore.pyqtSignal(list)
 
     def __init__(self, repo):
         super().__init__()
         self.repo = repo
 
     def run(self):
-        states = {}
+        items = []
         try:
             out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--author", "@me",
-                 "--state", "all", "--limit", "500", "--json", "number,state,title"],
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "200",
+                 "--search", "false positive in:title", "--json", "number,state,title,author,url"],
                 capture_output=True, text=True, check=True).stdout
-            for it in json.loads(out):
-                states[str(it["number"])] = (it["state"], it["title"])
+            items = json.loads(out)
         except Exception as e:
-            print("status fetch failed:", e, file=sys.stderr)
-        self.fetched.emit(states)
+            print("community fetch failed:", e, file=sys.stderr)
+        self.fetched.emit(items)
 
 
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
-    COLS = ["", "Type", "Issue / Queue", "GitHub", "Req IDs", "Hits", "Detail"]
+    COLS = ["", "Issue", "Author", "Title"]
 
-    def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max):
+    def __init__(self, repo, interval, auto, backfill, backfill_interval, backfill_max, view=False):
         super().__init__()
-        self.repo, self.state = repo, cs.load_state()
-        self.findings, self.gh_states = {}, {}
+        self.repo, self.state, self.view = repo, cs.load_state(), view
+        self.findings, self.community = {}, []
         self.setWindowTitle(f"ClAudit v{cs.__version__} — false-positive blocks")
         self.resize(880, 460)
         if os.path.exists(cs.ICON):
@@ -158,8 +158,9 @@ class Main(QtWidgets.QMainWindow):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.doubleClicked.connect(self._show_detail)
-        self.empty = QtWidgets.QLabel("🔎  Watching for false-positive blocks…\nNothing filed yet.",
+        self.table.doubleClicked.connect(self._open_row)
+        self.table.clicked.connect(self._open_row)
+        self.empty = QtWidgets.QLabel("🔎  Loading false-positive issues…",
                                       self.table.viewport())
         self.empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.empty.setStyleSheet("color:#6b7280; font-size:15px; background:transparent;")
@@ -201,9 +202,14 @@ class Main(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
 
         self._build_tray(auto, backfill)
-        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
-        self.watcher.acted.connect(self._on_acted)
-        self.watcher.start()
+        self.watcher = None
+        if not view:        # --view is a read-only community dashboard: no watcher, posts nothing
+            self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
+            self.watcher.acted.connect(self._on_acted)
+            self.watcher.start()
+        else:
+            self.btn_report.setVisible(False)
+            sub.setText(f"v{cs.__version__} · community board (read-only)")
         self.refresh()
 
     # ---- tray ----
@@ -223,6 +229,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_backfill.setCheckable(True)
         self.act_backfill.setChecked(backfill)
         self.act_backfill.toggled.connect(self._toggle_backfill)
+        self.act_llm = menu.addAction("Claude PII scrubbing")
+        self.act_llm.setCheckable(True)
+        self.act_llm.setChecked(claudit.LLM_SCRUB)
+        self.act_llm.toggled.connect(self._toggle_llm)
         menu.addAction("Show window", self.showNormal)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -236,11 +246,22 @@ class Main(QtWidgets.QMainWindow):
         self.tray.show()
 
     def _toggle_auto(self, on):
+        if not self.watcher:
+            return
         self.watcher.auto = on
         self.tray.showMessage("ClAudit", "Auto-post ENABLED — new blocks file automatically."
                               if on else "Auto-post disabled — blocks queue for review.")
 
+    def _toggle_llm(self, on):
+        claudit.LLM_SCRUB = on
+        cfg = cs.load_config()
+        cfg["llm_scrub"] = on
+        cs.save_config(cfg)
+        self.tray.showMessage("ClAudit", f"Claude PII scrubbing {'ON' if on else 'OFF'} (saved).")
+
     def _toggle_backfill(self, on):
+        if not self.watcher:
+            return
         self.watcher.backfill = on
         self.tray.showMessage("ClAudit", f"Backfill ENABLED — drip-filing old backlog "
                               f"(1 / {self.watcher.backfill_interval:g} min)." if on
@@ -248,9 +269,10 @@ class Main(QtWidgets.QMainWindow):
 
     # ---- data ----
     def refresh(self):
-        threading.Thread(target=self._scan_then, daemon=True).start()
-        f = StatusFetcher(self.repo)
-        f.fetched.connect(self._on_states)
+        if not self.view:
+            threading.Thread(target=self._scan_then, daemon=True).start()
+        f = CommunityFetcher(self.repo)
+        f.fetched.connect(self._on_community)
         f.start()
         self._fetcher = f  # keep ref
 
@@ -261,43 +283,49 @@ class Main(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def _repopulate(self):
-        rows = []
-        pend = set(cs.pending_sigs(self.state))
-        for sig in pend:                                   # queued, not yet filed
-            f = self.findings.get(sig, {})
-            rows.append(("queued", f.get("kind", "?"), "QUEUED", "—",
-                         len(cs.reqs_of(f)) if f else 0, len(f.get("occ", [])) if f else 0, sig))
-        for sig, rec in self.state.items():                # filed
-            if sig.startswith("__") or not rec.get("issue"):
-                continue
-            num = rec["issue"]
-            gh_state, _ = self.gh_states.get(num, ("?", ""))
-            rows.append((gh_state.lower(), rec.get("kind", "?"), f"#{num}", gh_state,
-                         len(rec.get("reqs", [])), len(self.findings.get(sig, {}).get("occ", [])), sig))
-
         DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922"}
+        rows = []   # (state, issue_label, author, title, url)
+        pend = set(cs.pending_sigs(self.state))
+        for sig in pend:                                   # your queued-but-unfiled blocks
+            f = self.findings.get(sig, {})
+            kind = f.get("kind", "?")
+            snippet = (cs.scrub(f.get("prompt", ""))[0])[:80] if f else ""
+            rows.append(("queued", "QUEUED", "you", f"[{kind}] {snippet}", ""))
+        for it in self.community:                          # everyone's reported issues
+            rows.append((it.get("state", "").lower(), f"#{it['number']}",
+                         (it.get("author") or {}).get("login", "—"), it.get("title", ""), it.get("url", "")))
+
         self.table.setRowCount(len(rows))
-        for r, (st, kind, ref, ghs, nreq, hits, sig) in enumerate(rows):
-            for c, val in enumerate(["●", kind, ref, ghs, str(nreq), str(hits), "▸"]):
+        for r, (st, num, author, title, url) in enumerate(rows):
+            for c, val in enumerate(["●", num, author, title]):
                 item = QtWidgets.QTableWidgetItem(val)
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, sig)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
+                item.setToolTip("Click to open in browser" if url else "Not filed yet")
                 if c == 0:
                     item.setForeground(QtGui.QColor(DOT.get(st, "#6b7280")))
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(3, max(360, self.table.columnWidth(3)))
         self.empty.setGeometry(self.table.viewport().rect())
+        self.empty.setText("No false-positive issues found.")
         self.empty.setVisible(len(rows) == 0)
-        npend = len(pend)
-        nfiled = sum(1 for s, rc in self.state.items() if not s.startswith("__") and rc.get("issue"))
-        self.status.setText(f"{npend} queued · {nfiled} reported · repo {self.repo}")
-        self.btn_report.setEnabled(npend > 0)
-        self.act_pending.setText(f"Report {npend} pending")
-        self.act_pending.setEnabled(npend > 0)
+        nopen = sum(1 for it in self.community if it.get("state", "").lower() == "open")
+        self.status.setText(f"{len(pend)} queued · {len(self.community)} community issues "
+                            f"({nopen} open) · {self.repo}")
+        self.btn_report.setEnabled(len(pend) > 0)
+        self.act_pending.setText(f"Report {len(pend)} pending")
+        self.act_pending.setEnabled(len(pend) > 0)
 
-    def _on_states(self, states):
-        self.gh_states = states
+    def _on_community(self, items):
+        self.community = items
         self._repopulate()
+
+    def _open_row(self, idx):
+        item = self.table.item(idx.row(), 0)
+        url = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else ""
+        if url:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     def _on_acted(self, n, kind):
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
@@ -322,35 +350,15 @@ class Main(QtWidgets.QMainWindow):
                                               self.refresh()))
         self.reporter.start()
 
-    def _show_detail(self, idx):
-        sig = self.table.item(idx.row(), 0).data(QtCore.Qt.ItemDataRole.UserRole)
-        f = self.findings.get(sig, {})
-        rec = self.state.get(sig, {})
-        reqs = "\n".join(f"  • {o['req']}  ({o['ts']})" for o in cs.reqs_of(f)) or "  (none captured)"
-        block = cs.TOKEN.sub("token=[SCRUBBED]", f.get("block_text", "(n/a)"))[:600]
-        hint = (cs.scrub(f.get("prompt", ""))[0])[:400]
-        url = rec.get("url") or "(not filed yet)"
-        text = (f"Type: {f.get('kind', rec.get('kind', '?'))}\n"
-                f"Issue: {('#' + rec['issue']) if rec.get('issue') else 'QUEUED (not filed)'}\n"
-                f"URL: {url}\n\nRequest IDs:\n{reqs}\n\nBlock message:\n  {block}\n\n"
-                f"Prompt hint (unreliable):\n  {hint}")
-        dlg = QtWidgets.QMessageBox(self)
-        dlg.setWindowTitle("Block detail")
-        dlg.setText(text)
-        if rec.get("url"):
-            ob = dlg.addButton("Open on GitHub", QtWidgets.QMessageBox.ButtonRole.ActionRole)
-            ob.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(rec["url"])))
-        dlg.addButton(QtWidgets.QMessageBox.StandardButton.Close)
-        dlg.exec()
-
-    def closeEvent(self, e):     # close to tray, keep watching
+    def closeEvent(self, e):     # close to tray, keep running
         e.ignore()
         self.hide()
-        self.tray.showMessage("ClAudit", "Still watching in the tray.")
+        self.tray.showMessage("ClAudit", "Still running in the tray.")
 
     def _quit(self):
-        self.watcher.stop()
-        self.watcher.wait(1500)
+        if self.watcher:
+            self.watcher.stop()
+            self.watcher.wait(1500)
         QtWidgets.QApplication.quit()
 
 
@@ -364,17 +372,44 @@ def main():
                    help="minutes between backfilled issues (default 10)")
     p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
                    help="stop backfilling after N issues (0 = no cap)")
+    p.add_argument("--view", action="store_true",
+                   help="read-only community dashboard (no watcher, posts nothing)")
+    p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",
+                   help="force Claude-assisted PII scrubbing on (skip the startup prompt)")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
     args = p.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)
-    if not cs.acquire_singleton():
+
+    # Claude-assisted PII scrubbing: CLI flag > saved choice > ask at startup (with "remember").
+    cfg = cs.load_config()
+    if args.llm_scrub:
+        claudit.LLM_SCRUB = True
+    elif "llm_scrub" in cfg:
+        claudit.LLM_SCRUB = bool(cfg["llm_scrub"])
+    else:
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Question, "ClAudit — PII scrubbing",
+                                    "Enable Claude-assisted PII scrubbing?\n\nUses the `claude` CLI to catch "
+                                    "names, org abbreviations, and hostnames the regex can't (slower, uses "
+                                    "tokens). Strongly recommended before posting publicly.")
+        remember = QtWidgets.QCheckBox("Remember my choice")
+        box.setCheckBox(remember)
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+        on = box.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+        claudit.LLM_SCRUB = on
+        if remember.isChecked():
+            cfg["llm_scrub"] = on
+            cs.save_config(cfg)
+    # Only the watching modes are single-instance; the read-only viewer can run alongside.
+    if not args.view and not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
         return
-    w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval, args.backfill_max)
+    w = Main(args.repo, args.interval, args.auto, args.backfill, args.backfill_interval,
+             args.backfill_max, view=args.view)
     if not args.hidden:
         w.show()
     sys.exit(app.exec())

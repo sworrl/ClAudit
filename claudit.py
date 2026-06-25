@@ -11,13 +11,16 @@ Default target repo is anthropics/claude-code; override with -R owner/repo.
 """
 
 import argparse
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 DEFAULT_REPO = "anthropics/claude-code"
+LLM_SCRUB = False   # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
 
 # (label, compiled pattern, replacement). Order matters: secrets/specific first.
 SCRUBBERS = [
@@ -27,9 +30,15 @@ SCRUBBERS = [
     ("aws key",       re.compile(r"AKIA[0-9A-Z]{16}"),           "[REDACTED_AWS_KEY]"),
     ("bearer token",  re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}"), "Bearer [REDACTED_TOKEN]"),
     ("jwt",           re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "[REDACTED_JWT]"),
+    ("private key",   re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL), "[REDACTED_PRIVATE_KEY]"),
+    ("db creds",      re.compile(r"\b(postgres|postgresql|mysql|mongodb|redis|amqp)://[^\s\"'@/]+:[^\s\"'@/]+@[^\s\"']+"), r"\1://[REDACTED_DB_CREDS]"),
+    ("slack webhook", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/]+"), "[SLACK_WEBHOOK]"),
+    ("mac",           re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b"), "[MAC]"),
     # exemption-form / generic ?token= blobs (e.g. claude.com/form/cyber-use-case?token=...)
     ("url token",     re.compile(r"(?i)([?&]token=)[A-Za-z0-9._\-]{16,}"), r"\1[REDACTED_TOKEN]"),
     ("email",         re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
+    # Azure/Entra tenant domains
+    ("tenant domain", re.compile(r"\b[A-Za-z0-9-]+\.onmicrosoft\.com\b"), "[TENANT]"),
     # home dirs -> keep the structure, drop the username
     ("home path",     re.compile(r"(/home/|/Users/|C:\\Users\\)[^/\\\s]+"), r"\1[USER]"),
     ("uuid",          re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"), "[UUID]"),
@@ -60,12 +69,57 @@ def read_input(args) -> str:
     return sys.stdin.read()
 
 
+_EXTRA = None
+
+
+def _extra_terms():
+    """User-defined names the regex can't know (org / tenant / client / project names).
+    One term per line in ~/.claude/claudit/scrub.txt; '#' lines are comments."""
+    global _EXTRA
+    if _EXTRA is None:
+        path = os.path.expanduser("~/.claude/claudit/scrub.txt")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                _EXTRA = [t.strip() for t in fh if t.strip() and not t.lstrip().startswith("#")]
+        except OSError:
+            _EXTRA = []
+        _EXTRA.sort(key=len, reverse=True)   # redact longer phrases before their substrings
+    return _EXTRA
+
+
+def llm_redact(text: str) -> str:
+    """Opt-in: ask the `claude` CLI to find PII the regex can't (names, org abbreviations,
+    hostnames, codenames). The model only IDENTIFIES terms; redaction is applied here
+    deterministically so it can't rewrite your content. Falls back to unchanged on any error."""
+    if not LLM_SCRUB or not shutil.which("claude") or not text.strip():
+        return text
+    prompt = (
+        "You are a strict PII redactor. From the TEXT below, return ONLY a JSON array of the EXACT "
+        "substrings that are identifying: real people's names, initials that stand for a name, "
+        "company/org/client names AND their abbreviations, tenant/domain names, internal hostnames, "
+        "project codenames, emails, IPs, secrets. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
+    try:
+        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        m = re.search(r"\[.*\]", out, re.DOTALL)
+        terms = json.loads(m.group(0)) if m else []
+    except Exception:
+        return text
+    for t in sorted({str(x) for x in terms if isinstance(x, str)}, key=len, reverse=True):
+        if len(t) >= 2:
+            text = re.sub(r"\b" + re.escape(t) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
+    return text
+
+
 def scrub(text: str):
     counts = {}
     for label, pattern, repl in SCRUBBERS:
         text, n = pattern.subn(repl, text)
         if n:
             counts[label] = counts.get(label, 0) + n
+    for term in _extra_terms():
+        text, n = re.subn(r"\b" + re.escape(term) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
+        if n:
+            counts["custom"] = counts.get("custom", 0) + n
     return text, counts
 
 
