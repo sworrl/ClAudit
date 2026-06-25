@@ -101,7 +101,7 @@ QListWidget::item:selected { background: #3a2f63; }
 class Watcher(QtCore.QThread):
     acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill"|"defend")
 
-    DEFEND_INTERVAL = 600                   # seconds between dedup-defender sweeps
+    DEFEND_INTERVAL = 240                   # seconds between dedup-defender sweeps (fast: 1 search/pass)
 
     def __init__(self, state, repo, interval, auto, backfill, backfill_interval, backfill_max,
                  defend=True):
