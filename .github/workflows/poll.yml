@@ -28,9 +28,9 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- README.md docs/poll.json; then
-            git add README.md docs/poll.json
-            git commit -m "chore: refresh community poll tally [skip ci]"
+          if ! git diff --quiet -- README.md docs/poll.json docs/counter.json; then
+            git add README.md docs/poll.json docs/counter.json
+            git commit -m "chore: refresh poll tally + live report counter [skip ci]"
             git push
           else
             echo "poll unchanged"

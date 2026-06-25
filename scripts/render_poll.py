@@ -11,6 +11,7 @@ Run by .github/workflows/poll.yml on a schedule; also runnable locally.
 import datetime
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,8 +20,25 @@ import claudit_scan as cs  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "README.md")
 POLL_JSON = os.path.join(ROOT, "docs", "poll.json")
+COUNTER_JSON = os.path.join(ROOT, "docs", "counter.json")
 START, END = "<!-- POLL:START -->", "<!-- POLL:END -->"
+CSTART, CEND = "<!-- COUNTER:START -->", "<!-- COUNTER:END -->"
 ISSUE_URL = f"https://github.com/{cs.POLL_REPO}/issues/{cs.POLL_ISSUE}"
+# Every ClAudit-filed issue body ends with this marker, so one repo-wide search counts
+# the open reports across ALL users (not just one).
+SEARCH_URL = (f"https://github.com/{cs.DEFAULT_REPO}/issues?q="
+              "is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22")
+
+
+def open_report_count():
+    """Live count of OPEN issues filed by ClAudit across all users (search API total_count)."""
+    q = f'repo:{cs.DEFAULT_REPO} "Filed automatically by ClAudit" is:issue is:open'
+    out = subprocess.run(["gh", "api", "-X", "GET", "search/issues", "-f", f"q={q}",
+                          "--jq", ".total_count"], capture_output=True, text=True)
+    try:
+        return int(out.stdout.strip())
+    except (ValueError, AttributeError):
+        return None
 
 
 def _bar(pct, cells=10):
@@ -52,6 +70,16 @@ def main():
                    "issue": ISSUE_URL,
                    "options": [{"key": k, "emoji": e, "meaning": m} for k, _c, e, m in cs.POLL_OPTS]},
                   fh, indent=2)
+    # live cross-user counter of open ClAudit-filed reports
+    n = open_report_count()
+    if n is not None:
+        with open(COUNTER_JSON, "w") as fh:   # shields.io endpoint badge
+            json.dump({"schemaVersion": 1, "label": "open false-positive reports",
+                       "message": f"{n}", "color": "red"}, fh, indent=2)
+        counter_block = (f"{CSTART}\n### 📊 {n} open false-positive blocks reported by ClAudit "
+                         f"right now\n\nAcross **all** ClAudit users, live from "
+                         f"[`anthropics/claude-code`]({SEARCH_URL}) · _updated {when} UTC_\n{CEND}")
+
     block = render_md(counts, when)
     with open(README) as fh:
         text = fh.read()
@@ -61,9 +89,16 @@ def main():
         text = pre + block + post
     else:
         sys.stderr.write("WARN: POLL markers not found in README; skipping README update\n")
+    if n is not None and CSTART in text and CEND in text:
+        pre, rest = text.split(CSTART, 1)
+        _old, post = rest.split(CEND, 1)
+        text = pre + counter_block + post
+    elif n is not None:
+        sys.stderr.write("WARN: COUNTER markers not found in README; skipping counter update\n")
     with open(README, "w") as fh:
         fh.write(text)
-    print(f"poll: 👍{counts['plus']} 👎{counts['minus']} 👀{counts['eyes']} (total {counts['total']})")
+    print(f"poll: 👍{counts['plus']} 👎{counts['minus']} 👀{counts['eyes']} (total {counts['total']}) "
+          f"| open reports: {n}")
 
 
 if __name__ == "__main__":
