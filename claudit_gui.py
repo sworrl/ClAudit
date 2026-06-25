@@ -215,6 +215,26 @@ class DedupWorker(QtCore.QThread):
         self.done.emit(self.num, ok)
 
 
+class DefendAllWorker(QtCore.QThread):
+    """Defend EVERY dup-bot-flagged open issue (👎 + 'not a duplicate' note), idempotent + paced."""
+    progress = QtCore.pyqtSignal(int, bool)   # (issue number, reaction landed)
+    finished_n = QtCore.pyqtSignal(int)       # total defended this sweep
+
+    def __init__(self, state, repo):
+        super().__init__()
+        self.state, self.repo = state, repo
+
+    def run(self):
+        n = 0
+        try:
+            with STATE_LOCK:
+                n = cs.defend_all(self.repo, self.state,
+                                  on_done=lambda num, ok: self.progress.emit(num, ok))
+        except Exception as e:
+            print("defend_all error:", e, file=sys.stderr)
+        self.finished_n.emit(n)
+
+
 class RepoStatsFetcher(QtCore.QThread):
     """Fetch ClAudit's own repo stats: stars (+ who starred), forks, watchers, owner followers."""
     fetched = QtCore.pyqtSignal(dict)
@@ -356,6 +376,11 @@ class Main(QtWidgets.QMainWindow):
         self.btn_dedup.setToolTip("On the selected issue, 👎 the dup-bot + post a 'not a duplicate' note (live)")
         self.btn_dedup.clicked.connect(self._dedup_selected)
         bar.insertWidget(2, self.btn_dedup)
+        self.btn_defend = QtWidgets.QPushButton("🛡 Defend all")
+        self.btn_defend.setToolTip("👎 + 'not a duplicate' note on EVERY dup-bot-flagged open issue "
+                                   "(idempotent, paced, live)")
+        self.btn_defend.clicked.connect(self._defend_all)
+        bar.insertWidget(3, self.btn_defend)
 
         board = QtWidgets.QWidget()
         bl = QtWidgets.QVBoxLayout(board)
@@ -626,6 +651,34 @@ class Main(QtWidgets.QMainWindow):
                 "ClAudit · dedup NOT posted",
                 f"The 👎 did not land on #{num} (no dup-bot comment, or the reaction "
                 "failed). Check the logs.", icon)
+        self.refresh()
+
+    def _defend_all(self):
+        if QtWidgets.QMessageBox.question(
+                self, "Defend all flagged issues",
+                f"👎 the dup-bot + post a 'not a duplicate' note on EVERY open issue on {self.repo} "
+                "that it flagged?\n\nThis is a live, bulk action under your account. It's paced and "
+                "idempotent (already-defended issues are skipped, no double-posts).") \
+                != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self.btn_defend.setEnabled(False)
+        self.btn_defend.setText("🛡 Defending…")
+        self._defw = DefendAllWorker(self.state, self.repo)
+        self._defw.progress.connect(self._on_defend_one)
+        self._defw.finished_n.connect(self._on_defend_done)
+        self._defw.start()
+
+    def _on_defend_one(self, num, ok):
+        self.btn_defend.setText(f"🛡 Defending #{num}…")
+
+    def _on_defend_done(self, n):
+        self.btn_defend.setEnabled(True)
+        self.btn_defend.setText("🛡 Defend all")
+        icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
+                else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
+        self.tray.showMessage("ClAudit · 🛡 dedup defended",
+                              f"Defended {n} flagged issue(s) on {self.repo} (👎 + 'not a duplicate')."
+                              if n else "No new flagged issues to defend — all caught up.", icon)
         self.refresh()
 
     # ---- data ----
