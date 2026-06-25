@@ -1,0 +1,9 @@
+# GUI (tray + window). Required only for claudit_gui.py.
+PyQt6>=6.5
+# Icon (re)generation only — scripts/gen-icon.py. Not needed at runtime.
+Pillow>=10.0
+#
+# Also required, but installed separately (not via pip):
+#   - GitHub CLI `gh`, authenticated:  https://cli.github.com/   ->  gh auth login
+#   - Python 3.9+
+# Optional (Linux desktop toasts): libnotify / notify-send

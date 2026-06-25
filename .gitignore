@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+# generated derivative of claudit_icon.png (see scripts/gen-icon.py)
+claudit_icon_256.png
+# local runtime state lives in ~/.claude/claudit/, never in the repo
