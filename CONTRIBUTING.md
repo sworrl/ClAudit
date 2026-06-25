@@ -29,7 +29,8 @@ hack on. State lives in `~/.claude/claudit/`; delete it to reset.
 - Keep changes focused; match the existing style (stdlib-first, no heavy deps in the core).
 - The core (`claudit_scan.py`, `claudit.py`) must stay importable without PyQt6.
 - CI runs `py_compile` + `ruff check --select E9,F63,F7,F82`. Run it locally before pushing.
-- Add a line to `CHANGELOG.md` and bump `__version__` for user-facing changes.
+- **Bump `__version__` (in `claudit_scan.py`) on every code change** — no exceptions — and add a
+  matching `CHANGELOG.md` line + update the README version badge.
 
 ## Ground rules
 
@@ -37,4 +38,4 @@ ClAudit reports **legitimate, in-scope** false positives. Don't add anything des
 repo, evade duplicate detection, or post content that isn't a genuine false positive. Quality over
 volume — that's the whole point.
 
-By contributing you agree your work is licensed under the project's [MIT License](LICENSE).
+By contributing you agree your work is licensed under the project's [GNU GPL v3.0](LICENSE).

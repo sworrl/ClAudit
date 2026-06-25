@@ -68,6 +68,9 @@ QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 QWidget#header { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 8px; }
 QLabel#brand { color: #f0f1f3; font-size: 17px; font-weight: 700; }
 QLabel#subtle { color: #9aa0a6; font-size: 12px; }
+QProgressBar#bf { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 7px;
+    text-align: center; color: #e6e8ec; font-weight: 600; }
+QProgressBar#bf::chunk { background: #8b5cf6; border-radius: 6px; }
 QComboBox, QLineEdit { background: #1b1e25; color: #e6e8ec; border: 1px solid #353b47;
     border-radius: 6px; padding: 5px 8px; }
 QComboBox::drop-down { border: 0; width: 18px; }
@@ -252,9 +255,15 @@ class Main(QtWidgets.QMainWindow):
         hl.addWidget(sub)
         hl.addStretch(1)
 
+        self.bf_bar = QtWidgets.QProgressBar()
+        self.bf_bar.setObjectName("bf")
+        self.bf_bar.setTextVisible(True)
+        self.bf_bar.setMinimumHeight(24)
+
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
         lay.addWidget(header)
+        lay.addWidget(self.bf_bar)
         lay.addLayout(filt)
         lay.addWidget(self.table, 1)
         lay.addLayout(bar)
@@ -270,21 +279,50 @@ class Main(QtWidgets.QMainWindow):
         self.board_timer = QtCore.QTimer(self)        # refresh the board as backfill posts
         self.board_timer.timeout.connect(self.refresh)
         self.board_timer.start(45000)
+        # self-restart on update: if the source files change (e.g. a git pull), relaunch with them
+        self._src = {f: os.path.getmtime(f) for f in (claudit.__file__, cs.__file__,
+                     os.path.abspath(__file__)) if os.path.exists(f)}
+        self.update_timer = QtCore.QTimer(self)
+        self.update_timer.timeout.connect(self._check_updates)
+        self.update_timer.start(15000)
         self.refresh()
+
+    def _check_updates(self):
+        for f, mt in self._src.items():
+            try:
+                if os.path.getmtime(f) != mt:
+                    self._restart()
+                    return
+            except OSError:
+                pass
+
+    def _restart(self):
+        self.tray.showMessage("ClAudit", "Update detected — restarting with the new version…")
+        if self.watcher:
+            self.watcher.stop()
+            self.watcher.wait(2000)
+        cs._release_singleton()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _update_bf(self):
         w = self.watcher
-        if not w or not w.backfill:
-            self.bf_label.setText("Backfill: off")
-            return
+        filed = sum(1 for s, r in self.state.items() if not s.startswith("__") and r.get("issue"))
         backlog = cs.backlog_size(self.state)
-        cap = f" (cap {w.backfill_max})" if w.backfill_max else ""
+        total = filed + backlog
+        self.bf_bar.setMaximum(max(total, 1))
+        self.bf_bar.setValue(filed)
+        if not w or not w.backfill:
+            self.bf_bar.setFormat(f"Backfill OFF · {filed}/{total} reported")
+            self.bf_label.setText("")
+            return
         if backlog == 0:
-            self.bf_label.setText(f"Backfill: done · {w.bf_done} filed{cap}")
+            self.bf_bar.setFormat(f"Backfill DONE · all {filed} reported")
+            self.bf_label.setText("")
             return
         nxt = max(0, w.bf_delay - (time.monotonic() - w.last_bf))
-        self.bf_label.setText(f"Backfill: {w.bf_done} filed · {backlog} left{cap} · "
-                              f"next {nxt:.0f}s (~{w.bf_delay:.0f}s/ea)")
+        self.bf_bar.setFormat(f"Backfilling  {filed}/{total}  ·  {backlog} left  ·  "
+                              f"next post in {nxt:.0f}s  (~{w.bf_delay:.0f}s each)")
+        self.bf_label.setText("")
 
     # ---- tray ----
     def _build_tray(self, auto, backfill):

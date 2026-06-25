@@ -97,16 +97,21 @@ def llm_redact(text: str) -> str:
         "You are a strict PII redactor. From the TEXT below, return ONLY a JSON array of the EXACT "
         "substrings that are identifying: real people's names, initials that stand for a name, "
         "company/org/client names AND their abbreviations, tenant/domain names, internal hostnames, "
-        "project codenames, emails, IPs, secrets. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
+        "project codenames, emails, IPs, secrets. "
+        "Do NOT include: Request IDs (anything starting with 'req_'), or the words Claude, Anthropic, "
+        "ClAudit, GitHub — those must stay. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
     try:
         out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
         m = re.search(r"\[.*\]", out, re.DOTALL)
         terms = json.loads(m.group(0)) if m else []
     except Exception:
         return text
-    for t in sorted({str(x) for x in terms if isinstance(x, str)}, key=len, reverse=True):
-        if len(t) >= 2:
-            text = re.sub(r"\b" + re.escape(t) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
+    # Hard guard: never redact Request IDs or the tool/vendor names, even if the model lists them.
+    protect = re.compile(r"^(req_[A-Za-z0-9]+|claudit|claude|anthropic|github|sworrl)$", re.IGNORECASE)
+    for t in sorted({str(x).strip() for x in terms if isinstance(x, str)}, key=len, reverse=True):
+        if len(t) < 2 or protect.match(t) or t.lower().startswith("req_"):
+            continue
+        text = re.sub(r"\b" + re.escape(t) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
     return text
 
 

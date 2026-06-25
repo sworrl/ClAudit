@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.3.0"
+__version__ = "1.5.0"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -169,8 +169,15 @@ def assistant_text(entry):
     return None
 
 
-def scan():
-    """Walk all sessions -> (findings dict[sig]->finding, logged-only counts)."""
+_SCAN_CACHE = {"t": -1e9, "val": None}
+
+
+def scan(ttl=0.0):
+    """Walk all sessions -> (findings dict[sig]->finding, logged-only counts).
+    With ttl>0, reuse the last result if it's younger than ttl seconds — backfill drips
+    re-scan hundreds of files otherwise, which is what made it crawl."""
+    if ttl and _SCAN_CACHE["val"] is not None and time.monotonic() - _SCAN_CACHE["t"] < ttl:
+        return _SCAN_CACHE["val"]
     findings, logged, log_lines = {}, {"overloaded": 0, "limit": 0, "other": 0}, []
     for root, _, files in os.walk(PROJECTS):
         for name in files:
@@ -393,8 +400,9 @@ Project path(s) where the block fired (username scrubbed):
 
 ---
 <sub>🔎 Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) — a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
-    # opt-in LLM pass catches PII the regex can't (no-op unless claudit.LLM_SCRUB is on)
-    return claudit.llm_redact(title), claudit.llm_redact(body)
+    # Title is built from already-scrubbed parts + the Request ID — regex/denylist scrub only
+    # (never the LLM, so the Request ID survives). Body gets the opt-in LLM pass.
+    return scrub(title)[0], claudit.llm_redact(body)
 
 
 def log_issue(f, repo, url):
@@ -546,7 +554,7 @@ def monitor_cycle(state, on_detect):
 def auto_cycle(state, repo, delay, on_event):
     """Auto-post pass: file every NEW finding, comment recurrences. Files nothing for
     baselined/already-filed findings. Returns count of actions taken."""
-    findings, _ = scan()
+    findings, _ = scan(ttl=8)
     acted = 0
     for f in findings.values():
         try:
@@ -591,7 +599,7 @@ RATE_LIMIT_HINTS = ("rate limit", "secondary", "abuse", "retry-after",
 def backfill_step(state, repo, n, on_event):
     """File up to n backlog items this call, MOST-RECENT blocks first. Returns
     (filed_count, rate_limited) so the caller can back off when GitHub pushes back."""
-    findings, _ = scan()
+    findings, _ = scan(ttl=8)
     backlog = [f for f in findings.values()
                if (state.get(f["sig"]) or {}).get("issue", "x") is None]
     backlog.sort(key=_latest_ts, reverse=True)

@@ -6,8 +6,8 @@
 
 **Catch false-positive Claude Code safety/policy blocks across all your sessions, scrub the PII, and file clean GitHub issues — automatically.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.3.0-brightgreen)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+![Version](https://img.shields.io/badge/version-1.4.0-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -147,7 +147,9 @@ ClAudit posts to a public repository under **your** GitHub identity. Please:
 
 ## License
 
-ClAudit is **free and open-source software (FOSS)**, released under the permissive
-**[MIT License](LICENSE)** — use it, fork it, modify it, redistribute it, commercially or not.
+ClAudit is **free and open-source software**, released under the
+**[GNU General Public License v3.0](LICENSE)** — a strong copyleft license: you may use, study,
+share, and modify it, but any derivative or larger work must also be GPL-3.0 and make its complete
+source available. Copyright and license notices must be preserved.
 
 © 2026 sworrl

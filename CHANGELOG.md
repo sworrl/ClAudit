@@ -3,6 +3,17 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [1.5.0] — 2026-06-25
+- **Relicensed to GNU GPL v3.0** (was MIT).
+- Self-restart on update: a running GUI watches its own source and relaunches when it changes
+  (e.g. after a `git pull`), so it's never running stale code.
+
+## [1.4.0] — 2026-06-25
+- **Fix:** LLM PII scrub no longer over-redacts — Request IDs (`req_…`) and the words Claude/
+  Anthropic/ClAudit/GitHub are hard-protected and always survive. Titles keep their Request ID.
+- Prominent backfill **progress bar** in the window (filed / total / next-drip / pace).
+- Performance: short scan cache so backfill doesn't re-read every session file per drip.
+
 ## [1.3.0] — 2026-06-25
 - **Fix:** resolve `gh`/`claude` on PATH when launched from a desktop icon (board was empty / posts silently failed under a minimal PATH).
 - Live blocks always post the moment they're seen, independent of the backfill schedule.
