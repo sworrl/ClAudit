@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.30"
+__version__ = "2.0.31"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -880,10 +880,11 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True):
         body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
                         "--body", claudit.llm_redact(body)], capture_output=True, text=True)
-    if c.returncode != 0:
+    posted = c.returncode == 0
+    if not posted:
         print(f"  ! note comment failed on #{num}: {(c.stderr or c.stdout).strip()[:200]}",
               file=sys.stderr)
-    return reacted
+    return posted          # whether the 'not a duplicate' NOTE actually landed (the real defense)
 
 
 def mark_not_duplicate(state, repo, num):
@@ -920,44 +921,45 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
     goes, there's just no comment to 👎). Idempotent (state['__deduped__']) and paced. No LLM gate:
     each ClAudit issue is already a distinct prompt + Request ID. Returns count defended."""
     deduped = state.setdefault("__deduped__", {})
-    try:
-        issues = json.loads(subprocess.run(
-            ["gh", "issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-             "--label", "duplicate", "--limit", str(limit or 500), "--json", "number,body"],
-            capture_output=True, text=True, check=True).stdout or "[]")
-    except Exception as e:
-        print(f"defend_all: cannot list issues: {e}", file=sys.stderr)
+    flagged = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
+                        "--label", "duplicate", "--limit", str(limit or 500), "--json", "number"])
+    if flagged is None:
+        print("defend_all: cannot list flagged issues", file=sys.stderr)
         return 0
+    flagged_nums = [it["number"] for it in flagged]
+    if not flagged_nums:
+        return 0
+    # GROUND TRUTH for what's already defended: ONE search (issues where I commented the note),
+    # instead of a slow per-issue view. This is what makes the sweep finish fast enough to run
+    # every cycle — and it can't wrongly skip a failed post, because failures aren't in the result.
+    me = gh_login()
+    sr = _gh_json(["search", "issues", "--repo", repo, f'"not a duplicate" commenter:{me}',
+                   "--limit", "1000", "--json", "number"]) or []
+    defended = {it["number"] for it in sr}
+    todo = [n for n in flagged_nums if n not in defended]
     done = 0
-    for it in issues:
-        num = it["number"]
-        if deduped.get(str(num)) == "not-duplicate":
-            continue                                    # already defended in a prior run
-        cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "comments"],
-                            capture_output=True, text=True).stdout
-        comments = (json.loads(cj or "{}").get("comments") or [])
+    for num in todo:
+        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
+        comments = data.get("comments") or []
         if any("not a duplicate" in c.get("body", "").lower() for c in comments):
-            deduped[str(num)] = "not-duplicate"         # already noted
-            save_state(state)
+            deduped[str(num)] = "not-duplicate"         # search lag — already noted
             continue
         flag = _dup_flag(comments)                      # None for a label-only flag — note still posts
-        of = ""
-        if flag:
-            m = re.search(r"#(\d+)", flag["body"])
-            of = f"#{m.group(1)}" if m else ""
-        reacted = _push_not_dup(
-            repo, num, flag.get("id") if flag else None, of,
+        m = re.search(r"#(\d+)", flag["body"]) if flag else None
+        posted = _push_not_dup(
+            repo, num, flag.get("id") if flag else None, f"#{m.group(1)}" if m else "",
             "this is a distinct false-positive block (its own Request ID) on the reporter's OWN "
             "authorized infrastructure — the classifier flagged in-scope administration of systems "
             "the reporter owns and operates, not an attack on anyone else's.",
-            it.get("body", ""), compose=compose)
-        deduped[str(num)] = "not-duplicate"
-        save_state(state)
-        done += 1
-        if on_done:
-            on_done(num, reacted)
-        time.sleep(delay)
-    print(f"defend_all: defended {done} issue(s).", file=sys.stderr)
+            data.get("body", ""), compose=compose)
+        if posted:                                      # only mark done on SUCCESS -> failures retry
+            deduped[str(num)] = "not-duplicate"
+            save_state(state)
+            done += 1
+            if on_done:
+                on_done(num, posted)
+            time.sleep(delay)
+    print(f"defend_all: {len(todo)} undefended, defended {done} this pass.", file=sys.stderr)
     return done
 
 
