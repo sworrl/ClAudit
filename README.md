@@ -7,7 +7,7 @@
 **Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues — automatically, continuously, and safely.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.6.4-brightgreen)
+![Version](https://img.shields.io/badge/version-1.6.5-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -33,6 +33,12 @@ You don't change how you work. ClAudit quietly builds the case. The more devs ru
 pattern is to ignore. **That's** how this gets fixed.
 
 → It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
+
+<div align="center">
+
+<img src="docs/screenshot.png" alt="ClAudit community dashboard — every false-positive issue, newest first, yours highlighted" width="780">
+
+</div>
 
 ---
 
@@ -94,9 +100,15 @@ scrub, and file dozens of these by hand. ClAudit does it for you.
 
 ## How it works (end to end)
 
-```
-~/.claude/projects/**/*.jsonl     →  scan & classify  →  dedup (by prompt)  →  PII scrub  →  gh issue
-   (your session transcripts)          cyber/aup/harness     one per finding      3 layers     create
+```mermaid
+flowchart LR
+    A["Claude Code sessions<br/>~/.claude/projects/**.jsonl"] --> B["scan &amp; classify<br/>cyber · aup · harness"]
+    B --> C["dedup<br/>one issue per request"]
+    C --> D["PII scrub<br/>regex · denylist · LLM"]
+    D --> E{"honesty gate<br/>genuine false positive?"}
+    E -- "yes" --> F["file GitHub issue<br/>with Request IDs"]
+    E -- "no — correct block" --> G["skip"]
+    B -. "rate limit / overloaded / usage cap" .-> H["log only, never sent"]
 ```
 
 1. **Scan.** Walk every session transcript on the machine.
