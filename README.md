@@ -4,10 +4,10 @@
 
 # ClAudit
 
-**Catch false-positive Claude Code safety/policy blocks across all your sessions, scrub the PII, and file clean GitHub issues — automatically.**
+**Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues — automatically, continuously, and safely.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.4.0-brightgreen)
+![Version](https://img.shields.io/badge/version-1.6.0-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -15,43 +15,128 @@
 
 ---
 
-## What it is
+### Claude Code just refused your perfectly legitimate work. Again.
 
-If you write code with Claude Code, you've hit this. Security work, sure — but honestly
-**any** code, anything touching computers, and sometimes things that have nothing to do with
-either (people report it on agriculture, on biology, on plain prose). A legitimate, in-scope
-request just gets stopped by a server-side block —
+Securing your own servers. Reviewing your own code. Hardening your own tenant. Debugging your own
+binary. And a safety classifier slammed the door — on the exact thing it's supposed to help you do.
+Double-press esc. Rephrase. Start a new session. Lose your context, lose your flow. **Every. Single.
+Day.**
+
+**Want it fixed? Then help prove it's broken.**
+
+Every one of those blocks carries a **Request ID** Anthropic can look up — which means every block is
+a fixable bug report waiting to happen. The problem is nobody hand-files dozens of them. So ClAudit
+does it *for* you: it watches your sessions, catches the false positives, **scrubs every trace of your
+PII**, and files clean, specific, deduplicated GitHub issues — automatically, while you keep working.
+
+You don't change how you work. ClAudit quietly builds the case. The more devs run it, the harder the
+pattern is to ignore. **That's** how this gets fixed.
+
+→ It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
+
+---
+
+## Table of contents
+
+- [What ClAudit is](#what-claudit-is)
+- [Why it exists](#why-it-exists)
+- [How it works](#how-it-works-end-to-end)
+- [PII protection (read this)](#pii-protection-read-this)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [The GUI](#the-gui)
+- [The CLI watcher](#the-cli-watcher)
+- [Backfill](#backfill-clearing-your-backlog)
+- [Burn-tokens mode](#burn-tokens-mode)
+- [Dedup guard](#dedup-guard)
+- [Manual one-off filing](#manual-one-off-filing)
+- [Configuration](#configuration)
+- [Auto-update & self-restart](#auto-update--self-restart)
+- [Autostart](#autostart)
+- [Local data & state](#local-data--state)
+- [Responsible use](#responsible-use)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## What ClAudit is
+
+ClAudit is a small, FOSS desktop tool that watches the session transcripts Claude Code writes to
+`~/.claude/projects/**/*.jsonl`, detects the **server-side blocks** that stop legitimate work, and
+turns them into **clean, deduplicated, PII-scrubbed GitHub issues** so the false positives actually
+get seen and fixed. It ships as a **PyQt6 tray app with a live community dashboard** and an
+equivalent **headless CLI watcher**.
+
+It is deliberately **not** a spam tool. It logs-and-ignores transient noise (rate limits, overloaded,
+usage caps), files **at most one issue per distinct blocked request**, runs **single-instance**, and
+defaults to **review-before-send** — and its strongest mode (**burn-tokens**) has Claude itself write
+each report so no raw transcript text is ever echoed into a public issue.
+
+## Why it exists
+
+If you write code with Claude Code, you've hit this. Security work, sure — but honestly **any** code,
+anything touching computers, and sometimes things that have nothing to do with either (people report
+it on agriculture, on biology, on plain prose). A legitimate, in-scope request just gets stopped by a
+server-side block:
 
 > `API Error: Opus has safety measures that flagged this message for a cybersecurity topic.`
 > `API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy.`
+> `Permission for this action was denied by the Claude Code auto mode classifier.`
 
-Each of those carries a **Request ID** that Anthropic can look up server-side — which makes
-it a genuinely actionable false-positive report. ClAudit watches your Claude Code session
-logs, finds those blocks, **deduplicates** them, **scrubs PII**, and files them as GitHub
-issues (with the Request IDs attached) so the false positives actually get seen.
+Each carries a **Request ID** that Anthropic can look up server-side — which makes each one a
+genuinely actionable false-positive report. The friction is that nobody is going to copy-paste,
+scrub, and file dozens of these by hand. ClAudit does it for you.
 
-It is **not** a spam tool. It logs-and-ignores transient noise (rate limits, overloaded,
-usage caps), files at most one issue per distinct blocked request, runs **single-instance**,
-and defaults to **review-before-send**.
-
-## How it works
+## How it works (end to end)
 
 ```
-~/.claude/projects/**/*.jsonl   →  scan & classify  →  dedup (by prompt)  →  scrub PII  →  gh issue
-   (your session transcripts)        cyber / aup            one per finding      regex          create
+~/.claude/projects/**/*.jsonl     →  scan & classify  →  dedup (by prompt)  →  PII scrub  →  gh issue
+   (your session transcripts)          cyber/aup/harness     one per finding      3 layers     create
 ```
 
-- **Files issues for:** cybersecurity safety-filter blocks, AUP / Usage-Policy blocks.
-- **Logs but never sends:** overloaded/529, rate-limit, usage-limit, and any other API error
-  (written to `~/.claude/claudit/error-log.jsonl`).
-- **Dedup:** findings are keyed by the triggering prompt, so retries of the same request
-  collapse into one issue with all Request IDs attached. A persistent state file
-  (`~/.claude/claudit/filed.json`) means reruns never double-post.
-- **Single-instance:** a PID lockfile guarantees only one watcher runs — no races, no doubles.
-- **Conversation leadup:** the few turns *before* each block are captured, PII-scrubbed, and
-  included in the issue (and a local `~/.claude/claudit/issues.jsonl` database of everything filed).
-- **Backfill:** drip-file your existing backlog slowly (one issue every N minutes) *while* the
-  watcher keeps insta-posting genuinely new blocks — so you catch up without tripping spam limits.
+1. **Scan.** Walk every session transcript on the machine.
+2. **Classify.** Three reportable kinds:
+   - `cyber` — cybersecurity safety-filter blocks.
+   - `aup` — AUP / Usage-Policy blocks.
+   - `harness` — Claude Code auto-mode-classifier denials (`Permission … denied`).
+   Everything else (overloaded/529, rate-limit, usage-limit, connection errors) is **logged and never
+   sent** — it's transient noise, not a bug.
+3. **Dedup.** Findings are keyed by the triggering prompt, so retries of the same request collapse
+   into **one** issue with all its Request IDs attached. A persistent state file means reruns never
+   double-post, and a single-instance lock means two watchers can't race.
+4. **Scrub.** Three layers (see below).
+5. **File.** A new issue per distinct finding, or a comment when a known one recurs with new Request
+   IDs. Every issue links back to this repo and records the ClAudit version that filed it.
+
+## PII protection (read this)
+
+ClAudit posts to a **public** repository under **your** GitHub identity, so PII hygiene is the single
+most important thing. There are **three layers**, strongest last:
+
+1. **Regex scrubbers.** Emails, IPs, API keys (Anthropic/OpenAI/AWS), GitHub & Bearer tokens, JWTs,
+   private keys, DB connection strings, Slack webhooks, MACs, UUIDs, phone numbers, Entra tenant
+   domains, home-directory usernames — **including the dash-encoded form** Claude Code uses in
+   `claude-1000` task dirs and session paths (`-var-home-USER-…`).
+2. **Your local denylist.** Names the regex can't possibly know: your org, tenant names, client
+   names, internal hostnames, project codenames, teammates' names. One per line in
+   `~/.claude/claudit/scrub.txt` (copy `scrub.txt.example`). **This file is local — never committed.**
+3. **Burn-tokens mode — the strongest defense, and the recommended one.** Instead of echoing raw
+   transcript text into the issue, ClAudit has the `claude` CLI **write a bespoke, generic description**
+   of what was blocked — explicitly instructed to include **no** names, hosts, IPs, tenants, or paths.
+   Because the report is *composed* rather than *copied*, sensitive operational detail (security
+   posture, infrastructure specifics, conversation context) simply never makes it into the post. The
+   output is then run back through layers 1 and 2 as a safety net. **If you care about PII, turn
+   burn-tokens on** — it is the best way to prevent leaks.
+
+> Request IDs (`req_…`) and the words Claude / Anthropic / ClAudit / GitHub are **hard-protected** and
+> never redacted, so reports stay actionable.
+
+By default the public report contains only: the block type + work-domain tag, a short
+"why it's a false positive," the Request IDs, your in-scope justification, and the block message.
+The raw conversation leadup and project paths are kept in your **local** database only — not posted.
 
 ## Install
 
@@ -59,65 +144,125 @@ and defaults to **review-before-send**.
 git clone https://github.com/sworrl/ClAudit.git
 cd ClAudit
 pip install -r requirements.txt        # PyQt6 (GUI) + Pillow (icon regen)
-gh auth login                          # GitHub CLI must be authenticated
+gh auth login                          # the GitHub CLI must be authenticated
+git config core.hooksPath scripts/githooks   # (contributors) auto-bump version on commit
 ```
 
-Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated).
-The GUI needs **PyQt6**. Desktop toasts use `notify-send` on Linux, `osascript` on macOS, and
-PowerShell on Windows (best-effort; the GUI's tray notifications are cross-platform).
+Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
+for the GUI, and — to actually use burn-tokens / LLM scrub — the **`claude`** CLI on your PATH.
 
-## Usage
-
-### GUI (recommended) — tray icon + issue dashboard
+## Quick start
 
 ```bash
-python3 claudit_gui.py                 # notify-only: queues blocks, you click "Report pending"
-python3 claudit_gui.py --auto          # auto-file new blocks as they appear
+python3 claudit_scan.py --baseline     # run ONCE: mark existing blocks seen so you don't flood the backlog
+python3 claudit_gui.py                  # launch the tray app + dashboard
 ```
 
-A system-tray icon (native StatusNotifier — works on KDE/GNOME/Windows/macOS) plus a window
-listing **queued** and **reported** issues with their live GitHub **open/closed** status.
-Double-click any row to see its Request IDs, block message, and a link. Closing the window
-keeps it watching in the tray. Toggle auto-post from the tray menu.
+On first GUI launch you'll be asked whether to enable Claude-assisted PII scrubbing (with a
+"remember my choice" box). Say yes. Then turn on burn-tokens (below) for the safest reports.
 
-### CLI — headless watcher
+## The GUI
+
+`python3 claudit_gui.py [--auto] [--backfill] [--burn-tokens] [-R owner/repo]`
+
+A native system-tray icon (Qt StatusNotifier — renders on KDE/GNOME/Windows/macOS) plus a window
+that shows **every false-positive issue on the repo** (all authors, open + closed):
+
+- **Newest first**, with **exact local timestamps**.
+- **Filters:** Mine / All, Open / Closed, and a title search.
+- **Ownership colors:** your issues in purple, other ClAudit users' in teal.
+- **Click any row** to open the issue in your browser.
+- A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
+- Tray menu toggles for **Auto-post**, **Backfill**, and **Claude PII scrubbing** (all saved).
+
+Closing the window keeps it running in the tray.
+
+## The CLI watcher
+
+The headless equivalent of the GUI watcher:
 
 ```bash
-python3 claudit_scan.py --baseline     # mark existing blocks as seen (run once; files nothing)
-python3 claudit_scan.py --watch        # notify-only: detect + queue new blocks
-python3 claudit_scan.py --watch --auto # auto-file new blocks
-python3 claudit_scan.py --watch --auto --backfill   # also drip-file the old backlog slowly
-python3 claudit_scan.py --pending      # list what's queued
-python3 claudit_scan.py --file-pending # file the queue (user-initiated)
-python3 claudit_scan.py --post         # one-shot: review the backlog in $EDITOR, then file
+python3 claudit_scan.py --watch              # notify-only: detect + queue new blocks
+python3 claudit_scan.py --watch --auto       # auto-file new blocks the instant they're seen
+python3 claudit_scan.py --watch --auto --backfill   # also drain the backlog (see below)
+python3 claudit_scan.py --pending            # list what's queued
+python3 claudit_scan.py --file-pending       # file the queue (user-initiated)
+python3 claudit_scan.py --post               # one-shot: review the backlog in $EDITOR, then file
 ```
+
+**Live blocks always post the moment they're seen**, independent of the backfill schedule.
 
 | Flag | Meaning |
 |------|---------|
 | `--watch` | Poll forever (default: notify-only) |
-| `--auto` | With `--watch`: auto-file instead of queuing |
-| `--backfill` | With `--watch`: slowly drip-file the baselined backlog (`--backfill-interval N` min, default 10; `--backfill-max N` to cap) |
+| `--auto` | With `--watch`: auto-file new blocks instead of queuing |
+| `--backfill` | With `--watch`: drip-file the baselined backlog while monitoring |
+| `--backfill-interval N` | Starting **seconds** between backfilled issues (auto-adapts; default 10) |
+| `--backfill-max N` | Stop backfilling after N issues this run (0 = no cap) |
 | `--baseline` | Mark all current findings seen, file nothing |
-| `--pending` / `--file-pending` | List / file the queue |
-| `--post` | Review backlog in `$EDITOR` then file |
+| `--burn-tokens` | Bespoke LLM-written reports — strongest PII defense |
+| `--llm-scrub` | Add the Claude PII pass on top of regex + denylist |
+| `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (see below) |
 | `-R owner/repo` | Target repo (default `anthropics/claude-code`) |
-| `--interval N` | Poll seconds (default 30) · `--delay N` between posts (default 3) |
 
-### Manual one-off — paste an issue, scrub it, file it
+## Backfill (clearing your backlog)
+
+When you `--baseline`, every block that already exists becomes a **backlog** item. With `--backfill`,
+ClAudit drip-files that backlog **newest-first** (so the blocks you're actively hitting get reported
+before stale ones) **while** the live watcher keeps insta-posting genuinely new blocks. The pace is
+**adaptive**: it starts at `--backfill-interval` seconds, creeps faster while GitHub is happy, and
+**backs off exponentially the moment GitHub rate-limits** — so it goes as fast as is safe without you
+tuning anything. The GUI shows the live count, what's left, and the next-drip countdown.
+
+## Burn-tokens mode
+
+`--burn-tokens` (or the saved config flag) tells ClAudit to **spend tokens to do each report well**:
+the `claude` CLI writes a **specific, bespoke title** (no `[REDACTED]` filler) and a tight, factual
+explanation of exactly what legitimate work was wrongly blocked. As covered above, this is also **the
+strongest PII protection** — the report is composed generically instead of echoing your transcript.
+It's slower and uses tokens (hence the name); it's the recommended mode for anyone who cares about
+either report quality or PII. Set it once in your config and forget it.
+
+## Dedup guard
+
+GitHub's duplicate bot flags similar issues and auto-closes them. `--dedup-guard` has the `claude` CLI
+**honestly judge, on the facts**, whether each flagged issue is genuinely a duplicate (same root
+cause) or genuinely distinct (different operation / Request ID):
 
 ```bash
-python3 claudit.py                     # paste text, Ctrl-D; scrubs PII, opens $EDITOR, files
-python3 claudit.py -f notes.md         # or from a file / -c for clipboard
+python3 claudit_scan.py --dedup-guard          # dry-run: print the LLM's verdict per flagged issue
+python3 claudit_scan.py --dedup-guard --apply  # comment ONLY on the genuinely-distinct ones
 ```
 
-## PII scrubbing
+It is **judge-first by default** — it prints verdicts and posts nothing until you add `--apply`. It
+cooperates with the maintainers' bot (it does not blanket-fight auto-closure); it only pushes back,
+with a bespoke factual comment, where the LLM finds a clear distinction.
 
-Before anything is posted, ClAudit redacts: API keys (Anthropic/OpenAI/AWS), GitHub & Bearer
-tokens, JWTs, emails, home-directory usernames, UUIDs, IPv4s, phone numbers, and exemption-link
-tokens. Request IDs are **kept** (they're the actionable part). Issues also include a best-effort,
-PII-scrubbed **work-context** line (e.g. `/…/Documents/GitHub/argus`, username stripped) so
-maintainers see the domain without leaking who you are. The scrubber is a safety net, not a
-guarantee — the `--post` and notify-only flows let you eyeball before sending.
+## Manual one-off filing
+
+```bash
+python3 claudit.py            # paste text, Ctrl-D; scrubs PII, opens $EDITOR, files
+python3 claudit.py -f notes.md   # from a file
+python3 claudit.py -c            # from the clipboard
+```
+
+## Configuration
+
+State and config live in `~/.claude/claudit/`:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | Saved prefs (`llm_scrub`, `burn_tokens`) |
+| `scrub.txt` | Your local PII denylist (never committed) |
+| `filed.json` | Dedup state: which findings/issues are filed/baselined |
+| `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
+| `error-log.jsonl` | Every classified block, including the logged-only kinds |
+
+## Auto-update & self-restart
+
+A running ClAudit GUI **watches its own source files** and **relaunches itself** when they change —
+so after a `git pull` (or any edit) it's never running stale code. Combined with a periodic pull, all
+users stay current automatically.
 
 ## Autostart
 
@@ -125,25 +270,46 @@ guarantee — the `--post` and notify-only flows let you eyeball before sending.
 - **Windows:** put a shortcut to `pythonw claudit_gui.py` in `shell:startup`.
 - **macOS:** add `claudit_gui.py` as a Login Item.
 
+## Local data & state
+
+Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversation leadup is kept
+**locally** in `issues.jsonl` for your own reference and is **not** included in public posts.
+
 ## Responsible use
 
-ClAudit posts to a public repository under **your** GitHub identity. Please:
+- Only report blocks on **genuinely in-scope, authorized** work.
+- **Use burn-tokens** (and keep your denylist current) before posting publicly — it's the best PII
+  defense.
+- Don't blast hundreds of near-identical issues; the dup-bot will (correctly) consolidate them.
+  Quality over volume — that's the whole point.
+- ClAudit posts under your account. Treat it like you'd treat your own GitHub voice.
 
-- Only report blocks on **genuinely in-scope, authorized** work. The default issue text states
-  exactly that — don't file things that aren't.
-- Keep **auto-post off** unless you trust the signal; review mode exists for a reason.
-- Don't disguise duplicates to evade GitHub's dedup — fix the dedup instead (ClAudit already does).
-- This is feedback tooling, not a megaphone. Quality over volume.
+## Troubleshooting
+
+- **Empty dashboard / nothing posts when launched from an icon:** `gh` wasn't on the desktop PATH.
+  ClAudit now adds the interpreter's bin dir to PATH automatically; update to ≥1.5.1.
+- **Titles show `[REDACTED]`:** that was an old over-redaction bug; update and use burn-tokens for
+  bespoke titles.
+- **Backfill looks frozen:** check the progress bar's pace — it backs off when GitHub rate-limits.
+- **PII slipped through:** add the term to `~/.claude/claudit/scrub.txt` and turn on burn-tokens; you
+  can re-scrub already-posted issues with `gh issue edit`.
 
 ## Project layout
 
 | File | Purpose |
 |------|---------|
-| `claudit_scan.py` | Watcher: scan, classify, dedup, file/queue, single-instance lock |
-| `claudit_gui.py` | PyQt6 tray app + issue dashboard |
-| `claudit.py` | Manual paste → scrub → file, and the shared PII scrubber |
+| `claudit_scan.py` | Watcher: scan, classify, dedup, file/backfill, dedup-guard, single-instance lock |
+| `claudit_gui.py` | PyQt6 tray app + community dashboard |
+| `claudit.py` | Manual paste → scrub → file, and the shared PII scrubber + LLM helpers |
 | `scripts/gen-icon.py` | Regenerate `claudit_icon.png` |
 | `scripts/install-linux.sh` | Install desktop launcher / autostart |
+| `scripts/githooks/pre-commit` | Auto-bump the version on every commit |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Core rules: keep the core importable without PyQt6, run
+`ruff check --select E9,F63,F7,F82` + `py_compile`, **bump `__version__` on every change** (the hook
+does it for you), and never add anything designed to spam a repo or evade duplicate detection.
 
 ## License
 

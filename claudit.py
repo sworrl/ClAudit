@@ -20,7 +20,24 @@ import sys
 import tempfile
 
 DEFAULT_REPO = "anthropics/claude-code"
-LLM_SCRUB = False   # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
+LLM_SCRUB = False    # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
+BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodies/comments
+
+
+def llm_compose(instruction, context, max_chars=3000):
+    """Burn-tokens mode: have the `claude` CLI write bespoke, well-crafted text (a title, a
+    summary, a comment). PII-free by instruction; the caller still runs scrub() as a safety net.
+    Returns None when burn-tokens is off / claude is unavailable / on any error."""
+    if not BURN_TOKENS or not shutil.which("claude") or not instruction:
+        return None
+    prompt = (instruction + "\n\nHARD RULE: do not include any names, organizations, hostnames, IPs, "
+              "emails, tenant names, file paths, or other identifying details — describe the work "
+              "generically. Output only the requested text, nothing else.\n\nCONTEXT:\n" + (context or "")[:max_chars])
+    try:
+        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=120).stdout.strip()
+        return out or None
+    except Exception:
+        return None
 
 # (label, compiled pattern, replacement). Order matters: secrets/specific first.
 SCRUBBERS = [

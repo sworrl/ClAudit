@@ -3,6 +3,12 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [1.6.0] — 2026-06-25
+- **Burn-tokens mode** (`--burn-tokens`): Claude writes a bespoke, specific title + explanation per report — the strongest PII defense (composed, not copied). On by default for the local config.
+- **PII hardening:** removed conversation-leadup, project-path, and prompt-hint sections from public posts (kept locally); scrub dash-encoded usernames; username/org added to the local denylist.
+- **Dedup guard** (`--dedup-guard [--apply]`): LLM judges dup-bot flags on facts; comments only on genuinely-distinct issues (dry-run by default).
+- GUI shows the running git commit; verbose README rewrite; pre-commit hook auto-bumps the version.
+
 ## [1.5.1] — 2026-06-25
 - **PII fix:** scrub usernames in dash-encoded session/tmp paths (`-var-home-USER-…`, the `claude-1000` task dirs) that the home-path regex missed. (Mitigated two already-posted issues.)
 

@@ -30,6 +30,16 @@ import claudit_scan as cs  # noqa: E402
 STATE_LOCK = threading.Lock()
 
 
+def git_commit():
+    """Short commit hash of the running checkout (so the GUI shows exactly what's deployed)."""
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+        return subprocess.run(["git", "-C", d, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
 def fmt_ts(iso):
     """ISO 8601 UTC (e.g. 2026-06-25T06:45:24Z) -> local 'YYYY-MM-DD HH:MM:SS'."""
     if not iso:
@@ -246,7 +256,8 @@ class Main(QtWidgets.QMainWindow):
             logo.setPixmap(QtGui.QIcon(cs.ICON).pixmap(26, 26))
         brand = QtWidgets.QLabel("ClAudit")
         brand.setObjectName("brand")
-        sub = QtWidgets.QLabel(f"v{cs.__version__} · false-positive block reporter")
+        _c = git_commit()
+        sub = QtWidgets.QLabel(f"v{cs.__version__}{(' · ' + _c) if _c else ''} · false-positive block reporter")
         sub.setObjectName("subtle")
         hl.addWidget(logo)
         hl.addSpacing(8)
@@ -518,6 +529,8 @@ def main():
                    help="stop backfilling after N issues (0 = no cap)")
     p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",
                    help="force Claude-assisted PII scrubbing on (skip the startup prompt)")
+    p.add_argument("--burn-tokens", dest="burn_tokens", action="store_true",
+                   help="bespoke LLM-written titles/bodies — the strongest PII defense")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
     args = p.parse_args()
 
@@ -545,6 +558,8 @@ def main():
         if remember.isChecked():
             cfg["llm_scrub"] = on
             cs.save_config(cfg)
+    if args.burn_tokens or cfg.get("burn_tokens"):
+        claudit.BURN_TOKENS = claudit.LLM_SCRUB = True   # bespoke LLM reports need the LLM
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

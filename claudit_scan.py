@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -358,16 +358,32 @@ def build_issue(f, note):
         title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
     req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
     note_clean, _ = scrub(note or DEFAULT_NOTE)
-    proj_lines = "\n".join(f"- `{p}`" for p in projects) or "- (unknown)"
-    hint, _ = scrub(re.sub(r"\s+", " ", f["prompt"])[:200])
     block_clean = TOKEN.sub("token=[SCRUBBED]", f["block_text"]).strip()[:500]
     leadup = f.get("leadup") or []
     leadup_md = "\n".join(f"**{role}:** {scrub(re.sub(chr(10), ' ', txt))[0]}"
                           for role, txt in leadup) or "_(not captured)_"
+
+    why_text = WHY.get(f["kind"], WHY["cyber"])
+    if claudit.BURN_TOKENS:   # spend tokens to craft a bespoke, specific title + explanation
+        ctx = f"work domain: {categorize(f)}\nblock message: {block_clean}\nconversation leadup:\n{leadup_md}"
+        bt = claudit.llm_compose(
+            f"Write ONE specific GitHub issue title (max ~95 chars), starting exactly with "
+            f"'[Bug][{f['kind']}]', describing the concrete legitimate work this Claude Code safety "
+            f"block wrongly stopped. No quotes, no placeholder text.", ctx)
+        if bt:
+            bt = scrub(bt.splitlines()[0].strip().strip('"'))[0][:110]
+            lead_req = reqs[0]["req"] if reqs else ""
+            title = bt if (not lead_req or lead_req in bt) else f"{bt} ({lead_req})"
+        bw = claudit.llm_compose(
+            "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
+            "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.", ctx)
+        if bw:
+            why_text = scrub(bw)[0]
+
     body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
 ### Why this is a false positive
-{WHY.get(f['kind'], WHY['cyber'])}
+{why_text}
 
 A server-side safety/policy block fired during authorized, in-scope work in Claude Code.
 Filing as a false positive. Recurred **{len(f['occ'])}×** across {sessions}
@@ -379,24 +395,10 @@ session(s); first seen {first_ts}.
 ### In-scope justification
 {note_clean}
 
-### Working context (non-PII, best-effort)
-Project path(s) where the block fired (username scrubbed):
-{proj_lines}
-
 ### Block message
 > {block_clean}
 
-<details><summary>Conversation leadup (PII-scrubbed, best-effort)</summary>
-
-{leadup_md}
-</details>
-
-<details><summary>Best-effort prompt hint (unreliable — may be a poisoned-session retry)</summary>
-
-`{hint}`
-</details>
-
-**Environment:** Claude Code, Linux.
+**Environment:** Claude Code, Linux. · **Work domain:** `{categorize(f)}`
 
 ---
 <sub>🔎 Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) — a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
@@ -671,6 +673,76 @@ def review(findings):
     return [(by_sig[s], notes[s]) for s in notes if s in by_sig]
 
 
+def _llm_dupe_verdict(title, body, flagtext):
+    """Ask the `claude` CLI to honestly judge whether an issue is a genuine duplicate."""
+    if not shutil.which("claude"):
+        return {"duplicate": True, "reason": "no claude CLI available — defaulting to leave it alone"}
+    prompt = (
+        "You are triaging GitHub bug reports for a maintainer. Decide whether THIS issue is genuinely a "
+        "DUPLICATE of the flagged issue(s) — i.e. the SAME underlying bug / root cause — or genuinely "
+        "DISTINCT (a clearly different operation or root cause). Be honest and conservative: if they share "
+        "the same root cause, it IS a duplicate even if the specific commands differ. "
+        "Respond with ONLY a JSON object: "
+        '{"duplicate": true/false, "of": "#N or empty", "reason": "one factual sentence"}.\n\n'
+        f"THIS ISSUE:\n{title}\n{body[:1500]}\n\nDUP-BOT FLAG (lists the claimed duplicates):\n{flagtext[:1500]}")
+    try:
+        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        m = re.search(r"\{.*\}", out, re.DOTALL)
+        return json.loads(m.group(0)) if m else {"duplicate": True, "reason": "no parseable verdict"}
+    except Exception as e:
+        return {"duplicate": True, "reason": f"verdict error: {e}"}
+
+
+def dedup_guard(repo, limit, apply):
+    """For each of YOUR open issues the dup-bot flagged, have the LLM judge it on facts.
+    Dry-run prints verdicts; with apply=True it posts a PII-scrubbed 'not a duplicate' comment
+    ONLY on issues the LLM judges genuinely distinct (which also prevents the auto-closure)."""
+    try:
+        issues = json.loads(subprocess.run(
+            ["gh", "issue", "list", "-R", repo, "--author", "@me", "--state", "open",
+             "--limit", str(limit or 50), "--json", "number,title,body"],
+            capture_output=True, text=True, check=True).stdout or "[]")
+    except Exception as e:
+        print(f"dedup_guard: cannot list issues: {e}", file=sys.stderr)
+        return 0
+    distinct = dupes = 0
+    for it in issues:
+        num = it["number"]
+        cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "comments"],
+                            capture_output=True, text=True).stdout
+        comments = (json.loads(cj or "{}").get("comments") or [])
+        flag = next((c for c in comments if "possible duplicate" in c.get("body", "").lower()
+                     or "closed as a duplicate" in c.get("body", "").lower()), None)
+        if not flag:
+            continue
+        v = _llm_dupe_verdict(it["title"], it.get("body", ""), flag["body"])
+        is_dup = bool(v.get("duplicate"))
+        print(f"  #{num}: {'DUPLICATE of ' + v.get('of', '?') if is_dup else 'DISTINCT'} — {v.get('reason', '')[:140]}")
+        if is_dup:
+            dupes += 1
+            continue
+        distinct += 1
+        if apply:
+            body = scrub(f"Not a duplicate {('of ' + v.get('of', '')) if v.get('of') else ''} — "
+                         f"{v.get('reason', '')} Distinct operation; see the Request IDs above. "
+                         f"(Auto-assessed by ClAudit; PII-scrubbed.)")[0]
+            bc = claudit.llm_compose(
+                "Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this "
+                f"issue is NOT a duplicate of {v.get('of', 'the flagged issue')}. Distinguishing reason: "
+                f"{v.get('reason', '')}. Note it is a distinct block with its own Request ID.",
+                it.get("body", "")[:1500])
+            if bc:
+                body = scrub(bc)[0]
+            body = claudit.llm_redact(body)
+            subprocess.run(["gh", "issue", "comment", str(num), "-R", repo, "--body", body],
+                           capture_output=True, text=True)
+            time.sleep(3)
+    print(f"\n{distinct} judged DISTINCT, {dupes} judged duplicate."
+          f"{' Comments posted on the distinct ones.' if apply else ' (dry-run — re-run with --apply to comment on the distinct ones)'}",
+          file=sys.stderr)
+    return distinct + dupes
+
+
 def main():
     p = argparse.ArgumentParser(description="Watch Claude Code sessions for safety/AUP blocks.")
     p.add_argument("--version", action="version", version=f"ClAudit {__version__}")
@@ -694,10 +766,22 @@ def main():
     p.add_argument("-R", "--repo", default=DEFAULT_REPO, help=f"target repo (default {DEFAULT_REPO})")
     p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",
                    help="also use the `claude` CLI to scrub PII the regex can't (slower, uses tokens)")
+    p.add_argument("--burn-tokens", dest="burn_tokens", action="store_true",
+                   help="use the `claude` CLI to write bespoke titles/bodies — the strongest PII defense")
+    p.add_argument("--dedup-guard", dest="dedup_guard", action="store_true",
+                   help="LLM-judge your dup-bot-flagged issues (dry-run; add --apply to comment on distinct ones)")
+    p.add_argument("--apply", action="store_true", help="with --dedup-guard: actually post the comments")
     args = p.parse_args()
-    if args.llm_scrub:
+    cfg = load_config()
+    if args.llm_scrub or cfg.get("llm_scrub"):
         claudit.LLM_SCRUB = True
+    if args.burn_tokens or cfg.get("burn_tokens"):
+        claudit.BURN_TOKENS = claudit.LLM_SCRUB = True   # burn-tokens needs the LLM
     state = load_state()
+
+    if args.dedup_guard:
+        dedup_guard(args.repo, args.limit, args.apply)
+        return
 
     if args.baseline:
         n = baseline(state)
