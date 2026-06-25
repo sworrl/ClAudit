@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.26"
+__version__ = "2.0.27"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -914,16 +914,16 @@ def _dup_flag(comments):
 
 
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
-    """Local dedup-defender: on EVERY open issue you authored that the dup-bot flagged, 👎 the flag
-    and post a factual 'not a duplicate' note — ONCE per issue. Idempotent (skips issues already
-    defended, recorded in state['__deduped__']) and paced (delay secs between issues) so it can't
-    double-post or trip GitHub's abuse limits. No LLM gate: each ClAudit issue is already a distinct
-    prompt + Request ID, so the duplicate flag is itself a false positive. Returns count defended."""
+    """Local dedup-defender: on EVERY open issue the dup-bot FLAGGED (by the `duplicate` label), post
+    a factual 'not a duplicate' note — and 👎 the dup-bot comment when there is one. Handles
+    LABEL-ONLY flags too (the bot labels an issue before/without ever commenting; the note still
+    goes, there's just no comment to 👎). Idempotent (state['__deduped__']) and paced. No LLM gate:
+    each ClAudit issue is already a distinct prompt + Request ID. Returns count defended."""
     deduped = state.setdefault("__deduped__", {})
     try:
         issues = json.loads(subprocess.run(
             ["gh", "issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-             "--limit", str(limit or 300), "--json", "number,body"],
+             "--label", "duplicate", "--limit", str(limit or 500), "--json", "number,body"],
             capture_output=True, text=True, check=True).stdout or "[]")
     except Exception as e:
         print(f"defend_all: cannot list issues: {e}", file=sys.stderr)
@@ -936,17 +936,17 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
         cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "comments"],
                             capture_output=True, text=True).stdout
         comments = (json.loads(cj or "{}").get("comments") or [])
-        flag = _dup_flag(comments)
-        if not flag:
-            continue                                    # not flagged — nothing to defend
         if any("not a duplicate" in c.get("body", "").lower() for c in comments):
-            deduped[str(num)] = "not-duplicate"         # already noted (e.g. before state tracked it)
+            deduped[str(num)] = "not-duplicate"         # already noted
             save_state(state)
             continue
-        m = re.search(r"#(\d+)", flag["body"])
-        of = f"#{m.group(1)}" if m else ""
+        flag = _dup_flag(comments)                      # None for a label-only flag — note still posts
+        of = ""
+        if flag:
+            m = re.search(r"#(\d+)", flag["body"])
+            of = f"#{m.group(1)}" if m else ""
         reacted = _push_not_dup(
-            repo, num, flag.get("id"), of,
+            repo, num, flag.get("id") if flag else None, of,
             "this is a distinct false-positive block (its own Request ID) on the reporter's OWN "
             "authorized infrastructure — the classifier flagged in-scope administration of systems "
             "the reporter owns and operates, not an attack on anyone else's.",
