@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.23"
+__version__ = "2.0.24"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -351,11 +351,11 @@ def project_label(encoded):
 
 
 _REFUSAL_MARKERS = (
-    "i can't", "i cannot", "i can not", "i won't", "i will not", "i refuse",
-    "i'm not able", "i am not able", "i'm unable", "i am unable", "i won't do that",
-    "not a false positive", "true positive", "block is accurate", "block is correct",
-    "block was accurate", "block was correct", "policy block is accurate", "would be dishonest",
-    "circumvent", "i don't feel comfortable", "i do not feel comfortable", "as an ai")
+    "i can't write", "i cannot write", "i won't write", "i will not write", "i refuse to",
+    "i won't do that", "i won't file", "i can't file", "i'm not able to write",
+    "not a false positive", "is a true positive", "was a true positive", "block is accurate",
+    "block is correct", "block was accurate", "block was correct", "policy block is accurate",
+    "would be dishonest", "i don't feel comfortable", "i do not feel comfortable")
 
 
 def _is_refusal(text):
