@@ -74,15 +74,23 @@ def render_trend_svg(hist):
     n = len(hist)
     ymax = max(1, max(p["total"] for p in hist))
 
-    def xy(i, v):
-        x = pad + (W - 2 * pad) * (i / max(1, n - 1))
+    def coord(i, v):
+        # center a lone point instead of pinning it to the far-left edge
+        fx = 0.5 if n == 1 else i / (n - 1)
+        x = pad + (W - 2 * pad) * fx
         y = H - pad - (H - 2 * pad) * (v / ymax)
-        return f"{x:.1f},{y:.1f}"
+        return x, y
 
-    def poly(key, color):
-        pts = " ".join(xy(i, p[key]) for i, p in enumerate(hist))
-        return (f'<polyline fill="none" stroke="{color}" stroke-width="2.5" '
-                f'stroke-linejoin="round" points="{pts}"/>')
+    def series(key, color):
+        pts = [coord(i, p[key]) for i, p in enumerate(hist)]
+        line = (f'<polyline fill="none" stroke="{color}" stroke-width="2.5" '
+                f'stroke-linejoin="round" points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}"/>'
+                if n > 1 else "")
+        # dots so even a single data point is visible
+        dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{color}"/>' for x, y in pts)
+        return line + dots
+
+    poly = series   # back-comat alias
 
     grid = "".join(
         f'<line x1="{pad}" y1="{H - pad - (H - 2 * pad) * f:.1f}" x2="{W - pad}" '
@@ -92,10 +100,14 @@ def render_trend_svg(hist):
         for f in (0, 0.5, 1.0))
     first, last = hist[0]["t"][:10], hist[-1]["t"][:10]
     cur = hist[-1]
+    building = (f'<text x="{W / 2:.0f}" y="{H / 2 + 24:.0f}" text-anchor="middle" fill="#6b7280" '
+                f'font-family="system-ui,sans-serif" font-size="12">📈 trend builds hourly — '
+                f'{n} data point{"s" if n != 1 else ""} so far</text>' if n < 3 else "")
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img">
 <rect width="{W}" height="{H}" rx="12" fill="#16181d"/>
 <text x="{pad}" y="22" fill="#e8eaed" font-family="system-ui,sans-serif" font-size="14" font-weight="700">Is Anthropic acting? — ClAudit reports over time</text>
 {grid}
+{building}
 {poly("total", "#6b7280")}
 {poly("closed", "#3fb950")}
 {poly("open", "#f85149")}
