@@ -30,14 +30,55 @@ import claudit_scan as cs  # noqa: E402
 STATE_LOCK = threading.Lock()
 
 
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _git(*args, timeout=30):
+    return subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True, timeout=timeout)
+
+
 def git_commit():
     """Short commit hash of the running checkout (so the GUI shows exactly what's deployed)."""
     try:
-        d = os.path.dirname(os.path.abspath(__file__))
-        return subprocess.run(["git", "-C", d, "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=5).stdout.strip()
+        return _git("rev-parse", "--short", "HEAD", timeout=5).stdout.strip()
     except Exception:
         return ""
+
+
+def git_pull_if_behind():
+    """Look to GitHub and self-update: fetch origin, and if this checkout is strictly BEHIND the
+    remote branch and the working tree is clean, fast-forward pull. Returns True if it pulled.
+    Never force-updates over local/dirty/diverged state — it only ever fast-forwards."""
+    try:
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD", timeout=5).stdout.strip() or "main"
+        if _git("fetch", "--quiet", "origin", branch).returncode != 0:
+            return False
+        local = _git("rev-parse", "HEAD", timeout=5).stdout.strip()
+        remote = _git("rev-parse", f"origin/{branch}", timeout=5).stdout.strip()
+        if not remote or local == remote:
+            return False
+        behind = _git("merge-base", "--is-ancestor", "HEAD", f"origin/{branch}", timeout=5).returncode == 0
+        dirty = bool(_git("status", "--porcelain", timeout=10).stdout.strip())
+        if behind and not dirty:
+            return _git("pull", "--ff-only", "--quiet", "origin", branch, timeout=60).returncode == 0
+    except Exception as e:
+        print("update check failed:", e, file=sys.stderr)
+    return False
+
+
+class UpdateChecker(QtCore.QThread):
+    """Off-thread: pull new commits from GitHub (if clean+behind), then flag if HEAD moved."""
+    updated = QtCore.pyqtSignal()
+
+    def __init__(self, launch_head):
+        super().__init__()
+        self.launch_head = launch_head
+
+    def run(self):
+        git_pull_if_behind()                 # auto-update from GitHub
+        cur = git_commit()
+        if cur and self.launch_head and cur != self.launch_head:
+            self.updated.emit()
 
 
 def fmt_ts(iso):
@@ -517,15 +558,16 @@ class Main(QtWidgets.QMainWindow):
         self._head = git_commit()
         self.update_timer = QtCore.QTimer(self)
         self.update_timer.timeout.connect(self._check_updates)
-        self.update_timer.start(60000)
+        self.update_timer.start(180000)        # every 3 min: fetch GitHub + ff-pull if behind
         self._fetch_stats()
         self._fetch_poll()
         self.refresh()
 
     def _check_updates(self):
-        cur = git_commit()
-        if cur and self._head and cur != self._head:   # a real commit/pull, not a transient edit
-            self._restart()
+        # fetch + ff-pull from GitHub off the UI thread; restart if HEAD moved
+        self._uc = UpdateChecker(self._head)
+        self._uc.updated.connect(self._restart)
+        self._uc.start()
 
     def _restart(self):
         self.tray.showMessage("ClAudit", "Update detected — restarting with the new version…")

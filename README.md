@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.32-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.33-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -347,9 +347,11 @@ State and config live in `~/.claude/claudit/`:
 
 ## Auto-update & self-restart
 
-A running ClAudit GUI **watches its own source files** and **relaunches itself** when they change —
-so after a `git pull` (or any edit) it's never running stale code. Combined with a periodic pull, all
-users stay current automatically.
+A running ClAudit GUI **looks to GitHub and updates itself**: every few minutes it `git fetch`es the
+origin and, if this checkout is strictly **behind** the remote branch *and* the working tree is
+**clean**, it **fast-forward pulls** and relaunches on the new code. It only ever fast-forwards —
+local, dirty, or diverged checkouts are never force-updated, so your own work is safe. A manual
+`git pull` is picked up the same way (HEAD moved → relaunch), so it's never running stale code.
 
 ## Autostart
 

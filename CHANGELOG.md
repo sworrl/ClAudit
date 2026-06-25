@@ -3,6 +3,30 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.1.0] (2.0.1 – 2.0.32) — 2026-06-25
+Big feature batch (patch versions auto-bumped per commit; summarized here).
+
+**Community & dashboard**
+- **Community poll** — a GitHub-reaction vote ("Will Anthropic fix it?") on a pinned issue, with a live tally in the README, a GitHub Pages site, and **one-click voting inside the app**.
+- **Live cross-user report counter** — a shields badge + README block counting *open* ClAudit-filed issues across **all** users (keys on the "Filed automatically by ClAudit" marker), refreshed hourly by a GitHub Action.
+- **Historical trend graphic** — a dependency-free SVG line chart (total filed / open / closed over time) so you can see whether Anthropic is acting.
+
+**Honesty & reports**
+- **Honesty gate is now opt-in** (`--gate`, off by default) — ClAudit files every genuine block; whether a block was "correct" vs a false positive is the contested thing it exists to surface, so it isn't pre-judged.
+- **Never post LLM refusals** — if the burn-tokens composer refuses or editorializes ("not a false positive", "I won't…"), the report falls back to **facts-only** (block type + traceable Request IDs, nothing asserted).
+- **Bespoke-only** — every issue is one distinct incident with its own Request ID; no aggregate/"tracking" issues.
+
+**Dedup defense, closures & reopen**
+- **Auto-defend** every dup-bot flag (👎 + a factual "not a duplicate" note) — continuous, idempotent, and **fast** (one search per sweep, not a per-issue scan), with retry-on-failure and label-only coverage. GUI toggle (on by default), tray + CLI (`--defend-all`, `--watch --defend`).
+- **Closure monitoring** — the GUI shows **why** each issue closed (duplicate / not-planned / completed), and **auto-reopen** (opt-in) reopens issues the dup-bot closed as duplicates — never touching your own closes.
+
+**PII & safety**
+- **GUI PII-denylist manager** — add/remove `scrub.txt` terms from the tray or Project tab; the running watcher picks up changes immediately.
+
+**Platform**
+- **Self-update from GitHub** — the GUI fetches origin every few minutes and **fast-forward pulls** when clean+behind, then relaunches (never force-updates dirty/diverged checkouts).
+- New block-classification signatures (community **PR #5**, co-authored) + a scope guard keeping ordinary refusals non-reportable. Ships a **Claude Code skill** (`skills/claudit/`).
+
 ## [2.0.0] — 2026-06-25
 Major release.
 - GUI: **Project stats** tab (stars + who starred, forks, watchers, your followers).
