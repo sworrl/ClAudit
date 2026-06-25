@@ -494,17 +494,20 @@ class IssueDetailFetcher(QtCore.QThread):
                 ev.append((at, "♻", f"Reopened by {who}"))
         ev.sort(key=lambda x: x[0] or "")
         d["events"] = ev
+        d["defended"] = any("not a duplicate" in (c.get("body", "") or "").lower() for c in comments)
         self.fetched.emit(d)
 
 
 class IssueDetailDialog(QtWidgets.QDialog):
-    """Click-through detail: status, kind, Request IDs, full timeline, + Open on GitHub."""
-    def __init__(self, repo, num, parent=None):
+    """Click-through detail: status, kind, Request IDs, full timeline, force-defend, + Open on GitHub."""
+    defended = QtCore.pyqtSignal()        # tell the parent to refresh the board
+
+    def __init__(self, repo, num, state, parent=None):
         super().__init__(parent)
-        self.repo, self.num = repo, num
+        self.repo, self.num, self.state = repo, num, state
         self._url = f"https://github.com/{repo}/issues/{num}"
         self.setWindowTitle(f"Issue #{num}")
-        self.resize(580, 540)
+        self.resize(580, 560)
         if os.path.exists(cs.ICON):
             self.setWindowIcon(QtGui.QIcon(cs.ICON))
         v = QtWidgets.QVBoxLayout(self)
@@ -517,11 +520,15 @@ class IssueDetailDialog(QtWidgets.QDialog):
         self.meta.setWordWrap(True)
         self.meta.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         v.addWidget(self.meta)
-        tl_lbl = QtWidgets.QLabel("Timeline")
-        v.addWidget(tl_lbl)
+        v.addWidget(QtWidgets.QLabel("Timeline"))
         self.tl = QtWidgets.QListWidget()
         v.addWidget(self.tl, 1)
         row = QtWidgets.QHBoxLayout()
+        self.btn_defend = QtWidgets.QPushButton("🛡 Defend (not a duplicate)")
+        self.btn_defend.setToolTip("Force-post the 👎 + 'not a duplicate' note on this issue (live)")
+        self.btn_defend.setEnabled(False)
+        self.btn_defend.clicked.connect(self._force_defend)
+        row.addWidget(self.btn_defend)
         row.addStretch(1)
         self.btn_open = QtWidgets.QPushButton("Open on GitHub ↗")
         self.btn_open.setObjectName("primary")
@@ -529,7 +536,12 @@ class IssueDetailDialog(QtWidgets.QDialog):
             lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._url)))
         row.addWidget(self.btn_open)
         v.addLayout(row)
-        self._f = IssueDetailFetcher(repo, num)
+        self._load()
+
+    def _load(self):
+        self.btn_defend.setEnabled(False)
+        self.btn_defend.setText("🛡 Defend (not a duplicate)")
+        self._f = IssueDetailFetcher(self.repo, self.num)
         self._f.fetched.connect(self._fill)
         self._f.start()
 
@@ -545,6 +557,23 @@ class IssueDetailDialog(QtWidgets.QDialog):
             self.tl.addItem(f"{icon}  {fmt_ts(at)}  —  {text}")
         if not d.get("events"):
             self.tl.addItem("No timeline events found.")
+        if d.get("defended"):
+            self.btn_defend.setEnabled(False)
+            self.btn_defend.setText("🛡 Defended ✓")
+        else:
+            self.btn_defend.setEnabled(True)
+            self.btn_defend.setText("🛡 Defend (not a duplicate)")
+
+    def _force_defend(self):
+        self.btn_defend.setEnabled(False)
+        self.btn_defend.setText("🛡 Defending…")
+        self._dw = DedupWorker(self.state, self.repo, self.num)
+        self._dw.done.connect(self._on_defended)
+        self._dw.start()
+
+    def _on_defended(self, num, ok):
+        self.defended.emit()       # refresh the board's 👎✓ markers
+        self._load()               # re-fetch -> timeline shows the new 'defended' event, button -> ✓
 
 
 # --------------------------------- main window --------------------------------
@@ -1079,7 +1108,8 @@ class Main(QtWidgets.QMainWindow):
         num = (item.text().lstrip("#").split()[0] if item else "")
         if not num.isdigit():
             return
-        dlg = IssueDetailDialog(self.repo, int(num), self)
+        dlg = IssueDetailDialog(self.repo, int(num), self.state, self)
+        dlg.defended.connect(self.refresh)
         dlg.exec()
 
     def _on_acted(self, n, kind):
