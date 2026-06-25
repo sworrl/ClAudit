@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claudit"
+description = "Catch false-positive Claude Code safety/policy blocks, scrub PII, and file clean GitHub issues automatically."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+authors = [{ name = "sworrl" }]
+keywords = ["claude-code", "anthropic", "false-positive", "github-issues", "developer-tools"]
+dynamic = ["version"]
+dependencies = []                 # core is stdlib-only; gh + claude CLIs are external
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.5"]
+icon = ["Pillow>=10.0"]
+dev = ["pytest", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/sworrl/ClAudit"
+Issues = "https://github.com/sworrl/ClAudit/issues"
+
+[project.scripts]
+claudit = "claudit:main"             # manual paste -> scrub -> file
+claudit-watch = "claudit_scan:main"  # headless watcher / baseline / backfill / dedup-guard
+claudit-gui = "claudit_gui:main"     # tray app + dashboard
+
+[tool.setuptools]
+py-modules = ["claudit", "claudit_scan", "claudit_gui"]
+
+[tool.setuptools.dynamic]
+version = { attr = "claudit_scan.__version__" }

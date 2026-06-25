@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.3-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.4-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -179,6 +179,13 @@ gh auth login                          # the GitHub CLI must be authenticated
 git config core.hooksPath scripts/githooks   # (contributors) auto-bump version on commit
 ```
 
+Or **install it** so the commands are on your PATH:
+
+```bash
+pip install ".[gui]"        # or: pipx install ".[gui]"
+# gives you: claudit (manual filing) · claudit-watch (watcher) · claudit-gui (tray app)
+```
+
 Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
 for the GUI, and — to actually use burn-tokens / LLM scrub — the **`claude`** CLI on your PATH.
 
@@ -203,6 +210,12 @@ that shows **every false-positive issue on the repo** (all authors, open + close
 - **Filters:** Mine / All, Open / Closed, and a title search.
 - **Ownership colors:** your issues in purple, other ClAudit users' in teal.
 - **Click any row** to open the issue in your browser.
+- **Per-issue dedup (👎):** select an issue and click **👎** to mark it *not* a duplicate to GitHub's
+  dedupe bot — posts live, the exact mechanism the bot offers. A **👎✓** marker tracks which you've
+  already handled, so there's no blanket auto-fighting of the bot (that stays the LLM's call via
+  [`--dedup-guard`](#dedup-guard)).
+- **Project stats tab:** the repo's traction at a glance — stars (and exactly *who* starred), forks,
+  watchers, and your own followers — so you can watch the case build as more devs run ClAudit.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
 - Tray menu toggles for **Auto-post**, **Backfill**, and **Claude PII scrubbing** (all saved).
 
