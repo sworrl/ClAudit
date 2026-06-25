@@ -15,7 +15,9 @@ jobs:
           python-version: "3.12"
       - name: Byte-compile (catches syntax errors)
         run: python -m py_compile claudit.py claudit_scan.py claudit_gui.py scripts/gen-icon.py
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install dev deps
+        run: pip install ruff pytest
       - name: Ruff (lint for real errors only)
         run: ruff check --select E9,F63,F7,F82 .
+      - name: Tests
+        run: python -m pytest tests/ -q

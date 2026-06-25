@@ -28,7 +28,9 @@ hack on. State lives in `~/.claude/claudit/`; delete it to reset.
 
 - Keep changes focused; match the existing style (stdlib-first, no heavy deps in the core).
 - The core (`claudit_scan.py`, `claudit.py`) must stay importable without PyQt6.
-- CI runs `py_compile` + `ruff check --select E9,F63,F7,F82`. Run it locally before pushing.
+- CI runs `py_compile` + `ruff check --select E9,F63,F7,F82` + `pytest tests/`. Run them locally
+  before pushing: `pip install ruff pytest && ruff check --select E9,F63,F7,F82 . && pytest tests/ -q`.
+  Add a test for any behavior change (the suite mocks `gh`/`claude` and never touches the network).
 - **Bump `__version__` (in `claudit_scan.py`) on every code change** — no exceptions — and add a
   matching `CHANGELOG.md` line + update the README version badge.
 

@@ -9,3 +9,4 @@ claudit_icon_256.png
 # PII: a real scrub denylist must never be committed (only scrub.txt.example is)
 scrub.txt
 # local runtime state lives in ~/.claude/claudit/, never in the repo
+.pytest_cache
