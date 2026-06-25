@@ -38,13 +38,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claudit  # noqa: E402  (LLM_SCRUB flag + llm_redact)
 from claudit import scrub  # noqa: E402  (reuse the PII scrubber)
 
+# Launched from a desktop icon, PATH is often minimal and `gh`/`claude` aren't found.
+# Make sure the interpreter's own bin dir (where gh usually lives) + common bins are on PATH.
+for _p in (os.path.dirname(sys.executable), "/usr/local/bin", "/opt/homebrew/bin",
+           os.path.expanduser("~/.local/bin")):
+    if _p and _p not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
+
 PROJECTS = os.path.expanduser("~/.claude/projects")
 STATE_DIR = os.path.expanduser("~/.claude/claudit")
 STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -577,9 +584,13 @@ def _latest_ts(f):
     return max((o["ts"] for o in f["occ"] if o["ts"]), default="")
 
 
+RATE_LIMIT_HINTS = ("rate limit", "secondary", "abuse", "retry-after",
+                    "too quickly", "try again later", "have exceeded")
+
+
 def backfill_step(state, repo, n, on_event):
-    """File up to n backlog items this call, MOST-RECENT blocks first (so the blocks you're
-    actively hitting get reported before stale ones). Returns how many were filed."""
+    """File up to n backlog items this call, MOST-RECENT blocks first. Returns
+    (filed_count, rate_limited) so the caller can back off when GitHub pushes back."""
     findings, _ = scan()
     backlog = [f for f in findings.values()
                if (state.get(f["sig"]) or {}).get("issue", "x") is None]
@@ -591,12 +602,16 @@ def backfill_step(state, repo, n, on_event):
         try:
             ev = backfill_one(f, repo, state)
         except Exception as e:
+            msg = (getattr(e, "stderr", "") or str(e)).lower()
+            if any(k in msg for k in RATE_LIMIT_HINTS):
+                print("  backfill rate-limited — backing off", file=sys.stderr)
+                return done, True
             print(f"  ! backfill {f['sig']}: {e}", file=sys.stderr)
             continue
         if ev:
             on_event(*ev)
             done += 1
-    return done
+    return done, False
 
 
 def file_pending(state, repo, review_flag, delay, on_event):
@@ -657,7 +672,7 @@ def main():
     p.add_argument("--backfill", action="store_true",
                    help="with --watch: slowly drip-file the baselined backlog while monitoring")
     p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
-                   help="minutes between each backfilled issue (default 10)")
+                   help="starting seconds between backfilled issues; auto-adapts to GitHub limits (default 10)")
     p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
                    help="stop backfilling after N issues this run (0 = no cap)")
     p.add_argument("--pending", action="store_true", help="list blocks queued by the watcher")
@@ -699,34 +714,43 @@ def main():
         ensure_baseline(state, lambda a, r, u: print(f"  {r}", file=sys.stderr))
 
         mode = "AUTO-FILING new" if args.auto else "notify-only"
-        bf = f" + backfill 1/{args.backfill_interval}min ({backlog_size(state)} queued)" if args.backfill else ""
-        print(f"Watching {PROJECTS} every {args.interval}s ({mode}{bf}). Ctrl-C to stop.", file=sys.stderr)
+        bf = f" + adaptive backfill ({backlog_size(state)} queued)" if args.backfill else ""
+        print(f"Watching {PROJECTS} ({mode}{bf}). Ctrl-C to stop.", file=sys.stderr)
 
         def on_detect(fresh):
             announce_pending(state, args.repo, args.delay)
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
-        last_bf, bf_done = 0.0, 0
+        last_live, last_bf, bf_done = 0.0, 0.0, 0
+        bf_delay = max(4.0, float(args.backfill_interval))
         try:
             while True:
-                if args.auto:
-                    n = auto_cycle(state, args.repo, args.delay, notify)   # insta-post new
-                    if n:
-                        print(f"  (+{n} filed)", file=sys.stderr)
-                else:
-                    n = monitor_cycle(state, on_detect)
-                    if n:
-                        print(f"  (+{n} queued; run --file-pending to report)", file=sys.stderr)
+                now = time.monotonic()
+                if now - last_live >= args.interval:   # LIVE: new blocks fire as seen
+                    last_live = now
+                    if args.auto:
+                        n = auto_cycle(state, args.repo, 0, notify)
+                        if n:
+                            print(f"  (+{n} filed)", file=sys.stderr)
+                    else:
+                        n = monitor_cycle(state, on_detect)
+                        if n:
+                            print(f"  (+{n} queued; run --file-pending to report)", file=sys.stderr)
                 capped = args.backfill_max and bf_done >= args.backfill_max
-                if args.backfill and not capped and time.monotonic() - last_bf >= args.backfill_interval * 60:
-                    last_bf = time.monotonic()
-                    if backfill_step(state, args.repo, 1, notify):     # slow drip: 1 per interval
+                if args.backfill and not capped and now - last_bf >= bf_delay:
+                    last_bf = now
+                    b, limited = backfill_step(state, args.repo, 1, notify)
+                    if limited:
+                        bf_delay = min(bf_delay * 2, 300)
+                        print(f"  backfill backing off -> {bf_delay:.0f}s", file=sys.stderr)
+                    elif b:
                         bf_done += 1
-                        print(f"  (backfilled {bf_done}; {backlog_size(state)} left)", file=sys.stderr)
+                        bf_delay = max(bf_delay * 0.8, 4.0)
+                        print(f"  (backfilled {bf_done}; {backlog_size(state)} left; ~{bf_delay:.0f}s/ea)",
+                              file=sys.stderr)
                         if args.backfill_max and bf_done >= args.backfill_max:
-                            print(f"  backfill cap ({args.backfill_max}) reached — pausing backfill.",
-                                  file=sys.stderr)
-                time.sleep(args.interval)
+                            print(f"  backfill cap ({args.backfill_max}) reached.", file=sys.stderr)
+                time.sleep(2)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)
         return

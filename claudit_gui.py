@@ -89,32 +89,46 @@ class Watcher(QtCore.QThread):
         self.backfill_interval = backfill_interval
         self.backfill_max = backfill_max
         self.bf_done = 0
-        self.last_bf = 0.0                  # monotonic time of last backfill drip (for the GUI countdown)
+        self.last_live = 0.0
+        self.last_bf = 0.0
+        self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
 
     def run(self):
-        _t = time
         with STATE_LOCK:
             cs.ensure_baseline(self.state)
         while self._run:
-            try:
-                with STATE_LOCK:
-                    if self.auto:
-                        n = cs.auto_cycle(self.state, self.repo, 1, lambda *a: None)
-                    else:
-                        n = cs.monitor_cycle(self.state, lambda fresh: None)
-                if n:
-                    self.acted.emit(n, "auto" if self.auto else "queued")
-                capped = self.backfill_max and self.bf_done >= self.backfill_max
-                if self.backfill and not capped and _t.monotonic() - self.last_bf >= self.backfill_interval * 60:
-                    self.last_bf = _t.monotonic()
+            now = time.monotonic()
+            # LIVE: new blocks always fire as soon as they're seen (every `interval` secs),
+            # never gated by the backfill schedule.
+            if now - self.last_live >= self.interval:
+                self.last_live = now
+                try:
                     with STATE_LOCK:
-                        b = cs.backfill_step(self.state, self.repo, 1, lambda *a: None)
-                    if b:
-                        self.bf_done += b
-                        self.acted.emit(b, "backfill")
-            except Exception as e:
-                print("watcher error:", e, file=sys.stderr)
-            for _ in range(int(self.interval)):
+                        if self.auto:
+                            n = cs.auto_cycle(self.state, self.repo, 0, lambda *a: None)
+                        else:
+                            n = cs.monitor_cycle(self.state, lambda fresh: None)
+                    if n:
+                        self.acted.emit(n, "auto" if self.auto else "queued")
+                except Exception as e:
+                    print("live error:", e, file=sys.stderr)
+            # BACKFILL: as fast as GitHub allows — speed up on success, back off on rate-limit.
+            capped = self.backfill_max and self.bf_done >= self.backfill_max
+            if self.backfill and not capped and now - self.last_bf >= self.bf_delay:
+                self.last_bf = now
+                try:
+                    with STATE_LOCK:
+                        b, limited = cs.backfill_step(self.state, self.repo, 1, lambda *a: None)
+                except Exception as e:
+                    b, limited = 0, False
+                    print("backfill error:", e, file=sys.stderr)
+                if limited:
+                    self.bf_delay = min(self.bf_delay * 2, 300)      # exponential back-off
+                elif b:
+                    self.bf_done += b
+                    self.bf_delay = max(self.bf_delay * 0.8, 4.0)    # creep faster while it's safe
+                    self.acted.emit(b, "backfill")
+            for _ in range(2):                                       # ~2s tick
                 if not self._run:
                     return
                 self.sleep(1)
@@ -253,6 +267,9 @@ class Main(QtWidgets.QMainWindow):
         self.bf_timer = QtCore.QTimer(self)
         self.bf_timer.timeout.connect(self._update_bf)
         self.bf_timer.start(1000)
+        self.board_timer = QtCore.QTimer(self)        # refresh the board as backfill posts
+        self.board_timer.timeout.connect(self.refresh)
+        self.board_timer.start(45000)
         self.refresh()
 
     def _update_bf(self):
@@ -265,9 +282,9 @@ class Main(QtWidgets.QMainWindow):
         if backlog == 0:
             self.bf_label.setText(f"Backfill: done · {w.bf_done} filed{cap}")
             return
-        nxt = max(0, w.backfill_interval * 60 - (time.monotonic() - w.last_bf))
-        self.bf_label.setText(f"Backfill: {w.bf_done} filed · {backlog} left{cap} · next in "
-                              f"{int(nxt // 60)}:{int(nxt % 60):02d}")
+        nxt = max(0, w.bf_delay - (time.monotonic() - w.last_bf))
+        self.bf_label.setText(f"Backfill: {w.bf_done} filed · {backlog} left{cap} · "
+                              f"next {nxt:.0f}s (~{w.bf_delay:.0f}s/ea)")
 
     # ---- tray ----
     def _build_tray(self, auto, backfill):
@@ -416,11 +433,12 @@ class Main(QtWidgets.QMainWindow):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     def _on_acted(self, n, kind):
+        if kind == "backfill":
+            return   # progress shown live in the status bar; no per-drip toast/refetch spam
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                 else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
         msg = {"auto": f"Auto-filed {n} new false-positive block(s) to {self.repo}.",
-               "queued": f"{n} new false-positive block(s) queued — use ‘Report pending’.",
-               "backfill": f"Backfilled {n} old block(s) to {self.repo}."}.get(kind, f"{n} filed.")
+               "queued": f"{n} new false-positive block(s) queued — use ‘Report pending’."}.get(kind, f"{n} filed.")
         self.tray.showMessage("ClAudit", msg, icon)
         self.refresh()
 
@@ -457,7 +475,7 @@ def main():
     p.add_argument("--auto", action="store_true", help="auto-file new blocks (default: queue for review)")
     p.add_argument("--backfill", action="store_true", help="slowly drip-file the baselined backlog")
     p.add_argument("--backfill-interval", dest="backfill_interval", type=float, default=10,
-                   help="minutes between backfilled issues (default 10)")
+                   help="starting seconds between backfilled issues; auto-adapts to GitHub limits (default 10)")
     p.add_argument("--backfill-max", dest="backfill_max", type=int, default=0,
                    help="stop backfilling after N issues (0 = no cap)")
     p.add_argument("--llm-scrub", dest="llm_scrub", action="store_true",

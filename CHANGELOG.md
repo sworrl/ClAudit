@@ -3,6 +3,12 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [1.3.0] — 2026-06-25
+- **Fix:** resolve `gh`/`claude` on PATH when launched from a desktop icon (board was empty / posts silently failed under a minimal PATH).
+- Live blocks always post the moment they're seen, independent of the backfill schedule.
+- Adaptive backfill: drips as fast as GitHub allows, exponential back-off on rate-limit, speeds back up when safe. `--backfill-interval` is now starting **seconds** (was minutes).
+- Live backfill readout in the window: filed / left / next-drip / current pace.
+
 ## [1.2.0] — 2026-06-25
 - Community board: every false-positive issue on the repo (all authors, open + closed),
   newest-first, with exact local timestamps.
