@@ -49,14 +49,31 @@ def test_scrub_denylist_word_boundary(monkeypatch):
 # ---------------- classification ----------------
 @pytest.mark.parametrize("text,kind", [
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),
+    ("flagged this message as a cybersecurity", "cyber"),          # PR #5
+    ("safety filter detected cybersecurity", "cyber"),             # PR #5
     ("appears to violate our Usage Policy", "aup"),
     ("Claude Code is unable to respond to this request", "aup"),
+    ("blocked: against our usage policy", "aup"),                  # PR #5
+    ("usage policy violation", "aup"),                             # PR #5
+    ("content policy violation", "aup"),                           # PR #5
     ("API Error: 529 Overloaded", "overloaded"),
     ("You've hit your limit", "limit"),
     ("just normal text", "other"),
 ])
 def test_classify(text, kind):
     assert cs.classify(text) == kind
+
+
+@pytest.mark.parametrize("text", [
+    "I'm not able to assist with that",
+    "I cannot help with that request",
+    "that would be inappropriate content",
+    "I won't produce harmful content",
+])
+def test_legit_refusals_are_not_reportable(text):
+    # ordinary model refusals are NOT server-side policy blocks — they must stay 'other'
+    # (logged, never filed), the same bucket as overloaded/rate-limit. Guards PR #5 scope.
+    assert cs.classify(text) == "other"
 
 
 def test_harness_denial_detection():

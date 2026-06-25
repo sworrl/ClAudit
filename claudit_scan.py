@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.21"
+__version__ = "2.0.22"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -82,9 +82,13 @@ WHY = {
 
 def classify(text):
     t = text.lower()
-    if "safety measures that flagged this message for a cybersecurity topic" in t:
+    if ("safety measures that flagged this message for a cybersecurity topic" in t
+            or "flagged this message as a cybersecurity" in t
+            or "safety filter detected cybersecurity" in t):
         return "cyber"
-    if "violate our usage policy" in t or "unable to respond to this request" in t:
+    if ("violate our usage policy" in t or "unable to respond to this request" in t
+            or "against our usage policy" in t or "usage policy violation" in t
+            or "content policy violation" in t):
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
@@ -153,7 +157,8 @@ def harness_denial(entry):
         else:
             text = ""
         low = text.lower()
-        if "auto mode classifier" in low or "permission for this action was denied" in low:
+        if ("auto mode classifier" in low or "permission for this action was denied" in low
+                or "denied by the auto mode" in low or "action denied by auto mode" in low):
             return text.strip()
     return None
 
