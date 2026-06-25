@@ -16,8 +16,10 @@
 
 ## What it is
 
-If you do authorized security work with Claude Code, you've hit this: a legitimate,
-in-scope request gets stopped by a server-side block —
+If you write code with Claude Code, you've hit this. Security work, sure — but honestly
+**any** code, anything touching computers, and sometimes things that have nothing to do with
+either (people report it on agriculture, on biology, on plain prose). A legitimate, in-scope
+request just gets stopped by a server-side block —
 
 > `API Error: Opus has safety measures that flagged this message for a cybersecurity topic.`
 > `API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy.`
@@ -144,4 +146,7 @@ ClAudit posts to a public repository under **your** GitHub identity. Please:
 
 ## License
 
-[MIT](LICENSE) © 2026 sworrl
+ClAudit is **free and open-source software (FOSS)**, released under the permissive
+**[MIT License](LICENSE)** — use it, fork it, modify it, redistribute it, commercially or not.
+
+© 2026 sworrl
