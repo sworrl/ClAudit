@@ -51,6 +51,9 @@ QMenu::indicator:checked { color: #8b5cf6; }
 QScrollBar:vertical { background: #15171c; width: 12px; }
 QScrollBar::handle:vertical { background: #343b47; border-radius: 6px; min-height: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QWidget#header { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 8px; }
+QLabel#brand { color: #f0f1f3; font-size: 17px; font-weight: 700; }
+QLabel#subtle { color: #9aa0a6; font-size: 12px; }
 """
 
 
@@ -153,6 +156,8 @@ class Main(QtWidgets.QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._show_detail)
         self.empty = QtWidgets.QLabel("🔎  Watching for false-positive blocks…\nNothing filed yet.",
                                       self.table.viewport())
@@ -170,8 +175,27 @@ class Main(QtWidgets.QMainWindow):
         bar.addWidget(self.status, 1)
         bar.addWidget(self.btn_report)
         bar.addWidget(btn_refresh)
+        header = QtWidgets.QWidget()
+        header.setObjectName("header")
+        hl = QtWidgets.QHBoxLayout(header)
+        hl.setContentsMargins(14, 9, 14, 9)
+        logo = QtWidgets.QLabel()
+        if os.path.exists(cs.ICON):
+            logo.setPixmap(QtGui.QIcon(cs.ICON).pixmap(26, 26))
+        brand = QtWidgets.QLabel("ClAudit")
+        brand.setObjectName("brand")
+        sub = QtWidgets.QLabel(f"v{cs.__version__} · false-positive block reporter")
+        sub.setObjectName("subtle")
+        hl.addWidget(logo)
+        hl.addSpacing(8)
+        hl.addWidget(brand)
+        hl.addSpacing(10)
+        hl.addWidget(sub)
+        hl.addStretch(1)
+
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
+        lay.addWidget(header)
         lay.addWidget(self.table, 1)
         lay.addLayout(bar)
         self.setCentralWidget(root)
@@ -251,12 +275,15 @@ class Main(QtWidgets.QMainWindow):
             rows.append((gh_state.lower(), rec.get("kind", "?"), f"#{num}", gh_state,
                          len(rec.get("reqs", [])), len(self.findings.get(sig, {}).get("occ", [])), sig))
 
+        DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922"}
         self.table.setRowCount(len(rows))
         for r, (st, kind, ref, ghs, nreq, hits, sig) in enumerate(rows):
-            dot = {"open": "🟢", "closed": "🟣", "queued": "🟡"}.get(st, "⚪")
-            for c, val in enumerate([dot, kind, ref, ghs, str(nreq), str(hits), "▸"]):
+            for c, val in enumerate(["●", kind, ref, ghs, str(nreq), str(hits), "▸"]):
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, sig)
+                if c == 0:
+                    item.setForeground(QtGui.QColor(DOT.get(st, "#6b7280")))
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
         self.empty.setGeometry(self.table.viewport().rect())
