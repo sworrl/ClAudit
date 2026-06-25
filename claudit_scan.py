@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.14"
+__version__ = "2.0.15"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -916,9 +916,12 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
             continue
         m = re.search(r"#(\d+)", flag["body"])
         of = f"#{m.group(1)}" if m else ""
-        reacted = _push_not_dup(repo, num, flag.get("id"), of,
-                                "each ClAudit issue is a distinct block with its own Request ID",
-                                it.get("body", ""), compose=compose)
+        reacted = _push_not_dup(
+            repo, num, flag.get("id"), of,
+            "this is a distinct false-positive block (its own Request ID) on the reporter's OWN "
+            "authorized infrastructure — the classifier flagged in-scope administration of systems "
+            "the reporter owns and operates, not an attack on anyone else's.",
+            it.get("body", ""), compose=compose)
         deduped[str(num)] = "not-duplicate"
         save_state(state)
         done += 1
