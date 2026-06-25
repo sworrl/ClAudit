@@ -41,6 +41,8 @@ SCRUBBERS = [
     ("tenant domain", re.compile(r"\b[A-Za-z0-9-]+\.onmicrosoft\.com\b"), "[TENANT]"),
     # home dirs -> keep the structure, drop the username
     ("home path",     re.compile(r"(/home/|/Users/|C:\\Users\\)[^/\\\s]+"), r"\1[USER]"),
+    # dash-encoded home paths (Claude Code session/tmp dirs: -var-home-USER-..., -home-USER-...)
+    ("encoded home",  re.compile(r"(-(?:var-)?home-)[^-/\\\s]+"), r"\1[USER]"),
     ("uuid",          re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"), "[UUID]"),
     ("ipv4",          re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[IP]"),
     ("phone",         re.compile(r"\b(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}\b"), "[PHONE]"),

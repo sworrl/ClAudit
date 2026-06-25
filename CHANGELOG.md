@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [1.5.1] — 2026-06-25
+- **PII fix:** scrub usernames in dash-encoded session/tmp paths (`-var-home-USER-…`, the `claude-1000` task dirs) that the home-path regex missed. (Mitigated two already-posted issues.)
+
 ## [1.5.0] — 2026-06-25
 - **Relicensed to GNU GPL v3.0** (was MIT).
 - Self-restart on update: a running GUI watches its own source and relaunches when it changes
