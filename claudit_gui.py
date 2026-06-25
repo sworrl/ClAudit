@@ -26,6 +26,33 @@ import claudit_scan as cs  # noqa: E402
 
 STATE_LOCK = threading.Lock()
 
+STYLE = """
+* { font-size: 14px; }
+QWidget { background: #15171c; color: #e6e8ec; }
+QMainWindow, QDialog, QMessageBox { background: #15171c; }
+QTableWidget { background: #1b1e25; alternate-background-color: #181b21;
+    gridline-color: #2a2e37; border: 1px solid #2a2e37; border-radius: 8px; }
+QTableWidget::item { padding: 5px 6px; }
+QTableWidget::item:selected { background: #3a2f63; color: #fff; }
+QHeaderView::section { background: #232733; color: #c7cdd6; padding: 7px 8px;
+    border: 0; border-right: 1px solid #2a2e37; font-weight: 600; }
+QPushButton { background: #2a2f3a; color: #cbd2da; border: 1px solid #353b47;
+    border-radius: 7px; padding: 7px 15px; font-weight: 600; }
+QPushButton:hover { background: #343c4a; }
+QPushButton:disabled { color: #5b616b; background: #20242c; border-color: #262b33; }
+QPushButton#primary { background: #8b5cf6; color: #fff; border: 0; }
+QPushButton#primary:hover { background: #9d75f8; }
+QPushButton#primary:disabled { background: #34304a; color: #7a7596; }
+QLabel { color: #9aa0a6; }
+QMenu { background: #1e2128; color: #e6e8ec; border: 1px solid #2a2e37; padding: 4px; }
+QMenu::item { padding: 6px 18px; border-radius: 5px; }
+QMenu::item:selected { background: #3a2f63; }
+QMenu::indicator:checked { color: #8b5cf6; }
+QScrollBar:vertical { background: #15171c; width: 12px; }
+QScrollBar::handle:vertical { background: #343b47; border-radius: 6px; min-height: 24px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+"""
+
 
 # ----------------------------- background workers -----------------------------
 class Watcher(QtCore.QThread):
@@ -127,11 +154,16 @@ class Main(QtWidgets.QMainWindow):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self._show_detail)
+        self.empty = QtWidgets.QLabel("🔎  Watching for false-positive blocks…\nNothing filed yet.",
+                                      self.table.viewport())
+        self.empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.empty.setStyleSheet("color:#6b7280; font-size:15px; background:transparent;")
 
         self.status = QtWidgets.QLabel("Loading…")
         btn_refresh = QtWidgets.QPushButton("Refresh")
         btn_refresh.clicked.connect(self.refresh)
         self.btn_report = QtWidgets.QPushButton("Report pending")
+        self.btn_report.setObjectName("primary")
         self.btn_report.clicked.connect(self.report_pending)
 
         bar = QtWidgets.QHBoxLayout()
@@ -227,6 +259,8 @@ class Main(QtWidgets.QMainWindow):
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, sig)
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
+        self.empty.setGeometry(self.table.viewport().rect())
+        self.empty.setVisible(len(rows) == 0)
         npend = len(pend)
         nfiled = sum(1 for s, rc in self.state.items() if not s.startswith("__") and rc.get("issue"))
         self.status.setText(f"{npend} queued · {nfiled} reported · repo {self.repo}")
@@ -307,6 +341,7 @@ def main():
     args = p.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
