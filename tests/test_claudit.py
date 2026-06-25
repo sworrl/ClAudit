@@ -78,10 +78,11 @@ def test_sig_is_stable_and_distinct():
 
 # ---------------- issue building ----------------
 def _finding(kind="cyber", req="req_011CcABC"):
+    block = "cybersecurity topic" + (f" Request ID: {req}" if req else "")
     return {"sig": "s1", "kind": kind, "prompt": "scan my host 10.0.0.5",
             "occ": [{"req": req, "ts": "2026-06-25T00:00:00Z", "session": "s",
                      "proj": "-h-u-Documents-GitHub-x"}],
-            "block_text": "cybersecurity topic Request ID: " + req,
+            "block_text": block,
             "leadup": [("user", "secret stuff 10.0.0.5")]}
 
 
