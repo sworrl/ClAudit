@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.33"
+__version__ = "2.0.34"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -698,7 +698,30 @@ def backfill_one(f, repo, state):
 
 def backlog_size(state):
     return sum(1 for s, r in state.items()
-               if not s.startswith("__") and r.get("issue") is None)
+               if not s.startswith("__") and isinstance(r, dict)
+               and r.get("issue") is None and not r.get("skipped"))
+
+
+def prune_stale_backlog(state):
+    """Clear backlog items that can NEVER be filed: those whose finding no longer exists in any
+    current session scan (the session rotated / was deleted). They'd otherwise sit in the backlog
+    count forever ('6 to backfill but won't do it'). Marks them done-skipped. Returns count pruned."""
+    try:
+        findings, _ = scan(ttl=8)
+    except Exception:
+        return 0
+    live = set(findings)
+    pruned = 0
+    for sig, rec in list(state.items()):
+        if sig.startswith("__") or not isinstance(rec, dict):
+            continue
+        if rec.get("issue") is None and not rec.get("skipped") and sig not in live:
+            rec["skipped"] = "stale — session no longer present; cannot backfill"
+            pruned += 1
+    if pruned:
+        save_state(state)
+        print(f"prune_stale_backlog: cleared {pruned} unfilable backlog item(s).", file=sys.stderr)
+    return pruned
 
 
 def _latest_ts(f):
@@ -1154,6 +1177,8 @@ def main():
                    help="also reopen issues a human maintainer closed as duplicate (default: bot only)")
     p.add_argument("--reopen-interval", dest="reopen_interval", type=float, default=3600,
                    help="with --watch --reopen: seconds between reopen sweeps (default 3600 = 1h)")
+    p.add_argument("--prune-backlog", dest="prune_backlog", action="store_true",
+                   help="clear backlog items that can no longer be filed (stale/removed sessions)")
     args = p.parse_args()
     cfg = load_config()
     if args.llm_scrub or cfg.get("llm_scrub"):
@@ -1185,6 +1210,11 @@ def main():
                                on_done=lambda num, ci: print(f"  reopened #{num} (closed by {ci['actor']})",
                                                              file=sys.stderr))
         print(f"Reopened {n} dup-closed issue(s).", file=sys.stderr)
+        return
+
+    if args.prune_backlog:
+        n = prune_stale_backlog(state)
+        print(f"Pruned {n} unfilable backlog item(s). Backlog now {backlog_size(state)}.", file=sys.stderr)
         return
 
     if args.baseline:

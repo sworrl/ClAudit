@@ -164,6 +164,8 @@ class Watcher(QtCore.QThread):
     def run(self):
         with STATE_LOCK:
             cs.ensure_baseline(self.state)
+            cs.prune_stale_backlog(self.state)   # drop backlog items that can never be filed
+        self.acted.emit(0, "pruned")             # nudge the UI to refresh the backlog count
         while self._run:
             now = time.monotonic()
             # LIVE: new blocks always fire as soon as they're seen (every `interval` secs),
@@ -983,6 +985,9 @@ class Main(QtWidgets.QMainWindow):
         if kind == "reopen":     # reopened dup-bot-closed issues
             self.tray.showMessage("ClAudit · ♻ REOPENED",
                                   f"Reopened {n} issue(s) the dup-bot wrongly closed as duplicate.", icon)
+            return
+        if kind == "pruned":     # stale backlog reconciled at startup — just refresh the count
+            self._update_bf()
             return
         if kind == "auto":       # live: a block that just happened
             self.tray.setToolTip("ClAudit — watching live")
