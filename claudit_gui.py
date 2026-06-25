@@ -112,10 +112,12 @@ class Watcher(QtCore.QThread):
         self.backfill_interval = backfill_interval
         self.backfill_max = backfill_max
         self.defend = defend               # auto-defend dup-bot flags; toggled from the tray menu
+        self.reopen = False                # auto-reopen dup-bot-CLOSED issues; opt-in (off by default)
         self.bf_done = 0
         self.last_live = 0.0
         self.last_bf = 0.0
         self.last_defend = 0.0
+        self.last_reopen = 0.0
         self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
 
     def run(self):
@@ -163,6 +165,16 @@ class Watcher(QtCore.QThread):
                         self.acted.emit(d, "defend")
                 except Exception as e:
                     print("defend error:", e, file=sys.stderr)
+            # REOPEN: opt-in — reopen issues the dup-bot CLOSED as duplicates (hourly, idempotent).
+            if self.reopen and now - self.last_reopen >= 3600:
+                self.last_reopen = now
+                try:
+                    with STATE_LOCK:
+                        rr = cs.reopen_dupe_closes(self.repo, self.state)
+                    if rr:
+                        self.acted.emit(rr, "reopen")
+                except Exception as e:
+                    print("reopen error:", e, file=sys.stderr)
             for _ in range(2):                                       # ~2s tick
                 if not self._run:
                     return
@@ -204,7 +216,7 @@ class CommunityFetcher(QtCore.QThread):
             out = subprocess.run(
                 ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "300",
                  "--search", "false positive in:title",
-                 "--json", "number,state,title,author,url,createdAt"],
+                 "--json", "number,state,stateReason,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
         except Exception as e:
@@ -564,6 +576,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_defend.setCheckable(True)
         self.act_defend.setChecked(True)   # Watcher defaults defend=True
         self.act_defend.toggled.connect(self._toggle_defend)
+        self.act_reopen = menu.addAction("Auto-reopen dup-bot closes")
+        self.act_reopen.setCheckable(True)
+        self.act_reopen.setChecked(False)  # opt-in: reopening closes is aggressive
+        self.act_reopen.toggled.connect(self._toggle_reopen)
         self.act_llm = menu.addAction("Claude PII scrubbing")
         self.act_llm.setCheckable(True)
         self.act_llm.setChecked(claudit.LLM_SCRUB)
@@ -616,6 +632,16 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit", "Auto-defend ENABLED — every dup-bot flag gets 👎 + a "
                               "'not a duplicate' note automatically." if on
                               else "Auto-defend paused.")
+
+    def _toggle_reopen(self, on):
+        if not self.watcher:
+            return
+        self.watcher.reopen = on
+        if on:
+            self.watcher.last_reopen = 0.0   # sweep on the next tick
+        self.tray.showMessage("ClAudit", "Auto-reopen ENABLED — issues the dup-bot CLOSED as "
+                              "duplicates get reopened (your own closes are left alone)." if on
+                              else "Auto-reopen paused.")
 
     # ---- project stats tab ----
     def _build_poll_panel(self):
@@ -840,13 +866,23 @@ class Main(QtWidgets.QMainWindow):
                 continue
             created = fmt_ts(it.get("createdAt", ""))
             ded = (self.state.get("__deduped__", {}) or {}).get(str(it["number"]))
+            reopened = (self.state.get("__reopened__", {}) or {}).get(str(it["number"]))
             label = f"#{it['number']}" + (" 👎✓" if ded == "not-duplicate" else "")
-            rows.append((it.get("createdAt", ""), st, label, author, created, title, it.get("url", "")))
+            why = ""
+            if st == "closed":
+                reason = (it.get("stateReason") or "").lower()
+                why = {"not_planned": "closed: not planned (often = duplicate)",
+                       "duplicate": "closed as DUPLICATE — not actually a dupe",
+                       "completed": "closed: completed"}.get(reason, f"closed ({reason or '—'})")
+                if reopened and not str(reopened).startswith("review"):
+                    why += " · ♻ reopened by ClAudit"
+            rows.append((it.get("createdAt", ""), st, label, author, created, title,
+                         it.get("url", ""), why))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
 
         self.table.setRowCount(len(rows))
-        for r, (_, st, num, author, created, title, url) in enumerate(rows):
+        for r, (_, st, num, author, created, title, url, why) in enumerate(rows):
             is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
             if author == "you" or (self.me and author == self.me):
                 owner = "#b794f6"          # yours = purple
@@ -854,10 +890,11 @@ class Main(QtWidgets.QMainWindow):
                 owner = "#5eead4"          # another ClAudit user = teal
             else:
                 owner = None
+            tip = why or ("Click to open in browser" if url else "Not filed yet")
             for c, val in enumerate(["●", num, author, created, title]):
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
-                item.setToolTip("Click to open in browser" if url else "Not filed yet")
+                item.setToolTip(tip)
                 if c == 0:
                     item.setForeground(QtGui.QColor(DOT.get(st, "#6b7280")))
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -900,6 +937,10 @@ class Main(QtWidgets.QMainWindow):
         if kind == "defend":     # auto-defended dup-bot flags
             self.tray.showMessage("ClAudit · 🛡 DEFENDED",
                                   f"Auto-defended {n} dup-bot-flagged issue(s) (👎 + note).", icon)
+            return
+        if kind == "reopen":     # reopened dup-bot-closed issues
+            self.tray.showMessage("ClAudit · ♻ REOPENED",
+                                  f"Reopened {n} issue(s) the dup-bot wrongly closed as duplicate.", icon)
             return
         if kind == "auto":       # live: a block that just happened
             self.tray.setToolTip("ClAudit — watching live")

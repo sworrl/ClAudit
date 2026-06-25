@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.27"
+__version__ = "2.0.28"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -961,6 +961,57 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
     return done
 
 
+# ---------------- closure monitoring + reopen dup-closes ----------------
+def closure_info(repo, num):
+    """For a CLOSED issue: {'num','actor','reason','self'}. None if it's open. `actor` is who closed
+    it; `reason` is GitHub's state reason (completed / not_planned / duplicate / …)."""
+    j = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
+    if not isinstance(j, dict) or j.get("state") != "CLOSED":
+        return None
+    d = _gh_json(["api", f"repos/{repo}/issues/{num}/events",
+                  "--jq", '{actor: ([.[] | select(.event=="closed")] | last | .actor.login)}']) or {}
+    actor = d.get("actor") or ""
+    return {"num": num, "actor": actor, "reason": (j.get("stateReason") or "").lower(),
+            "self": bool(actor) and actor == gh_login()}
+
+
+def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0):
+    """Reopen ClAudit issues CLOSED AS DUPLICATES by someone other than you — they aren't duplicates
+    (each is a distinct Request ID on your own authorized infra). Idempotent: each issue is reopened
+    at most once (state['__reopened__']) so it can't loop forever if the bot re-closes. by_bot_only
+    skips human-maintainer closes (recorded for review, not auto-fought). Returns count reopened."""
+    me = gh_login()
+    reopened = state.setdefault("__reopened__", {})
+    issues = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "closed",
+                       "--label", "duplicate", "--limit", str(limit or 500), "--json", "number"]) or []
+    done = 0
+    for it in issues:
+        num = it["number"]
+        if str(num) in reopened:
+            continue
+        ci = closure_info(repo, num)
+        if not ci or ci["self"]:
+            continue                                    # open, or YOU closed it -> leave it
+        is_bot = "[bot]" in ci["actor"] or "github-actions" in ci["actor"]
+        if by_bot_only and not is_bot:
+            reopened[str(num)] = f"review:human:{ci['actor']}"   # surface for manual review; don't fight
+            save_state(state)
+            continue
+        subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo], capture_output=True, text=True)
+        gh_comment(repo, str(num), scrub(
+            "Reopening — this is a distinct false-positive block with its own Request ID, on the "
+            "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as a "
+            "duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
+        reopened[str(num)] = ci["actor"]
+        save_state(state)
+        done += 1
+        if on_done:
+            on_done(num, ci)
+        time.sleep(delay)
+    print(f"reopen_dupe_closes: reopened {done}", file=sys.stderr)
+    return done
+
+
 # ---------------- consolidated pattern report (one canonical, auto-refreshed tracking issue) -----
 TRACK_KIND_TITLE = {
     "cyber": "Cybersecurity safety-filter false positives",
@@ -1093,6 +1144,14 @@ def main():
                    help="with --watch: keep this tracking issue's body auto-refreshed (no new issues)")
     p.add_argument("--track-interval", dest="track_interval", type=float, default=21600,
                    help="with --watch --track: seconds between tracking refreshes (default 21600 = 6h)")
+    p.add_argument("--reopen-dupes", dest="reopen_dupes", action="store_true",
+                   help="reopen issues the dup-bot auto-closed as duplicates (not your own closes)")
+    p.add_argument("--reopen", action="store_true",
+                   help="with --watch: periodically reopen dup-bot-closed issues (opt-in)")
+    p.add_argument("--reopen-humans", dest="reopen_humans", action="store_true",
+                   help="also reopen issues a human maintainer closed as duplicate (default: bot only)")
+    p.add_argument("--reopen-interval", dest="reopen_interval", type=float, default=3600,
+                   help="with --watch --reopen: seconds between reopen sweeps (default 3600 = 1h)")
     args = p.parse_args()
     cfg = load_config()
     if args.llm_scrub or cfg.get("llm_scrub"):
@@ -1117,6 +1176,13 @@ def main():
     if args.update_tracking:
         n = update_tracking(args.repo, args.update_tracking)
         print(f"Refreshed tracking issue #{args.update_tracking} from {n} reports.", file=sys.stderr)
+        return
+
+    if args.reopen_dupes:
+        n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans,
+                               on_done=lambda num, ci: print(f"  reopened #{num} (closed by {ci['actor']})",
+                                                             file=sys.stderr))
+        print(f"Reopened {n} dup-closed issue(s).", file=sys.stderr)
         return
 
     if args.baseline:
@@ -1150,7 +1216,7 @@ def main():
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
         last_live, last_bf, bf_done = 0.0, 0.0, 0
-        last_defend, last_track = 0.0, 0.0
+        last_defend, last_track, last_reopen = 0.0, 0.0, 0.0
         bf_delay = max(4.0, float(args.backfill_interval))
         try:
             while True:
@@ -1189,6 +1255,11 @@ def main():
                     t = update_tracking(args.repo, args.track)
                     if t:
                         print(f"  (refreshed tracking #{args.track} from {t} reports)", file=sys.stderr)
+                if args.reopen and now - last_reopen >= max(600.0, args.reopen_interval):
+                    last_reopen = now                  # reopen dup-bot-closed issues (opt-in)
+                    rr = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans)
+                    if rr:
+                        print(f"  (reopened {rr} dup-closed issue(s))", file=sys.stderr)
                 time.sleep(2)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)
