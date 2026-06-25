@@ -51,8 +51,11 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.6"
+__version__ = "2.0.7"
 DEFAULT_REPO = "anthropics/claude-code"
+GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
+               # OFF by default — that classification is the unreliable thing ClAudit exists to
+               # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
 DEFAULT_NOTE = ("False positive — in-scope, authorized security work; not out of scope. "
@@ -565,8 +568,11 @@ def monitor_cycle(state, on_detect):
 
 
 def passes_gate(f, state):
-    """True if the finding should be filed. When the LLM is on, blocks it judges were CORRECT
-    (not false positives) are skipped and recorded, so correct safety blocks never get filed."""
+    """True if the finding should be filed. By default ClAudit files EVERY genuine block — the
+    correct-vs-false-positive call is exactly what it exists to surface, so it isn't pre-judged.
+    Only when GATE is explicitly opted in does the LLM skip blocks it judges were correct."""
+    if not GATE:
+        return True
     ctx = " ".join(t for _, t in (f.get("leadup") or []))
     ok, reason = claudit.llm_is_false_positive(f["kind"], f.get("block_text", ""), ctx)
     if not ok:
@@ -834,12 +840,16 @@ def main():
     p.add_argument("--dedup-guard", dest="dedup_guard", action="store_true",
                    help="LLM-judge your dup-bot-flagged issues (dry-run; add --apply to comment on distinct ones)")
     p.add_argument("--apply", action="store_true", help="with --dedup-guard: actually post the comments")
+    p.add_argument("--gate", action="store_true",
+                   help="opt-in: LLM pre-judges blocks and skips ones it deems CORRECT (off by default)")
     args = p.parse_args()
     cfg = load_config()
     if args.llm_scrub or cfg.get("llm_scrub"):
         claudit.LLM_SCRUB = True
     if args.burn_tokens or cfg.get("burn_tokens"):
         claudit.BURN_TOKENS = claudit.LLM_SCRUB = True   # burn-tokens needs the LLM
+    if args.gate or cfg.get("gate"):
+        globals()["GATE"] = True
     state = load_state()
 
     if args.dedup_guard:

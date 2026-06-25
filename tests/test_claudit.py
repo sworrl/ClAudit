@@ -116,6 +116,16 @@ def test_gate_is_noop_without_llm():
     assert ok is True                               # LLM off -> file everything (prior behavior)
 
 
+def test_gate_off_by_default_files_everything(monkeypatch):
+    # GATE off (default): passes_gate never pre-judges, never calls the LLM, files everything.
+    monkeypatch.setattr(cs, "GATE", False)
+    called = []
+    monkeypatch.setattr(claudit, "llm_is_false_positive",
+                        lambda *a: called.append(1) or (False, "would-skip"))
+    assert cs.passes_gate(_finding(), {}) is True
+    assert called == []                             # gate off -> LLM judge is never consulted
+
+
 def test_block_message_is_scrubbed():
     f = _finding()
     f["block_text"] = "blocked while contacting 10.0.0.9 over ssh badhost"
