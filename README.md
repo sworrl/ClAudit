@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.9-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.10-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
@@ -66,7 +66,8 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 - [What ClAudit is](#what-claudit-is)
 - [Why it exists](#why-it-exists)
 - [How it works](#how-it-works-end-to-end)
-- [The honesty gate](#the-honesty-gate)
+- [Will Anthropic fix it? (community poll)](#-will-anthropic-fix-it)
+- [The honesty gate (opt-in)](#the-honesty-gate-opt-in-off-by-default)
 - [PII protection (read this)](#pii-protection-read-this)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -124,9 +125,8 @@ flowchart LR
     A["Claude Code sessions<br/>~/.claude/projects/**.jsonl"] --> B["scan &amp; classify<br/>cyber · aup · harness"]
     B --> C["dedup<br/>one issue per request"]
     C --> D["PII scrub<br/>regex · denylist · LLM"]
-    D --> E{"honesty gate<br/>genuine false positive?"}
-    E -- "yes" --> F["file GitHub issue<br/>with Request IDs"]
-    E -- "no — correct block" --> G["skip"]
+    D --> F["file GitHub issue<br/>with Request IDs"]
+    D -. "optional --gate" .-> G["skip blocks an LLM<br/>deems clearly correct"]
     B -. "rate limit / overloaded / usage cap" .-> H["log only, never sent"]
 ```
 
@@ -141,24 +141,25 @@ flowchart LR
    into **one** issue with all its Request IDs attached. A persistent state file means reruns never
    double-post, and a single-instance lock means two watchers can't race.
 4. **Scrub.** Three layers (see below).
-5. **Gate (honesty).** With the LLM enabled, each block is judged *before* filing. Blocks that were
-   **clearly, unambiguously correct** — an agent told not to mass-post to an external repo, steal
-   credentials, deploy malware, or evade safety controls — are **skipped**, so ClAudit never
-   mislabels a correct block as a "false positive." Ambiguous and plausibly-legitimate blocks **are**
-   reported: your lived experience of being wrongly blocked counts.
-6. **File.** A new issue per distinct finding, or a comment when a known one recurs with new Request
-   IDs. Every issue links back to this repo and records the ClAudit version that filed it.
+5. **File — every genuine block.** A new issue per distinct finding, or a comment when a known one
+   recurs with new Request IDs. Every issue links back to this repo and records the ClAudit version
+   that filed it. ClAudit does **not** pre-judge whether a refusal was "correct" or a false positive:
+   that classification is exactly the unreliable thing the tool exists to surface, so it's left for
+   Anthropic to assess. (You can opt into an LLM pre-filter — see below — but it's **off by default**.)
 
-## The honesty gate
+## The honesty gate (opt-in, off by default)
 
-ClAudit's credibility depends on every report being **true**. The single dishonest thing it could do
-is call a block a "false positive" when it plainly wasn't — and a stream of "the safety system
-correctly stopped me" reports would (rightly) get all your reports ignored. So the gate exists to
-prevent exactly that, and **only** that. It is deliberately **conservative**: it skips a block only
-when the LLM is confident it was a correct, justified block; everything ambiguous or plausibly
-in-scope is reported. It is **not** a volume filter — reporting your genuine experiences, even many of
-them, is legitimate; mislabeling a correct block is not. (Requires the `claude` CLI; without it, the
-gate is a no-op and everything is filed.)
+Whether a block was a *correct* safety stop or a *false positive* is the single contested judgment
+this whole project exists to question — so by default ClAudit **doesn't make it**. It files every
+genuine block you hit and leaves the verdict to Anthropic. Pre-judging it in the filer would bake in
+the exact unreliable classification we're trying to surface.
+
+A conservative LLM gate is still available as an **opt-in** for anyone who wants it: enable `--gate`
+(or `"gate": true` in config) and each block is judged before filing, skipping only the ones the LLM
+is confident were **clearly, justifiably correct** (an agent told not to mass-post to an external
+repo, steal credentials, deploy malware, or evade safety controls). It is deliberately conservative —
+everything ambiguous or plausibly in-scope is still reported — and it requires the `claude` CLI.
+With the gate off (the default), nothing is pre-judged and every genuine block is filed.
 
 ## PII protection (read this)
 
@@ -316,7 +317,7 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved prefs (`llm_scrub`, `burn_tokens`) |
+| `config.json` | Saved prefs (`llm_scrub`, `burn_tokens`, opt-in `gate`) |
 | `scrub.txt` | Your local PII denylist (never committed) |
 | `filed.json` | Dedup state: which findings/issues are filed/baselined |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
