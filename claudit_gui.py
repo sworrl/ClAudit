@@ -259,14 +259,11 @@ class CommunityFetcher(QtCore.QThread):
             pass
         try:
             out = subprocess.run(
-                ["gh", "search", "issues", "--repo", self.repo, '"Filed automatically by ClAudit"',
-                 "--limit", "500", "--sort", "created", "--order", "desc",
-                 "--json", "number,state,title,author,url,createdAt"],
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "600",
+                 "--search", '"Filed automatically by ClAudit"',
+                 "--json", "number,state,stateReason,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
-            # gh search issues doesn't expose stateReason — fetch it only for the closed ones (cheap)
-            for it in items:
-                it.setdefault("stateReason", "")
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
         self.fetched.emit(items, me)
@@ -441,6 +438,115 @@ class PollWorker(QtCore.QThread):
         self.done.emit(counts or {})
 
 
+class IssueDetailFetcher(QtCore.QThread):
+    """Build one issue's full picture: local ClAudit record + the live GitHub timeline."""
+    fetched = QtCore.pyqtSignal(dict)
+
+    def __init__(self, repo, num):
+        super().__init__()
+        self.repo, self.num = repo, num
+
+    def run(self):
+        d = {"num": self.num, "events": [], "reqs": [], "kind": "", "title": "",
+             "state": "", "reason": "", "url": f"https://github.com/{self.repo}/issues/{self.num}"}
+        try:
+            for r in cs.load_issue_rows():       # our local record (issues.jsonl)
+                if str(r.get("url", "")).rsplit("/", 1)[-1] == str(self.num):
+                    d["reqs"], d["kind"] = r.get("reqs", []), r.get("kind", "")
+                    break
+        except Exception:
+            pass
+        comments, created = [], ""
+        try:
+            j = json.loads(subprocess.run(
+                ["gh", "issue", "view", str(self.num), "-R", self.repo, "--json",
+                 "title,state,stateReason,url,createdAt,comments"],
+                capture_output=True, text=True).stdout or "{}")
+            d.update(title=j.get("title", ""), state=(j.get("state", "") or "").lower(),
+                     reason=(j.get("stateReason") or ""), url=j.get("url") or d["url"])
+            comments, created = j.get("comments") or [], j.get("createdAt", "")
+        except Exception as e:
+            print("detail fetch failed:", e, file=sys.stderr)
+        try:
+            tl = json.loads(subprocess.run(
+                ["gh", "api", f"repos/{self.repo}/issues/{self.num}/timeline", "--paginate"],
+                capture_output=True, text=True).stdout or "[]")
+        except Exception:
+            tl = []
+        ev = [(created, "📤", "Filed by ClAudit")] if created else []
+        for c in comments:
+            who, b = (c.get("author") or {}).get("login", "?"), (c.get("body", "") or "").lower()
+            if "possible duplicate" in b or "closed as a duplicate" in b:
+                ev.append((c.get("createdAt", ""), "🤖", "Dup-bot flagged as duplicate"))
+            elif "not a duplicate" in b:
+                ev.append((c.get("createdAt", ""), "🛡", "ClAudit defended — not a duplicate"))
+            elif "recurred" in b:
+                ev.append((c.get("createdAt", ""), "🔁", "Recurred — new Request IDs added"))
+            else:
+                ev.append((c.get("createdAt", ""), "💬", f"Comment by {who}"))
+        for t in (tl if isinstance(tl, list) else []):
+            e, who, at = t.get("event"), (t.get("actor") or {}).get("login", "?"), t.get("created_at", "")
+            if e == "labeled" and (t.get("label") or {}).get("name") == "duplicate":
+                ev.append((at, "🏷", f"Labeled 'duplicate' by {who}"))
+            elif e == "closed":
+                ev.append((at, "🔒", f"Closed by {who}" + (f" ({d['reason']})" if d.get("reason") else "")))
+            elif e == "reopened":
+                ev.append((at, "♻", f"Reopened by {who}"))
+        ev.sort(key=lambda x: x[0] or "")
+        d["events"] = ev
+        self.fetched.emit(d)
+
+
+class IssueDetailDialog(QtWidgets.QDialog):
+    """Click-through detail: status, kind, Request IDs, full timeline, + Open on GitHub."""
+    def __init__(self, repo, num, parent=None):
+        super().__init__(parent)
+        self.repo, self.num = repo, num
+        self._url = f"https://github.com/{repo}/issues/{num}"
+        self.setWindowTitle(f"Issue #{num}")
+        self.resize(580, 540)
+        if os.path.exists(cs.ICON):
+            self.setWindowIcon(QtGui.QIcon(cs.ICON))
+        v = QtWidgets.QVBoxLayout(self)
+        self.hdr = QtWidgets.QLabel("Loading…")
+        self.hdr.setObjectName("brand")
+        self.hdr.setWordWrap(True)
+        v.addWidget(self.hdr)
+        self.meta = QtWidgets.QLabel("")
+        self.meta.setObjectName("subtle")
+        self.meta.setWordWrap(True)
+        self.meta.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self.meta)
+        tl_lbl = QtWidgets.QLabel("Timeline")
+        v.addWidget(tl_lbl)
+        self.tl = QtWidgets.QListWidget()
+        v.addWidget(self.tl, 1)
+        row = QtWidgets.QHBoxLayout()
+        row.addStretch(1)
+        self.btn_open = QtWidgets.QPushButton("Open on GitHub ↗")
+        self.btn_open.setObjectName("primary")
+        self.btn_open.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._url)))
+        row.addWidget(self.btn_open)
+        v.addLayout(row)
+        self._f = IssueDetailFetcher(repo, num)
+        self._f.fetched.connect(self._fill)
+        self._f.start()
+
+    def _fill(self, d):
+        self._url = d.get("url") or self._url
+        badge = "🟢 OPEN" if d.get("state") == "open" else f"🟣 CLOSED ({d.get('reason') or '—'})"
+        self.hdr.setText(f"#{d['num']}  ·  {badge}\n{d.get('title', '')}")
+        reqs = d.get("reqs") or []
+        self.meta.setText(f"Kind: <b>{d.get('kind') or '—'}</b> &nbsp;·&nbsp; "
+                          f"Request IDs: {', '.join(reqs) if reqs else '—'}")
+        self.tl.clear()
+        for at, icon, text in d.get("events", []):
+            self.tl.addItem(f"{icon}  {fmt_ts(at)}  —  {text}")
+        if not d.get("events"):
+            self.tl.addItem("No timeline events found.")
+
+
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Issue", "Author", "Created", "Title"]
@@ -461,8 +567,7 @@ class Main(QtWidgets.QMainWindow):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.doubleClicked.connect(self._open_row)
-        self.table.clicked.connect(self._open_row)
+        self.table.doubleClicked.connect(self._show_detail)   # double-click a row -> full detail
         self.empty = QtWidgets.QLabel("🔎  Loading false-positive issues…",
                                       self.table.viewport())
         self.empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -969,11 +1074,13 @@ class Main(QtWidgets.QMainWindow):
         self.community, self.me = items, me
         self._repopulate()
 
-    def _open_row(self, idx):
-        item = self.table.item(idx.row(), 0)
-        url = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else ""
-        if url:
-            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+    def _show_detail(self, idx):
+        item = self.table.item(idx.row(), 1)   # the "#NNNN" cell
+        num = (item.text().lstrip("#").split()[0] if item else "")
+        if not num.isdigit():
+            return
+        dlg = IssueDetailDialog(self.repo, int(num), self)
+        dlg.exec()
 
     def _on_acted(self, n, kind):
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
