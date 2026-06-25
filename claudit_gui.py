@@ -649,13 +649,19 @@ class Main(QtWidgets.QMainWindow):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
     def _on_acted(self, n, kind):
-        if kind == "backfill":
-            return   # progress shown live in the status bar; no per-drip toast/refetch spam
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                 else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
-        msg = {"auto": f"Auto-filed {n} new false-positive block(s) to {self.repo}.",
-               "queued": f"{n} new false-positive block(s) queued — use ‘Report pending’."}.get(kind, f"{n} filed.")
-        self.tray.showMessage("ClAudit", msg, icon)
+        if kind == "backfill":   # historical: from your backlog, not just-happened
+            self.tray.setToolTip("ClAudit — backfilling (historical)")
+            self.tray.showMessage("ClAudit · 📦 HISTORICAL",
+                                  f"Backfilled {n} block(s) from your backlog.", icon)
+            return   # board_timer handles the list refresh (no per-drip refetch)
+        if kind == "auto":       # live: a block that just happened
+            self.tray.setToolTip("ClAudit — watching live")
+            self.tray.showMessage("ClAudit · 🔴 LIVE",
+                                  f"Reported {n} block(s) the moment it happened — {self.repo}.", icon)
+        else:
+            self.tray.showMessage("ClAudit", f"{n} new block(s) queued — use ‘Report pending’.", icon)
         self.refresh()
 
     def report_pending(self):
