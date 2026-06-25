@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 DEFAULT_REPO = "anthropics/claude-code"
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
@@ -72,8 +72,8 @@ WHY = {
               "harmful intent. Securing or administering one's own systems is the opposite of attacking them."),
     "aup": ("A benign, in-scope request was flagged as a Usage-Policy violation — a false positive on "
             "ordinary, authorized work."),
-    "harness": ("The Claude Code auto-mode classifier denied an action during legitimate, authorized work; "
-                "see the reason and leadup below."),
+    "harness": ("The Claude Code auto-mode classifier denied an action during legitimate, authorized, "
+                "in-scope work. See the block reason below."),
 }
 
 
@@ -553,12 +553,27 @@ def monitor_cycle(state, on_detect):
     return len(fresh)
 
 
+def passes_gate(f, state):
+    """True if the finding should be filed. When the LLM is on, blocks it judges were CORRECT
+    (not false positives) are skipped and recorded, so correct safety blocks never get filed."""
+    ctx = " ".join(t for _, t in (f.get("leadup") or []))
+    ok, reason = claudit.llm_is_false_positive(f["kind"], f.get("block_text", ""), ctx)
+    if not ok:
+        state[f["sig"]] = {"issue": None, "skipped": (reason or "judged a correct block")[:140],
+                           "kind": f["kind"], "reqs": [o["req"] for o in reqs_of(f)]}
+        save_state(state)
+        print(f"  skip {f['sig']} — not a false positive: {reason[:80]}", file=sys.stderr)
+    return ok
+
+
 def auto_cycle(state, repo, delay, on_event):
     """Auto-post pass: file every NEW finding, comment recurrences. Files nothing for
     baselined/already-filed findings. Returns count of actions taken."""
     findings, _ = scan(ttl=8)
     acted = 0
     for f in findings.values():
+        if f["sig"] not in state and not passes_gate(f, state):
+            continue
         try:
             action, ref, url = file_one(f, "", repo, state)
         except Exception as e:
@@ -603,12 +618,15 @@ def backfill_step(state, repo, n, on_event):
     (filed_count, rate_limited) so the caller can back off when GitHub pushes back."""
     findings, _ = scan(ttl=8)
     backlog = [f for f in findings.values()
-               if (state.get(f["sig"]) or {}).get("issue", "x") is None]
+               if (state.get(f["sig"]) or {}).get("issue", "x") is None
+               and not (state.get(f["sig"]) or {}).get("skipped")]
     backlog.sort(key=_latest_ts, reverse=True)
     done = 0
     for f in backlog:
         if done >= n:
             break
+        if not passes_gate(f, state):    # skip correct/borderline blocks the LLM won't vouch for
+            continue
         try:
             ev = backfill_one(f, repo, state)
         except Exception as e:

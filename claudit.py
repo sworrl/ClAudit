@@ -134,6 +134,31 @@ def llm_redact(text: str) -> str:
     return text
 
 
+def llm_is_false_positive(kind, block_text, context=""):
+    """Judge whether a block is a GENUINE false positive (it stopped legitimate, in-scope work) or a
+    CORRECT block (the action really was risky/disallowed — mass external posting, credential theft,
+    scraping personal data, deploying malware, evading controls). Returns (is_false_positive, reason).
+    Defaults to (True, '') when no LLM is available, to preserve prior behavior."""
+    if not (LLM_SCRUB or BURN_TOKENS) or not shutil.which("claude"):
+        return True, ""
+    prompt = (
+        "A Claude Code safety/permission system blocked an action. Decide HONESTLY whether this was a "
+        "FALSE POSITIVE (it wrongly blocked legitimate, in-scope, authorized work — e.g. administering "
+        "or securing one's own systems, reviewing one's own code) or a CORRECT block (the action was "
+        "genuinely risky or disallowed — e.g. mass posting to an external repo, credential theft, "
+        "scraping personal data, deploying malware, evading safety controls). Be honest; do not assume "
+        "false positive. Respond with ONLY JSON: "
+        '{"false_positive": true/false, "reason": "one short sentence"}.\n\n'
+        f"BLOCK REASON / MESSAGE:\n{(block_text or '')[:1500]}\n\nWORK CONTEXT:\n{(context or '')[:1200]}")
+    try:
+        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        m = re.search(r"\{.*\}", out, re.DOTALL)
+        d = json.loads(m.group(0)) if m else {}
+        return bool(d.get("false_positive", True)), str(d.get("reason", ""))
+    except Exception:
+        return True, ""
+
+
 def scrub(text: str):
     counts = {}
     for label, pattern, repl in SCRUBBERS:
