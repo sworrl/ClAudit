@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.58-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.59-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -84,6 +84,8 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 - [What ClAudit is](#what-claudit-is)
 - [Why it exists](#why-it-exists)
 - [How it works](#how-it-works-end-to-end)
+- [What ClAudit files, logs, and skips](#what-claudit-files-logs-and-skips)
+- [Defending, closure tracking, and reopen](#defending-closure-tracking-and-reopen)
 - [Will Anthropic fix it? (community poll)](#-will-anthropic-fix-it)
 - [The honesty gate (opt-in)](#the-honesty-gate-opt-in-off-by-default)
 - [PII protection (read this)](#pii-protection-read-this)
@@ -175,6 +177,39 @@ flowchart LR
    watcher posts a factual "not a duplicate" note on each, watches for closures and records why each
    one closed (duplicate, not-planned, completed), and can reopen issues the bot closed as
    duplicates. All of it runs on a timer with no manual step.
+
+## What ClAudit files, logs, and skips
+
+ClAudit is conservative about what reaches the public tracker. The decision for every detected block:
+
+| Detected block | Has a Request ID? | Action |
+|---|---|---|
+| `cyber` (cybersecurity safety-filter) | yes | **Filed** as a GitHub issue |
+| `aup` (Usage-Policy) | yes | **Filed** as a GitHub issue |
+| `cyber` / `aup` | no | **Skipped.** With no Request ID, Anthropic cannot look it up, so the report would be unactionable |
+| `harness` (auto-mode-classifier denial) | not applicable | **Logged only.** A local permission decision, not a server-side API block, and often a correct stop. Opt in with `--report-harness` |
+| overloaded / 529, rate-limit, usage-cap, connection error | not applicable | **Logged only.** Transient noise, not a bug |
+
+Logged-only blocks are written to `~/.claude/claudit/error-log.jsonl` with their timestamp and Request ID (when present), so you keep a local record without filing anything public.
+
+Two rules sit behind this table:
+
+- **A Request ID is required to file.** `cyber` and `aup` blocks come from API errors that carry `req_…`. That ID is the report's value: Anthropic can pull the exact prompt server-side and confirm it was in scope. A `cyber`/`aup` block with no Request ID is logged, not filed.
+- **One issue per bespoke incident.** Findings are keyed by the triggering prompt. A retry of the same request folds its new Request IDs into the existing issue as a comment; a genuinely distinct block becomes its own issue. There are no aggregate or tracking issues.
+
+### Why harness denials are logged, not filed
+
+The auto-mode classifier fires on a specific action, not on terminology. Many of its denials are the classifier doing its job: an agent re-enabling an admin flag that a memory note recorded as disabled after an incident, reading a credential it was not authorized to read this session, writing to a production host on its own reasoning. Filing those as "false positives" dilutes the credible `cyber`/`aup` terminology flags and invites the response "this is the block working." ClAudit detects and logs them so you keep the record, and keeps them out of the public corpus. The underlying gap they expose (a memory note read as a standing instruction instead of a historical log) is filed once as a constructive issue at [anthropics/claude-code#71525](https://github.com/anthropics/claude-code/issues/71525).
+
+## Defending, closure tracking, and reopen
+
+GitHub runs a duplicate-detection bot on `anthropics/claude-code` that flags and, after three days, auto-closes issues it judges duplicates. ClAudit answers it automatically, because each filed issue is a distinct block with its own Request ID:
+
+- **Defend.** Every few minutes the watcher finds issues the bot flagged (by the `duplicate` label, which is authoritative) and posts a factual "not a duplicate" note plus a 👎 on the bot's comment. It is idempotent (a single search finds what is already defended, so it never double-posts) and paced (one action every few seconds, to stay under GitHub abuse limits). It handles label-only flags too, where the bot labels an issue without commenting.
+- **Track closures.** It records why each closed issue closed (`duplicate`, `not_planned`, `completed`) and who closed it. The GUI shows this on every closed row and in the per-issue timeline.
+- **Reopen (opt-in, off by default).** It can reopen issues the bot closed as duplicates, once each (so it cannot loop if the bot re-closes). It never touches issues you closed yourself, and by default it does not fight a human maintainer's close; those are recorded for your review instead.
+
+The trend chart separates this out honestly: closing the withdrawn `harness` reports does not count toward the "closed by Anthropic" line, so the chart shows real progress, not your own cleanup.
 
 ## The honesty gate (opt-in, off by default)
 
@@ -268,43 +303,92 @@ title.
   that has no defense yet.
 - **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
 - **Activity tab:** a live feed of everything the watcher does (filed, backfilled, defended,
-  reopened), timestamped, newest first.
-- **Project tab:** repo traction (stars and who starred, forks, watchers, your followers) plus the
-  community poll with one-click voting, and a **PII denylist editor** for `scrub.txt`.
+  reopened, queued), timestamped, newest first.
+- **Project tab:** two charts plus repo traction. The **Reports over time** chart plots three lines,
+  normalized to API blocks: open `cyber`/`aup` false positives (cyan), `cyber`/`aup` closed by
+  Anthropic (green), and the withdrawn `harness` class (muted, a separate line that does not count as
+  a closed ticket). A **Breakdown** panel shows open/closed and per-kind bars. Below them: stars and
+  exactly who starred, forks, watchers, your followers, the community poll with one-click voting, and
+  a **PII denylist editor** for `scrub.txt` that the running watcher picks up immediately.
+- **Comment and mention toasts.** The GUI polls GitHub notifications every 2.5 minutes and toasts new
+  comments and @mentions on the ClAudit repos, so you see community engagement (a contributor asking
+  to help, a maintainer replying) as it happens. It logs each to the Activity feed.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- Tray toggles, all saved: **Auto-post**, **Backfill**, **Auto-defend dup-bot flags** (on),
-  **Auto-reopen dup-bot closes** (off), and **Claude PII scrubbing**.
+- Tray toggles, all saved: **Auto-post**, **Backfill**, **Auto-defend dup-bot flags** (on by
+  default), **Auto-reopen dup-bot closes** (off by default), and **Claude PII scrubbing**.
 
 The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
-the checkout is clean and behind, then relaunches on the new code. Closing the window keeps it
-running in the tray.
+the checkout is clean and behind, then relaunches on the new code. It only ever fast-forwards, so a
+dirty or diverged checkout is never overwritten. Closing the window keeps it running in the tray, and
+the single-instance lock means a second copy will not start.
+
+The animated header is a software-rendered gradient (`QPainter`, no GPU dependency), so it runs on any
+machine. A native GLSL shader version exists behind `CLAUDIT_GL=1` for anyone whose driver supports a
+3.2 core context; it is opt-in because some GL stacks crash on it.
 
 ## The CLI watcher
 
 The headless equivalent of the GUI watcher:
 
 ```bash
-python3 claudit_scan.py --watch              # notify-only: detect + queue new blocks
-python3 claudit_scan.py --watch --auto       # auto-file new blocks the instant they're seen
-python3 claudit_scan.py --watch --auto --backfill   # also drain the backlog (see below)
-python3 claudit_scan.py --pending            # list what's queued
-python3 claudit_scan.py --file-pending       # file the queue (user-initiated)
-python3 claudit_scan.py --post               # one-shot: review the backlog in $EDITOR, then file
+python3 claudit_scan.py                       # dry-run: list new findings, file nothing
+python3 claudit_scan.py --watch               # notify-only: detect + queue new blocks
+python3 claudit_scan.py --watch --auto        # auto-file new blocks the instant they're seen
+python3 claudit_scan.py --watch --auto --backfill --defend   # file + drain backlog + auto-defend
+python3 claudit_scan.py --watch --auto --defend --track 70895   # also keep a tracking issue fresh
+python3 claudit_scan.py --pending             # list what's queued
+python3 claudit_scan.py --file-pending        # file the queue (user-initiated)
+python3 claudit_scan.py --post                # one-shot: review the backlog in $EDITOR, then file
+python3 claudit_scan.py --defend-all          # one-shot: defend every dup-bot-flagged issue
+python3 claudit_scan.py --reopen-dupes        # one-shot: reopen issues the bot closed as duplicates
 ```
 
 **Live blocks always post the moment they're seen**, independent of the backfill schedule.
 
+Filing and detection:
+
 | Flag | Meaning |
 |------|---------|
-| `--watch` | Poll forever (default: notify-only) |
+| `--watch` | Poll forever (default: notify-only, queue for review) |
 | `--auto` | With `--watch`: auto-file new blocks instead of queuing |
+| `--baseline` | Mark all current findings seen, file nothing (run once on first setup) |
+| `--post` | One-shot: review the backlog in `$EDITOR`, then file |
+| `--no-review` | With `--post`: file without the editor step |
+| `--pending` | List blocks the watcher has queued |
+| `--file-pending` | File everything queued (user-initiated) |
+| `--report-harness` | Also file harness denials (default: harness is log-only) |
+| `--gate` | Opt-in LLM pre-filter that skips blocks it deems clearly correct (off by default) |
+| `--limit N` | Cap findings handled this run (0 = all) |
+
+Backfill (the baselined backlog):
+
+| Flag | Meaning |
+|------|---------|
 | `--backfill` | With `--watch`: drip-file the baselined backlog while monitoring |
 | `--backfill-interval N` | Starting **seconds** between backfilled issues (auto-adapts; default 10) |
 | `--backfill-max N` | Stop backfilling after N issues this run (0 = no cap) |
-| `--baseline` | Mark all current findings seen, file nothing |
-| `--burn-tokens` | Bespoke LLM-written reports — strongest PII defense |
+| `--prune-backlog` | Clear backlog items that can no longer be filed (stale/removed sessions) |
+
+Defend, reopen, and track:
+
+| Flag | Meaning |
+|------|---------|
+| `--defend-all` | One-shot: 👎 + "not a duplicate" note on every dup-bot-flagged open issue |
+| `--watch --defend` | Run the defender on a timer in the background |
+| `--reopen-dupes` | One-shot: reopen issues the dup-bot closed as duplicates |
+| `--watch --reopen` | Run the reopen sweep on a timer (opt-in) |
+| `--reopen-humans` | Also reopen issues a human maintainer closed as duplicate (default: bot only) |
+| `--update-tracking N` | Refresh consolidated tracking issue N from local data, then exit |
+| `--watch --track N` | Keep tracking issue N auto-refreshed (no new issues) |
+| `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (dry-run without `--apply`) |
+
+PII and output:
+
+| Flag | Meaning |
+|------|---------|
+| `--burn-tokens` | Bespoke LLM-written reports (strongest PII defense) |
 | `--llm-scrub` | Add the Claude PII pass on top of regex + denylist |
-| `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (see below) |
+| `--delay N` | Seconds between posts (default 3) |
 | `-R owner/repo` | Target repo (default `anthropics/claude-code`) |
 
 ## Backfill (clearing your backlog)
