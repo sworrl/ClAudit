@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.54-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.55-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -46,11 +46,11 @@ pattern is to ignore. **That's** how this gets fixed.
 <!-- COUNTER:START -->
 ### 📊 265 open false-positive blocks reported by ClAudit right now
 
-Across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **526 filed**, **261 closed** · _updated 2026-06-26 06:30 UTC_
+Real cyber/aup API false positives across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **0 closed by Anthropic** · _updated 2026-06-26 06:31 UTC_
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
-<sub>Open (cyan) counts real cyber/aup false positives. The closed jump on 2026-06-26 is the 261 auto-mode-classifier (harness) reports ClAudit withdrew as out of scope. Closed rising after that point is Anthropic acting.</sub>
+<sub>Three lines: open cyber/aup false positives (cyan), closed by Anthropic (green), and the 261 auto-mode-classifier (harness) reports ClAudit withdrew (muted), tracked separately and not counted as closed tickets.</sub>
 <!-- COUNTER:END -->
 
 ---
@@ -60,7 +60,7 @@ Across **all** ClAudit users, live from [`anthropics/claude-code`](https://githu
 Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
-**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-06-26 06:30 UTC_
+**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-06-26 06:31 UTC_
 
 | | | |
 |---|---:|---|

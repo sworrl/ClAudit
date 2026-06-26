@@ -1193,12 +1193,18 @@ class Main(QtWidgets.QMainWindow):
             hp = os.path.join(REPO_DIR, "docs", "counter-history.json")
             if os.path.exists(hp):
                 hist = json.load(open(hp))
-            if self.community:                       # append a current point from the board
-                total = len(self.community)
-                nopen = sum(1 for it in self.community if it.get("state", "").lower() == "open")
+            if self.community:                       # per-kind current point from the board
+                oa = ca = har = 0
+                for it in self.community:
+                    t = (it.get("title", "") or "").lower()
+                    is_open = (it.get("state", "") or "").lower() == "open"
+                    if "[harness]" in t:
+                        har += 1
+                    elif "[cyber]" in t or "[aup]" in t:
+                        oa += is_open
+                        ca += not is_open
                 when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                hist = list(hist) + [{"t": when, "open": nopen, "total": total,
-                                      "closed": max(0, total - nopen)}]
+                hist = list(hist) + [{"t": when, "open_api": oa, "closed_api": ca, "harness": har}]
             if _rp is not None and hist:
                 svg = _rp.render_trend_svg(hist).encode()
             else:                                    # fallback: the committed SVG
