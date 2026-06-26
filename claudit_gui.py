@@ -1324,7 +1324,7 @@ class Main(QtWidgets.QMainWindow):
             snippet = (cs.scrub(f.get("prompt", ""))[0])[:80] if f else ""
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
-                rows.append(("9999", "queued", "QUEUED", "you", "—", title, ""))
+                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", ""))
 
         for it in self.community:
             st = it.get("state", "").lower()
