@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.55"
+__version__ = "2.0.56"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -140,6 +140,13 @@ def reqs_of(f):
             seen.add(o["req"])
             out.append(o)
     return out
+
+
+def should_file(f):
+    """ClAudit only auto-publishes server-side API false positives (cyber/aup) that carry a Request
+    ID Anthropic can look up. Harness is log-only. A cyber/aup block with NO Request ID is not
+    referenceable server-side, so filing it is wasted; skip it."""
+    return f.get("kind") in ("cyber", "aup") and bool(reqs_of(f))
 
 
 def harness_denial(entry):
@@ -657,7 +664,7 @@ def monitor_cycle(state, on_detect):
     findings, _ = scan()
     pend = state.setdefault("__pending__", [])
     fresh = [f for s, f in findings.items()
-             if s not in state and s not in pend and not s.startswith("__")]
+             if s not in state and s not in pend and not s.startswith("__") and should_file(f)]
     if fresh:
         for f in fresh:
             pend.append(f["sig"])
@@ -688,8 +695,8 @@ def auto_cycle(state, repo, delay, on_event):
     findings, _ = scan(ttl=8)
     acted = 0
     for f in findings.values():
-        if f["sig"] not in state and not passes_gate(f, state):
-            continue
+        if f["sig"] not in state and (not should_file(f) or not passes_gate(f, state)):
+            continue          # only file NEW cyber/aup blocks that carry a Request ID
         try:
             action, ref, url = file_one(f, "", repo, state)
         except Exception as e:
@@ -779,7 +786,8 @@ def backfill_step(state, repo, n, on_event):
     findings, _ = scan(ttl=8)
     backlog = [f for f in findings.values()
                if (state.get(f["sig"]) or {}).get("issue", "x") is None
-               and not (state.get(f["sig"]) or {}).get("skipped")]
+               and not (state.get(f["sig"]) or {}).get("skipped")
+               and should_file(f)]                # cyber/aup with a Request ID only
     backlog.sort(key=_latest_ts, reverse=True)
     done = 0
     for f in backlog:
@@ -808,7 +816,7 @@ def file_pending(state, repo, review_flag, delay, on_event):
     if not pend:
         return 0
     findings, _ = scan()
-    todo = [findings[s] for s in pend if s in findings]
+    todo = [findings[s] for s in pend if s in findings and should_file(findings[s])]
     if review_flag:
         todo = [(f, n) for f, n in review(todo)]
     else:
@@ -1357,7 +1365,7 @@ def main():
 
     # default: dry-run / --post backlog
     findings, logged = scan()
-    new = sorted((f for s, f in findings.items() if s not in state),
+    new = sorted((f for s, f in findings.items() if s not in state and should_file(f)),
                  key=lambda f: len(f["occ"]), reverse=True)
     if args.limit:
         new = new[:args.limit]

@@ -87,6 +87,13 @@ def test_refusal_guard(text, refusal):
     assert cs._is_refusal(text) is refusal
 
 
+def test_should_file_requires_cyber_aup_with_request_id():
+    assert cs.should_file(_finding(kind="cyber", req="req_011CcABC")) is True
+    assert cs.should_file(_finding(kind="aup", req="req_011CcXYZ")) is True
+    assert cs.should_file(_finding(kind="cyber", req=None)) is False     # no Request ID to reference
+    assert cs.should_file(_finding(kind="harness", req="req_011CcABC")) is False  # harness is log-only
+
+
 def test_harness_denial_detection():
     denied = {"type": "user", "message": {"content": [
         {"type": "tool_result", "content": "Permission for this action was denied by the "
