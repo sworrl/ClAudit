@@ -95,15 +95,20 @@ STYLE = """
 * { font-size: 14px; }
 QWidget { background: #15171c; color: #e6e8ec; }
 QMainWindow, QDialog, QMessageBox { background: #15171c; }
-QTableWidget { background: #1b1e25; alternate-background-color: #181b21;
-    gridline-color: #2a2e37; border: 1px solid #2a2e37; border-radius: 8px; }
-QTableWidget::item { padding: 5px 6px; }
+QTableWidget { background: #1b1e25; alternate-background-color: #191c23;
+    gridline-color: transparent; border: 1px solid #2a2e37; border-radius: 10px; outline: 0; }
+QTableWidget::item { padding: 7px 8px; border-bottom: 1px solid #20242c; }
+QTableWidget::item:hover { background: #232838; }
 QTableWidget::item:selected { background: #3a2f63; color: #fff; }
-QHeaderView::section { background: #232733; color: #c7cdd6; padding: 7px 8px;
-    border: 0; border-right: 1px solid #2a2e37; font-weight: 600; }
+QHeaderView::section { background: #20242e; color: #aeb6c2; padding: 8px 8px;
+    border: 0; border-bottom: 1px solid #2a2e37; font-weight: 600; letter-spacing: 0.3px; }
+QTabBar::tab { background: #1b1e25; color: #9aa0a6; padding: 7px 16px; margin-right: 3px;
+    border-top-left-radius: 7px; border-top-right-radius: 7px; }
+QTabBar::tab:selected { background: #232838; color: #f0f1f3; }
+QTabWidget::pane { border: 1px solid #2a2e37; border-radius: 8px; top: -1px; }
 QPushButton { background: #2a2f3a; color: #cbd2da; border: 1px solid #353b47;
-    border-radius: 7px; padding: 7px 15px; font-weight: 600; }
-QPushButton:hover { background: #343c4a; }
+    border-radius: 8px; padding: 7px 15px; font-weight: 600; }
+QPushButton:hover { background: #343c4a; border-color: #44506a; }
 QPushButton:disabled { color: #5b616b; background: #20242c; border-color: #262b33; }
 QPushButton#primary { background: #8b5cf6; color: #fff; border: 0; }
 QPushButton#primary:hover { background: #9d75f8; }
@@ -695,8 +700,12 @@ class Main(QtWidgets.QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setWordWrap(False)
         self.table.doubleClicked.connect(self._show_detail)   # double-click a row -> full detail
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._row_menu)
