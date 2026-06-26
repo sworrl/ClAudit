@@ -119,6 +119,9 @@ QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 QWidget#header { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 8px; }
 QLabel#brand { color: #f0f1f3; font-size: 17px; font-weight: 700; }
 QLabel#subtle { color: #9aa0a6; font-size: 12px; }
+QLabel#brandg { color: #ffffff; font-size: 18px; font-weight: 800; background: transparent; }
+QLabel#subg { color: #dfe2e8; font-size: 12px; background: transparent; }
+QLabel#statsbar { color: #f2f4f7; font-size: 12px; font-weight: 600; background: transparent; }
 QProgressBar#bf { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 7px;
     text-align: center; color: #e6e8ec; font-weight: 600; }
 QProgressBar#bf::chunk { background: #8b5cf6; border-radius: 6px; }
@@ -136,6 +139,87 @@ QListWidget { background: #1b1e25; color: #e6e8ec; border: 1px solid #2a2e37; bo
 QListWidget::item { padding: 4px 6px; }
 QListWidget::item:selected { background: #3a2f63; }
 """
+
+
+try:
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+    from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLVertexArrayObject
+    _HAVE_GL = True
+except Exception:
+    _HAVE_GL = False
+
+if _HAVE_GL:
+    class ShaderBanner(QOpenGLWidget):
+        """Animated GLSL 'plasma' banner behind the header. Falls back to a solid dark fill if the
+        GPU/driver can't give us a 3.2 core context or the shader won't compile — never crashes."""
+        _VS = "#version 150 core\nvoid main(){vec2 p=vec2((gl_VertexID==2)?3.0:-1.0," \
+              "(gl_VertexID==1)?3.0:-1.0);gl_Position=vec4(p,0.0,1.0);}"
+        _FS = ("#version 150 core\nout vec4 fragColor;uniform vec2 uRes;uniform float uTime;"
+               "void main(){vec2 uv=gl_FragCoord.xy/uRes;vec2 p=uv*vec2(uRes.x/uRes.y,1.0)*3.0;"
+               "float t=uTime*0.22;"
+               "float v=sin(p.x+t)+sin(p.y*1.2+t*1.1)+sin((p.x+p.y)*0.7+t*0.8)+sin(length(p-1.5)*4.0-t*1.6);"
+               "v*=0.22;vec3 deep=vec3(0.07,0.05,0.12),teal=vec3(0.16,0.50,0.46),acc=vec3(0.42,0.28,0.78);"
+               "vec3 col=mix(deep,teal,0.5+0.5*sin(v*3.14159));col=mix(col,acc,0.5+0.5*cos(v*2.1));"
+               "col*=0.5;fragColor=vec4(col,1.0);}")
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            fmt = QtGui.QSurfaceFormat()
+            fmt.setVersion(3, 2)
+            fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+            self.setFormat(fmt)
+            self.prog = self.vao = None
+            self.ok = False
+            self._t0 = time.monotonic()
+            self._timer = QtCore.QTimer(self)
+            self._timer.timeout.connect(self.update)
+            self._timer.start(40)             # ~25 fps, gentle on the CPU/GPU
+
+        def initializeGL(self):
+            try:
+                self.prog = QOpenGLShaderProgram(self)
+                self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, self._VS)
+                self.prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, self._FS)
+                self.prog.link()
+                self.vao = QOpenGLVertexArrayObject(self)
+                self.vao.create()
+                self.ok = self.prog.isLinked() and self.vao.isCreated()
+            except Exception as e:
+                print("shader banner init failed (using fallback):", e, file=sys.stderr)
+                self.ok = False
+
+        def paintGL(self):
+            try:
+                f = self.context().functions()
+                if not self.ok:
+                    f.glClearColor(0.106, 0.118, 0.145, 1.0)
+                    f.glClear(0x00004000)     # GL_COLOR_BUFFER_BIT
+                    return
+                f.glClearColor(0.07, 0.05, 0.12, 1.0)
+                f.glClear(0x00004000)
+                self.prog.bind()
+                dpr = self.devicePixelRatio()
+                self.prog.setUniformValue("uRes", float(self.width() * dpr), float(self.height() * dpr))
+                self.prog.setUniformValue("uTime", float(time.monotonic() - self._t0))
+                self.vao.bind()
+                f.glDrawArrays(0x0004, 0, 3)   # GL_TRIANGLES
+                self.vao.release()
+                self.prog.release()
+            except Exception as e:
+                print("shader banner paint failed (using fallback):", e, file=sys.stderr)
+                self.ok = False
+
+
+def make_banner():
+    """A ShaderBanner if GL is usable, else a plain styled header widget (graceful fallback)."""
+    if _HAVE_GL:
+        try:
+            return ShaderBanner()
+        except Exception as e:
+            print("no GL banner:", e, file=sys.stderr)
+    w = QtWidgets.QWidget()
+    w.setObjectName("header")
+    return w
 
 
 # ----------------------------- background workers -----------------------------
@@ -632,24 +716,28 @@ class Main(QtWidgets.QMainWindow):
         bar.addWidget(self.bf_label)
         bar.addWidget(self.btn_report)
         bar.addWidget(btn_refresh)
-        header = QtWidgets.QWidget()
-        header.setObjectName("header")
+        header = make_banner()
+        header.setMinimumHeight(56)
         hl = QtWidgets.QHBoxLayout(header)
         hl.setContentsMargins(14, 9, 14, 9)
         logo = QtWidgets.QLabel()
         if os.path.exists(cs.ICON):
-            logo.setPixmap(QtGui.QIcon(cs.ICON).pixmap(26, 26))
+            logo.setPixmap(QtGui.QIcon(cs.ICON).pixmap(28, 28))
         brand = QtWidgets.QLabel("ClAudit")
-        brand.setObjectName("brand")
+        brand.setObjectName("brandg")
         _c = git_commit()
-        sub = QtWidgets.QLabel(f"v{cs.__version__}{(' · ' + _c) if _c else ''} · false-positive block reporter")
-        sub.setObjectName("subtle")
+        sub = QtWidgets.QLabel(f"v{cs.__version__}{(' · ' + _c) if _c else ''}")
+        sub.setObjectName("subg")
         hl.addWidget(logo)
         hl.addSpacing(8)
         hl.addWidget(brand)
-        hl.addSpacing(10)
+        hl.addSpacing(8)
         hl.addWidget(sub)
         hl.addStretch(1)
+        self.stats_bar = QtWidgets.QLabel("")
+        self.stats_bar.setObjectName("statsbar")
+        self.stats_bar.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        hl.addWidget(self.stats_bar)
 
         self.bf_bar = QtWidgets.QProgressBar()
         self.bf_bar.setObjectName("bf")
@@ -1098,6 +1186,32 @@ class Main(QtWidgets.QMainWindow):
         self.btn_report.setEnabled(len(pend) > 0)
         self.act_pending.setText(f"Report {len(pend)} pending")
         self.act_pending.setEnabled(len(pend) > 0)
+        self._update_stats_bar(nopen)
+
+    def _update_stats_bar(self, nopen):
+        if not hasattr(self, "stats_bar"):
+            return
+        c = self.community
+        nclosed = len(c) - nopen
+        kinds = {"cyber": 0, "aup": 0, "harness": 0}
+        for it in c:
+            t = (it.get("title", "") or "").lower()
+            for k in kinds:
+                if f"[{k}]" in t:
+                    kinds[k] += 1
+                    break
+        deduped = self.state.get("__deduped__", {}) or {}
+        defended = sum(1 for v in deduped.values() if v == "not-duplicate")
+        reopened = sum(1 for v in (self.state.get("__reopened__", {}) or {}).values()
+                       if not str(v).startswith("review"))
+        today = datetime.datetime.now().astimezone().strftime("%Y-%m-%d")
+        nday = sum(1 for it in c if (it.get("createdAt", "") or "")[:10] == today)
+        self.stats_bar.setText(
+            f"<span style='color:#3fb950'>● {nopen} open</span> &nbsp; "
+            f"<span style='color:#a371f7'>● {nclosed} closed</span> &nbsp;|&nbsp; "
+            f"cyber {kinds['cyber']} · aup {kinds['aup']} · harness {kinds['harness']} &nbsp;|&nbsp; "
+            f"🛡 {defended} &nbsp; ♻ {reopened} &nbsp; "
+            f"<span style='color:#5eead4'>+{nday} today</span>")
 
     def _on_community(self, items, me):
         self.community, self.me = items, me
