@@ -467,6 +467,26 @@ class CommunityFetcher(QtCore.QThread):
         self.fetched.emit(items, me)
 
 
+class NotifyWatcher(QtCore.QThread):
+    """Poll GitHub notifications for new comments / @mentions on the ClAudit-relevant repos. Public
+    activity, so anyone running the GUI sees the engagement on issues they take part in."""
+    got = QtCore.pyqtSignal(list)
+    REPOS = {"anthropics/claude-code", "sworrl/ClAudit"}
+
+    def run(self):
+        items = []
+        try:
+            j = json.loads(subprocess.run(
+                ["gh", "api", "notifications", "--jq",
+                 "[.[] | {id:.id, reason:.reason, title:.subject.title, type:.subject.type, "
+                 "url:.subject.url, repo:.repository.full_name}]"],
+                capture_output=True, text=True, timeout=30).stdout or "[]")
+            items = [n for n in j if n.get("repo") in self.REPOS]
+        except Exception as e:
+            print("notify fetch failed:", e, file=sys.stderr)
+        self.got.emit(items)
+
+
 class DedupWorker(QtCore.QThread):
     """Manual per-issue dedup: 👎 the dup-bot + post a 'not a duplicate' note on ONE issue (live)."""
     done = QtCore.pyqtSignal(int, bool)
@@ -932,9 +952,37 @@ class Main(QtWidgets.QMainWindow):
         self.update_timer = QtCore.QTimer(self)
         self.update_timer.timeout.connect(self._check_updates)
         self.update_timer.start(180000)        # every 3 min: fetch GitHub + ff-pull if behind
+        self._seen_notifs = set()
+        self._notif_primed = False             # first poll seeds 'seen' (no toast flood of old items)
+        self.notif_timer = QtCore.QTimer(self)
+        self.notif_timer.timeout.connect(self._poll_notifs)
+        self.notif_timer.start(150000)         # every 2.5 min: new comments / @mentions
+        self._poll_notifs()
         self._fetch_stats()
         self._fetch_poll()
         self.refresh()
+
+    def _poll_notifs(self):
+        self._nw = NotifyWatcher()
+        self._nw.got.connect(self._on_notifs)
+        self._nw.start()
+
+    def _on_notifs(self, items):
+        new = [n for n in items if n.get("id") not in self._seen_notifs]
+        for n in items:
+            self._seen_notifs.add(n.get("id"))
+        if not self._notif_primed:             # first run: seed seen, don't toast old unread
+            self._notif_primed = True
+            return
+        icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
+                else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
+        for n in new[:5]:                      # cap a burst
+            reason = (n.get("reason") or "activity").replace("_", " ")
+            repo = n.get("repo", "")
+            title = (n.get("title") or "")[:70]
+            self.tray.showMessage(f"ClAudit · 💬 {reason}",
+                                  f"{repo}\n{title}", icon)
+            self._log(f"💬 {reason} · {repo}: {title}")
 
     def _check_updates(self):
         # fetch + ff-pull from GitHub off the UI thread; restart if HEAD moved
