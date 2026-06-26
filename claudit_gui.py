@@ -362,6 +362,7 @@ class Watcher(QtCore.QThread):
         with STATE_LOCK:
             cs.ensure_baseline(self.state)
             cs.prune_stale_backlog(self.state)   # drop backlog items that can never be filed
+            cs.prune_stale_pending(self.state)   # drop queued sigs with no finding (e.g. old harness)
         self.acted.emit(0, "pruned")             # nudge the UI to refresh the backlog count
         while self._run:
             now = time.monotonic()
@@ -1327,9 +1328,11 @@ class Main(QtWidgets.QMainWindow):
         rows = []   # (sort_ts, state, issue_label, author, created, title, url)
         pend = set(cs.pending_sigs(self.state))
         for sig in pend:   # your queued-but-unfiled blocks always count as "yours"
-            f = self.findings.get(sig, {})
+            f = self.findings.get(sig)
+            if not f:       # stale queued sig (aged out, or harness now log-only) — don't show "[?]"
+                continue
             kind = f.get("kind", "?")
-            snippet = (cs.scrub(f.get("prompt", ""))[0])[:80] if f else ""
+            snippet = (cs.scrub(f.get("prompt", ""))[0])[:80]
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
                 rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", ""))

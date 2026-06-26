@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.53"
+__version__ = "2.0.54"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -742,6 +742,27 @@ def prune_stale_backlog(state):
         save_state(state)
         print(f"prune_stale_backlog: cleared {pruned} unfilable backlog item(s).", file=sys.stderr)
     return pruned
+
+
+def prune_stale_pending(state):
+    """Drop queued (__pending__) sigs that have no current finding: the block aged out of the
+    sessions, or it was a harness denial that is now log-only. These render as '[?]' rows otherwise.
+    Returns count pruned."""
+    pend = state.get("__pending__", [])
+    if not pend:
+        return 0
+    try:
+        findings, _ = scan(ttl=8)
+    except Exception:
+        return 0
+    live = set(findings)
+    kept = [s for s in pend if s in live]
+    n = len(pend) - len(kept)
+    if n:
+        state["__pending__"] = kept
+        save_state(state)
+        print(f"prune_stale_pending: cleared {n} stale queued block(s).", file=sys.stderr)
+    return n
 
 
 def _latest_ts(f):
