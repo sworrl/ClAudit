@@ -33,6 +33,17 @@ STATE_LOCK = threading.Lock()
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
+try:
+    from PyQt6.QtSvgWidgets import QSvgWidget
+    _HAVE_SVG = True
+except Exception:
+    _HAVE_SVG = False
+try:
+    sys.path.insert(0, os.path.join(REPO_DIR, "scripts"))
+    import render_poll as _rp          # reuse render_trend_svg for the in-GUI chart
+except Exception:
+    _rp = None
+
 
 def _git(*args, timeout=30):
     return subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True, timeout=timeout)
@@ -1062,6 +1073,13 @@ class Main(QtWidgets.QMainWindow):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
         v.addWidget(self._build_poll_panel())
+        if _HAVE_SVG:
+            box = QtWidgets.QGroupBox("📈 Reports over time")
+            bl = QtWidgets.QVBoxLayout(box)
+            self.trend_svg = QSvgWidget()
+            self.trend_svg.setMinimumHeight(180)
+            bl.addWidget(self.trend_svg)
+            v.addWidget(box)
         self.stats_summary = QtWidgets.QLabel("Loading project stats…")
         self.stats_summary.setObjectName("brand")
         self.stats_summary.setWordWrap(True)
@@ -1102,6 +1120,33 @@ class Main(QtWidgets.QMainWindow):
         f.fetched.connect(self._on_stats)
         f.start()
         self._sf = f
+        self._load_trend()
+
+    def _load_trend(self):
+        """Render the reports-over-time chart in the Project tab: the committed history plus a live
+        point from the current board, drawn with the same renderer the README uses."""
+        if not (_HAVE_SVG and hasattr(self, "trend_svg")):
+            return
+        try:
+            hist = []
+            hp = os.path.join(REPO_DIR, "docs", "counter-history.json")
+            if os.path.exists(hp):
+                hist = json.load(open(hp))
+            if self.community:                       # append a current point from the board
+                total = len(self.community)
+                nopen = sum(1 for it in self.community if it.get("state", "").lower() == "open")
+                when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                hist = list(hist) + [{"t": when, "open": nopen, "total": total,
+                                      "closed": max(0, total - nopen)}]
+            if _rp is not None and hist:
+                svg = _rp.render_trend_svg(hist).encode()
+            else:                                    # fallback: the committed SVG
+                sp = os.path.join(REPO_DIR, "docs", "trend.svg")
+                svg = open(sp, "rb").read() if os.path.exists(sp) else b""
+            if svg:
+                self.trend_svg.load(QtCore.QByteArray(svg))
+        except Exception as e:
+            print("trend load failed:", e, file=sys.stderr)
 
     def _on_stats(self, d):
         o = d.get("owner", {}) or {}
