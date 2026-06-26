@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.41"
+__version__ = "2.0.42"
 DEFAULT_REPO = "anthropics/claude-code"
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
@@ -1011,6 +1011,18 @@ def closure_info(repo, num):
     actor = d.get("actor") or ""
     return {"num": num, "actor": actor, "reason": (j.get("stateReason") or "").lower(),
             "self": bool(actor) and actor == gh_login()}
+
+
+def reopen_one(repo, num):
+    """Reopen a single issue + post the 'not a duplicate' note. Returns True if it reopened
+    (False if it was already open or the call failed)."""
+    r = subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo], capture_output=True, text=True)
+    if r.returncode != 0:
+        return False
+    gh_comment(repo, str(num), scrub(
+        "Reopening — this is a distinct false-positive block with its own Request ID, on the "
+        "reporter's own authorized infrastructure. It is not a duplicate. (Reopened by ClAudit.)")[0])
+    return True
 
 
 def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0):

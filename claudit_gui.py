@@ -371,6 +371,23 @@ class DedupWorker(QtCore.QThread):
         self.done.emit(self.num, ok)
 
 
+class ReopenOneWorker(QtCore.QThread):
+    """Reopen ONE issue + post the 'not a duplicate' note (live)."""
+    done = QtCore.pyqtSignal(int, bool)
+
+    def __init__(self, repo, num):
+        super().__init__()
+        self.repo, self.num = repo, num
+
+    def run(self):
+        ok = False
+        try:
+            ok = cs.reopen_one(self.repo, self.num)
+        except Exception as e:
+            print("reopen error:", e, file=sys.stderr)
+        self.done.emit(self.num, ok)
+
+
 class DefendAllWorker(QtCore.QThread):
     """Defend EVERY dup-bot-flagged open issue (👎 + 'not a duplicate' note), idempotent + paced."""
     progress = QtCore.pyqtSignal(int, bool)   # (issue number, reaction landed)
@@ -681,6 +698,8 @@ class Main(QtWidgets.QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._show_detail)   # double-click a row -> full detail
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
         self.empty = QtWidgets.QLabel("🔎  Loading false-positive issues…",
                                       self.table.viewport())
         self.empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -1259,13 +1278,46 @@ class Main(QtWidgets.QMainWindow):
         self._repopulate()
 
     def _show_detail(self, idx):
-        item = self.table.item(idx.row(), 1)   # the "#NNNN" cell
+        self._open_detail_num(self._row_num(idx.row()))
+
+    def _row_num(self, row):
+        item = self.table.item(row, 1) if row >= 0 else None
         num = (item.text().lstrip("#").split()[0] if item else "")
-        if not num.isdigit():
+        return int(num) if num.isdigit() else 0
+
+    def _open_detail_num(self, num):
+        if not num:
             return
-        dlg = IssueDetailDialog(self.repo, int(num), self.state, self)
+        dlg = IssueDetailDialog(self.repo, num, self.state, self)
         dlg.defended.connect(self.refresh)
         dlg.exec()
+
+    def _row_menu(self, pos):
+        num = self._row_num(self.table.indexAt(pos).row())
+        if not num:
+            return
+        m = QtWidgets.QMenu(self)
+        m.addAction("🔍 Details", lambda: self._open_detail_num(num))
+        m.addAction("🛡 Defend (not a duplicate)", lambda: self._quick_defend(num))
+        m.addAction("♻ Reopen (if closed)", lambda: self._quick_reopen(num))
+        m.addSeparator()
+        m.addAction("↗ Open on GitHub", lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl(f"https://github.com/{self.repo}/issues/{num}")))
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _quick_defend(self, num):
+        self._log(f"🛡 defending #{num}…")
+        self._dwq = DedupWorker(self.state, self.repo, num)
+        self._dwq.done.connect(self._on_deduped)
+        self._dwq.start()
+
+    def _quick_reopen(self, num):
+        self._log(f"♻ reopening #{num}…")
+        self._rwq = ReopenOneWorker(self.repo, num)
+        self._rwq.done.connect(lambda nn, ok: (
+            self._log(f"♻ reopened #{nn}" if ok else f"♻ #{nn}: already open / not reopenable"),
+            self.refresh()))
+        self._rwq.start()
 
     def _on_acted(self, n, kind):
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
