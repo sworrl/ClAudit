@@ -237,7 +237,16 @@ class AnimatedBanner(QtWidgets.QWidget):
         self._t0 = time.monotonic()
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.update)
-        self._timer.start(50)             # ~20 fps, negligible CPU
+        self._timer.start(110)            # ~9 fps: a slow drift needs no more, keeps CPU low
+
+    def showEvent(self, e):               # animate only while visible (paused in the tray)
+        super().showEvent(e)
+        if not self._timer.isActive():
+            self._timer.start(110)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._timer.stop()
 
     def paintEvent(self, _e):
         p = QtGui.QPainter(self)
@@ -254,14 +263,13 @@ class AnimatedBanner(QtWidgets.QWidget):
         path.addRoundedRect(QtCore.QRectF(self.rect()), 8, 8)
         p.fillPath(path, g)
         p.setClipPath(path)
-        for i, (spd, glow) in enumerate(((0.23, QtGui.QColor(139, 92, 246, 46)),
-                                         (0.31, QtGui.QColor(94, 234, 212, 36)))):
-            cx = w * (0.5 + 0.45 * math.sin(t * spd + i * 2.0))
-            cy = h * (0.5 + 0.4 * math.cos(t * spd * 1.3 + i))
-            rg = QtGui.QRadialGradient(cx, cy, h * 1.4)
-            rg.setColorAt(0.0, glow)
-            rg.setColorAt(1.0, QtGui.QColor(0, 0, 0, 0))
-            p.fillRect(self.rect(), QtGui.QBrush(rg))
+        # one soft moving glow (cheaper than two; software rendering pays per radial gradient)
+        cx = w * (0.5 + 0.4 * math.sin(t * 0.25))
+        cy = h * (0.5 + 0.4 * math.cos(t * 0.3))
+        rg = QtGui.QRadialGradient(cx, cy, h * 1.6)
+        rg.setColorAt(0.0, QtGui.QColor(139, 92, 246, 50))
+        rg.setColorAt(1.0, QtGui.QColor(0, 0, 0, 0))
+        p.fillRect(self.rect(), QtGui.QBrush(rg))
         p.end()
 
 
