@@ -51,8 +51,12 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.44"
+__version__ = "2.0.45"
 DEFAULT_REPO = "anthropics/claude-code"
+REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
+                         # They are local permission decisions, not server-side API false positives,
+                         # and often fire correctly (an agent re-enabling a disabled admin flag, etc.).
+                         # ClAudit files only real API blocks (cyber/aup). Opt in with --report-harness.
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
                # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
@@ -186,7 +190,7 @@ def scan(ttl=0.0):
     re-scan hundreds of files otherwise, which is what made it crawl."""
     if ttl and _SCAN_CACHE["val"] is not None and time.monotonic() - _SCAN_CACHE["t"] < ttl:
         return _SCAN_CACHE["val"]
-    findings, logged, log_lines = {}, {"overloaded": 0, "limit": 0, "other": 0}, []
+    findings, logged, log_lines = {}, {"overloaded": 0, "limit": 0, "other": 0, "harness": 0}, []
     for root, _, files in os.walk(PROJECTS):
         for name in files:
             if not name.endswith(".jsonl"):
@@ -210,6 +214,9 @@ def scan(ttl=0.0):
                             ts = entry.get("timestamp", "")
                             log_lines.append(json.dumps({"kind": "harness", "ts": ts,
                                                          "session": name, "req": None}))
+                            if not REPORT_HARNESS:   # log-only: local classifier decision, not an API FP
+                                logged["harness"] += 1
+                                continue
                             s = sig("harness", hd[:300])
                             f = findings.setdefault(s, {"sig": s, "kind": "harness",
                                                         "prompt": last_prompt or "(no preceding prompt)",
@@ -1182,6 +1189,9 @@ def main():
     p.add_argument("--apply", action="store_true", help="with --dedup-guard: actually post the comments")
     p.add_argument("--gate", action="store_true",
                    help="opt-in: LLM pre-judges blocks and skips ones it deems CORRECT (off by default)")
+    p.add_argument("--report-harness", dest="report_harness", action="store_true",
+                   help="also file auto-mode-classifier (harness) denials (default: log-only — only "
+                        "real cyber/aup API blocks are filed)")
     p.add_argument("--defend-all", dest="defend_all", action="store_true",
                    help="defend EVERY open issue the dup-bot flagged: 👎 + 'not a duplicate' note, once each (live)")
     p.add_argument("--defend", action="store_true",
@@ -1212,6 +1222,8 @@ def main():
         claudit.BURN_TOKENS = claudit.LLM_SCRUB = True   # burn-tokens needs the LLM
     if args.gate or cfg.get("gate"):
         globals()["GATE"] = True
+    if args.report_harness or cfg.get("report_harness"):
+        globals()["REPORT_HARNESS"] = True
     state = load_state()
 
     if args.dedup_guard:
@@ -1329,7 +1341,7 @@ def main():
     if args.limit:
         new = new[:args.limit]
     print(f"\nLogged-only (never sent): {logged['overloaded']} overloaded, {logged['limit']} limit, "
-          f"{logged['other']} other -> {ERROR_LOG}", file=sys.stderr)
+          f"{logged.get('harness', 0)} harness, {logged['other']} other -> {ERROR_LOG}", file=sys.stderr)
     print(f"Cyber/AUP: {len(findings)} distinct, {len(new)} new.\n", file=sys.stderr)
     if not new:
         print("Nothing new.", file=sys.stderr)
