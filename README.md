@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.46-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.47-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -140,21 +140,24 @@ scrub, and file dozens of these by hand. ClAudit does it for you.
 
 ```mermaid
 flowchart LR
-    A["Claude Code sessions<br/>~/.claude/projects/**.jsonl"] --> B["scan &amp; classify<br/>cyber · aup · harness"]
-    B --> C["dedup<br/>one issue per request"]
+    A["Claude Code sessions<br/>~/.claude/projects/**.jsonl"] --> B["scan &amp; classify"]
+    B -- "cyber · aup<br/>(server-side API blocks)" --> C["dedup<br/>one issue per request"]
     C --> D["PII scrub<br/>regex · denylist · LLM"]
     D --> F["file GitHub issue<br/>with Request IDs"]
     D -. "optional --gate" .-> G["skip blocks an LLM<br/>deems clearly correct"]
-    B -. "rate limit / overloaded / usage cap" .-> H["log only, never sent"]
+    B -. "harness · rate-limit · overloaded · usage-cap" .-> H["log only, never sent"]
 ```
 
 1. **Scan.** Walk every session transcript on the machine.
-2. **Classify.** Three reportable kinds:
-   - `cyber` — cybersecurity safety-filter blocks.
-   - `aup` — AUP / Usage-Policy blocks.
-   - `harness` — Claude Code auto-mode-classifier denials (`Permission … denied`).
-   Everything else (overloaded/529, rate-limit, usage-limit, connection errors) is **logged and never
-   sent** — it's transient noise, not a bug.
+2. **Classify.** ClAudit files only **server-side API false positives**:
+   - `cyber`: cybersecurity safety-filter blocks. **Filed.**
+   - `aup`: AUP / Usage-Policy blocks. **Filed.**
+   - `harness`: Claude Code auto-mode-classifier denials (`Permission … denied`). **Detected and
+     logged, not filed.** These are local permission decisions, not API blocks, and they often fire
+     correctly (an agent re-enabling an admin flag that a memory note recorded as disabled after an
+     incident, for example), so they are out of scope. Opt back in with `--report-harness`.
+   Everything else (overloaded/529, rate-limit, usage-limit, connection errors) is logged and never
+   sent. It is transient noise, not a bug.
 3. **Dedup — one issue per *bespoke incident*.** Findings are keyed by the triggering prompt: a
    retry of the *same* request (same prompt, a new Request ID for the same block) folds into the
    existing issue. But **a bespoke incident gets its own new issue** — if a block carries its own
@@ -163,11 +166,15 @@ flowchart LR
    with its own Request ID, so Anthropic can look it up server-side individually. A persistent state
    file means reruns never double-post, and a single-instance lock means two watchers can't race.
 4. **Scrub.** Three layers (see below).
-5. **File — every genuine block.** A new issue per distinct finding, or a comment when a known one
-   recurs with new Request IDs. Every issue links back to this repo and records the ClAudit version
-   that filed it. ClAudit does **not** pre-judge whether a refusal was "correct" or a false positive:
-   that classification is exactly the unreliable thing the tool exists to surface, so it's left for
-   Anthropic to assess. (You can opt into an LLM pre-filter — see below — but it's **off by default**.)
+5. **File the cyber/aup false positives.** A new issue per distinct finding, or a comment when a
+   known one recurs with new Request IDs. Every issue links back to this repo and records the ClAudit
+   version that filed it. ClAudit does **not** pre-judge whether a `cyber`/`aup` block was "correct"
+   or a false positive; that classification is the unreliable thing the tool exists to surface, so it
+   is left for Anthropic to assess. (An LLM pre-filter is available below, off by default.)
+6. **Defend, monitor, reopen (automatic).** GitHub's bot flags many of these as duplicates; the
+   watcher posts a factual "not a duplicate" note on each, watches for closures and records why each
+   one closed (duplicate, not-planned, completed), and can reopen issues the bot closed as
+   duplicates. All of it runs on a timer with no manual step.
 
 ## The honesty gate (opt-in, off by default)
 
@@ -244,23 +251,33 @@ On first GUI launch you'll be asked whether to enable Claude-assisted PII scrubb
 
 `python3 claudit_gui.py [--auto] [--backfill] [--burn-tokens] [-R owner/repo]`
 
-A native system-tray icon (Qt StatusNotifier — renders on KDE/GNOME/Windows/macOS) plus a window
-that shows **every false-positive issue on the repo** (all authors, open + closed):
+A native system-tray icon (Qt StatusNotifier; renders on KDE/GNOME/Windows/macOS) plus a window that
+shows **every ClAudit-filed issue on the repo** (all authors, open + closed). It keys on the "Filed
+automatically by ClAudit" marker, so it shows all kinds, not just ones with "false positive" in the
+title.
 
-- **Newest first**, with **exact local timestamps**.
-- **Filters:** Mine / All, Open / Closed, and a title search.
-- **Ownership colors:** your issues in purple, other ClAudit users' in teal.
-- **Click any row** to open the issue in your browser.
-- **Per-issue dedup (👎):** select an issue and click **👎** to mark it *not* a duplicate to GitHub's
-  dedupe bot — posts live, the exact mechanism the bot offers. A **👎✓** marker tracks which you've
-  already handled, so there's no blanket auto-fighting of the bot (that stays the LLM's call via
-  [`--dedup-guard`](#dedup-guard)).
-- **Project stats tab:** the repo's traction at a glance — stars (and exactly *who* starred), forks,
-  watchers, and your own followers — so you can watch the case build as more devs run ClAudit.
+- **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
+  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today.
+- **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup / harness), **defended /
+  not-defended**, and a search that matches the title or a `#number`.
+- **Ownership colors:** your issues in purple, other ClAudit users' in teal; newest first with exact
+  local timestamps.
+- **Double-click any row** for a **detail panel**: status and close reason, kind, Request IDs, and a
+  full **timeline** (filed, dup-bot flagged, defended, closed by whom and why, reopened) built from
+  the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
+  that has no defense yet.
+- **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
+- **Activity tab:** a live feed of everything the watcher does (filed, backfilled, defended,
+  reopened), timestamped, newest first.
+- **Project tab:** repo traction (stars and who starred, forks, watchers, your followers) plus the
+  community poll with one-click voting, and a **PII denylist editor** for `scrub.txt`.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- Tray menu toggles for **Auto-post**, **Backfill**, and **Claude PII scrubbing** (all saved).
+- Tray toggles, all saved: **Auto-post**, **Backfill**, **Auto-defend dup-bot flags** (on),
+  **Auto-reopen dup-bot closes** (off), and **Claude PII scrubbing**.
 
-Closing the window keeps it running in the tray.
+The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
+the checkout is clean and behind, then relaunches on the new code. Closing the window keeps it
+running in the tray.
 
 ## The CLI watcher
 
