@@ -351,11 +351,15 @@ class Watcher(QtCore.QThread):
         self.backfill_max = backfill_max
         self.defend = defend               # auto-defend dup-bot flags; toggled from the tray menu
         self.reopen = False                # auto-reopen dup-bot-CLOSED issues; opt-in (off by default)
+        self.retry = False                 # auto-continue rate-limited sessions; opt-in (off by default)
+        self._retry_mark = ""              # newest transient-error ts we've seen
+        self._retry_n = 0                  # auto-continues sent this run (capped)
         self.bf_done = 0
         self.last_live = 0.0
         self.last_bf = 0.0
         self.last_defend = 0.0
         self.last_reopen = 0.0
+        self.last_retry = 0.0
         self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
 
     def run(self):
@@ -416,6 +420,20 @@ class Watcher(QtCore.QThread):
                         self.acted.emit(rr, "reopen")
                 except Exception as e:
                     print("reopen error:", e, file=sys.stderr)
+            # AUTO-RETRY: opt-in — a NEW rate-limit/overloaded error means a session is stuck;
+            # type 'continue' into the focused window so it resumes. Capped, won't loop forever.
+            if self.retry and now - self.last_retry >= 12:
+                self.last_retry = now
+                try:
+                    ts = cs.newest_transient_ts()
+                    if ts and ts > self._retry_mark:
+                        first = self._retry_mark == ""
+                        self._retry_mark = ts                # don't continue a pre-existing one
+                        if not first and self._retry_n < 8 and cs.send_continue():
+                            self._retry_n += 1
+                            self.acted.emit(self._retry_n, "retried")
+                except Exception as e:
+                    print("retry error:", e, file=sys.stderr)
             for _ in range(2):                                       # ~2s tick
                 if not self._run:
                     return
@@ -1043,6 +1061,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_reopen.setCheckable(True)
         self.act_reopen.setChecked(False)  # opt-in: reopening closes is aggressive
         self.act_reopen.toggled.connect(self._toggle_reopen)
+        self.act_retry = menu.addAction("Auto-continue rate limits")
+        self.act_retry.setCheckable(True)
+        self.act_retry.setChecked(False)   # opt-in: types into the focused window
+        self.act_retry.toggled.connect(self._toggle_retry)
         self.act_llm = menu.addAction("Claude PII scrubbing")
         self.act_llm.setCheckable(True)
         self.act_llm.setChecked(claudit.LLM_SCRUB)
@@ -1105,6 +1127,17 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit", "Auto-reopen ENABLED — issues the dup-bot CLOSED as "
                               "duplicates get reopened (your own closes are left alone)." if on
                               else "Auto-reopen paused.")
+
+    def _toggle_retry(self, on):
+        if not self.watcher:
+            return
+        self.watcher.retry = on
+        if on:
+            self.watcher._retry_mark = ""    # prime on the next tick; don't fire on an old error
+            self.watcher.last_retry = 0.0
+        self.tray.showMessage("ClAudit", "Auto-continue ENABLED — when a session is rate-limited, "
+                              "ClAudit types 'continue' into the FOCUSED window so it resumes. Keep "
+                              "Claude Code focused." if on else "Auto-continue paused.")
 
     # ---- project stats tab ----
     def _build_poll_panel(self):
@@ -1556,6 +1589,11 @@ class Main(QtWidgets.QMainWindow):
             self.tray.showMessage("ClAudit · 🛡 DEFENDED",
                                   f"Auto-defended {n} dup-bot-flagged issue(s) (👎 + note).", icon)
             self._log(f"🛡 auto-defended {n} dup-bot-flagged issue(s)")
+            return
+        if kind == "retried":    # auto-continued a rate-limited session
+            self.tray.showMessage("ClAudit · ↻ AUTO-CONTINUE",
+                                  f"Typed 'continue' after a rate limit ({n} this run).", icon)
+            self._log(f"↻ auto-continued after a rate limit (#{n})")
             return
         if kind == "reopen":     # reopened dup-bot-closed issues
             self.tray.showMessage("ClAudit · ♻ REOPENED",
