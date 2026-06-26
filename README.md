@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.47-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.48-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -158,9 +158,9 @@ flowchart LR
      incident, for example), so they are out of scope. Opt back in with `--report-harness`.
    Everything else (overloaded/529, rate-limit, usage-limit, connection errors) is logged and never
    sent. It is transient noise, not a bug.
-3. **Dedup — one issue per *bespoke incident*.** Findings are keyed by the triggering prompt: a
+3. **Dedup, one issue per *bespoke incident*.** Findings are keyed by the triggering prompt: a
    retry of the *same* request (same prompt, a new Request ID for the same block) folds into the
-   existing issue. But **a bespoke incident gets its own new issue** — if a block carries its own
+   existing issue. But **a bespoke incident gets its own new issue**. If a block carries its own
    distinct Request ID for distinct work, ClAudit files it as a **separate issue**, never folded into
    a roll-up. There are **no aggregate / "tracking" issues**: each genuine incident stands on its own,
    with its own Request ID, so Anthropic can look it up server-side individually. A persistent state
