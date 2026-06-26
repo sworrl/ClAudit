@@ -690,16 +690,22 @@ class Main(QtWidgets.QMainWindow):
         self.f_scope.addItems(["All issues", "Mine only"])
         self.f_state = QtWidgets.QComboBox()
         self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
+        self.f_kind = QtWidgets.QComboBox()
+        self.f_kind.addItems(["All kinds", "cyber", "aup", "harness"])
+        self.f_dedup = QtWidgets.QComboBox()
+        self.f_dedup.addItems(["Any", "Defended", "Not defended"])
         self.f_search = QtWidgets.QLineEdit()
-        self.f_search.setPlaceholderText("Filter by title…")
+        self.f_search.setPlaceholderText("Filter by title or #number…")
         self.f_search.setClearButtonEnabled(True)
-        for w in (self.f_scope, self.f_state):
+        for w in (self.f_scope, self.f_state, self.f_kind, self.f_dedup):
             w.currentIndexChanged.connect(self._repopulate)
         self.f_search.textChanged.connect(self._repopulate)
         filt = QtWidgets.QHBoxLayout()
         filt.addWidget(QtWidgets.QLabel("Show:"))
         filt.addWidget(self.f_scope)
         filt.addWidget(self.f_state)
+        filt.addWidget(self.f_kind)
+        filt.addWidget(self.f_dedup)
         filt.addWidget(self.f_search, 1)
 
         self.status = QtWidgets.QLabel("Loading…")
@@ -1111,7 +1117,10 @@ class Main(QtWidgets.QMainWindow):
         DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922"}
         scope = self.f_scope.currentText()
         statef = self.f_state.currentText()
-        needle = self.f_search.text().strip().lower()
+        kindf = self.f_kind.currentText()
+        dedupf = self.f_dedup.currentText()
+        needle = self.f_search.text().strip().lstrip("#").lower()
+        deduped = self.state.get("__deduped__", {}) or {}
 
         rows = []   # (sort_ts, state, issue_label, author, created, title, url)
         pend = set(cs.pending_sigs(self.state))
@@ -1133,7 +1142,14 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if statef == "Closed only" and st != "closed":
                 continue
-            if needle and needle not in title.lower():
+            if kindf != "All kinds" and f"[{kindf}]" not in title.lower():
+                continue
+            is_defended = deduped.get(str(it["number"])) == "not-duplicate"
+            if dedupf == "Defended" and not is_defended:
+                continue
+            if dedupf == "Not defended" and is_defended:
+                continue
+            if needle and needle not in title.lower() and needle not in str(it.get("number", "")):
                 continue
             created = fmt_ts(it.get("createdAt", ""))
             ded = (self.state.get("__deduped__", {}) or {}).get(str(it["number"]))
