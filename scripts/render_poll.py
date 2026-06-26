@@ -66,31 +66,40 @@ def append_history(open_n, total_n, when):
     return hist
 
 
+# On this date ClAudit stopped filing auto-mode-classifier (harness) denials and closed the open ones.
+# Data before it counts harness; data from it on counts real API false positives (cyber/aup) only.
+SCOPE_MARK_DATE = "2026-06-26"
+HARNESS_ERA = "#8a5a5a"   # muted red: open count that still included harness
+REAL_FP = "#4aa3ff"       # cyan: open count tracking real cyber/aup false positives only
+CLOSED_C = "#3fb950"
+TOTAL_C = "#6b7280"
+
+
 def render_trend_svg(hist):
-    """Dependency-free SVG line chart: total filed (grey), still-open (red), closed (green)."""
-    W, H, pad = 680, 220, 34
+    """Dependency-free SVG line chart. The open line is muted red while it still counted harness,
+    then cyan once ClAudit narrowed to real cyber/aup false positives; a marker shows the switch."""
+    W, H, pad = 700, 234, 36
     if not hist:
         hist = [{"t": "", "open": 0, "total": 0, "closed": 0}]
     n = len(hist)
     ymax = max(1, max(p["total"] for p in hist))
+    mark = next((i for i, p in enumerate(hist) if (p.get("t", "")[:10] >= SCOPE_MARK_DATE)), None)
 
     def coord(i, v):
-        # center a lone point instead of pinning it to the far-left edge
         fx = 0.5 if n == 1 else i / (n - 1)
-        x = pad + (W - 2 * pad) * fx
-        y = H - pad - (H - 2 * pad) * (v / ymax)
-        return x, y
+        return pad + (W - 2 * pad) * fx, H - pad - (H - 2 * pad) * (v / ymax)
 
-    def series(key, color):
-        pts = [coord(i, p[key]) for i, p in enumerate(hist)]
-        line = (f'<polyline fill="none" stroke="{color}" stroke-width="2.5" '
-                f'stroke-linejoin="round" points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}"/>'
-                if n > 1 else "")
-        # dots so even a single data point is visible
-        dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{color}"/>' for x, y in pts)
+    def seg(key, color, lo, hi):
+        pts = [coord(i, hist[i][key]) for i in range(lo, hi)]
+        line = (f'<polyline fill="none" stroke="{color}" stroke-width="2.5" stroke-linejoin="round" '
+                f'points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}"/>' if len(pts) > 1 else "")
+        dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{color}"/>' for x, y in pts)
         return line + dots
 
-    poly = series   # back-comat alias
+    if mark is None:
+        open_svg = seg("open", REAL_FP, 0, n)
+    else:
+        open_svg = seg("open", HARNESS_ERA, 0, mark + 1) + seg("open", REAL_FP, mark, n)
 
     grid = "".join(
         f'<line x1="{pad}" y1="{H - pad - (H - 2 * pad) * f:.1f}" x2="{W - pad}" '
@@ -98,23 +107,33 @@ def render_trend_svg(hist):
         f'<text x="{pad - 6}" y="{H - pad - (H - 2 * pad) * f + 4:.1f}" fill="#6b7280" '
         f'font-size="11" text-anchor="end">{round(ymax * f)}</text>'
         for f in (0, 0.5, 1.0))
+    markline = ""
+    if mark is not None:
+        mx = coord(mark, 0)[0]
+        markline = (f'<line x1="{mx:.1f}" y1="{pad}" x2="{mx:.1f}" y2="{H - pad}" stroke="#d29922" '
+                    f'stroke-width="1.5" stroke-dasharray="4 3"/>'
+                    f'<text x="{mx + 5:.1f}" y="{pad + 12}" fill="#d29922" font-family="system-ui,'
+                    f'sans-serif" font-size="10">harness withdrawn</text>')
     first, last = hist[0]["t"][:10], hist[-1]["t"][:10]
     cur = hist[-1]
-    building = (f'<text x="{W / 2:.0f}" y="{H / 2 + 24:.0f}" text-anchor="middle" fill="#6b7280" '
-                f'font-family="system-ui,sans-serif" font-size="12">📈 trend builds hourly — '
+    building = (f'<text x="{W / 2:.0f}" y="{H / 2 + 20:.0f}" text-anchor="middle" fill="#6b7280" '
+                f'font-family="system-ui,sans-serif" font-size="12">trend builds hourly: '
                 f'{n} data point{"s" if n != 1 else ""} so far</text>' if n < 3 else "")
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img">
 <rect width="{W}" height="{H}" rx="12" fill="#16181d"/>
-<text x="{pad}" y="22" fill="#e8eaed" font-family="system-ui,sans-serif" font-size="14" font-weight="700">Is Anthropic acting? — ClAudit reports over time</text>
+<text x="{pad}" y="22" fill="#e8eaed" font-family="system-ui,sans-serif" font-size="14" font-weight="700">Is Anthropic acting? ClAudit reports over time</text>
 {grid}
 {building}
-{poly("total", "#6b7280")}
-{poly("closed", "#3fb950")}
-{poly("open", "#f85149")}
-<text x="{pad}" y="{H - 8}" fill="#6b7280" font-size="11">{first}</text>
-<text x="{W - pad}" y="{H - 8}" fill="#6b7280" font-size="11" text-anchor="end">{last}</text>
+{markline}
+{seg("total", TOTAL_C, 0, n)}
+{seg("closed", CLOSED_C, 0, n)}
+{open_svg}
+<text x="{pad}" y="{H - 9}" fill="#6b7280" font-size="11">{first}</text>
+<text x="{W - pad}" y="{H - 9}" fill="#6b7280" font-size="11" text-anchor="end">{last}</text>
+<text x="{pad}" y="{H - 22}" font-family="system-ui,sans-serif" font-size="11">
+<tspan fill="{REAL_FP}">&#9679; open cyber/aup FPs</tspan>  <tspan fill="{HARNESS_ERA}">&#9679; (was incl. harness)</tspan>  <tspan fill="{CLOSED_C}">&#9679; closed</tspan></text>
 <text x="{W - pad}" y="22" text-anchor="end" font-family="system-ui,sans-serif" font-size="12">
-<tspan fill="#6b7280">filed {cur["total"]}</tspan>  <tspan fill="#f85149">open {cur["open"]}</tspan>  <tspan fill="#3fb950">closed {cur["closed"]}</tspan></text>
+<tspan fill="{TOTAL_C}">filed {cur["total"]}</tspan>  <tspan fill="{REAL_FP}">open {cur["open"]}</tspan>  <tspan fill="{CLOSED_C}">closed {cur["closed"]}</tspan></text>
 </svg>'''
 
 
@@ -130,11 +149,11 @@ def render_md(counts, when):
         n = counts[key]
         pct = round(100 * n / total)
         rows.append(f"| {emoji} {meaning} | `{_bar(pct)}` | **{pct}%** ({n}) |")
-    head = (f"**Will Anthropic fix Claude Code's false-positive blocking — or will it stay "
+    head = (f"**Will Anthropic fix Claude Code's false-positive blocking, or will it stay "
             f"broken?**  ·  _{counts['total']} vote(s), updated {when} UTC_")
     table = "| | | |\n|---|---:|---|\n" + "\n".join(rows)
     return (f"{START}\n{head}\n\n{table}\n\n"
-            f"🗳️ **[Cast your vote →]({ISSUE_URL})** — react 👍 / 👎 / 👀 on the pinned issue "
+            f"🗳️ **[Cast your vote →]({ISSUE_URL})**. React 👍 / 👎 / 👀 on the pinned issue "
             f"(or vote in one click from the ClAudit app).\n{END}")
 
 
@@ -160,10 +179,12 @@ def main():
         closed = max(0, total - n)
         counter_block = (
             f"{CSTART}\n### 📊 {n} open false-positive blocks reported by ClAudit right now\n\n"
-            f"Across **all** ClAudit users, live from [`anthropics/claude-code`]({SEARCH_URL}) — "
+            f"Across **all** ClAudit users, live from [`anthropics/claude-code`]({SEARCH_URL}). "
             f"**{total} filed**, **{closed} closed** · _updated {when} UTC_\n\n"
             f"[![ClAudit reports over time](docs/trend.svg)]({SEARCH_URL})\n\n"
-            f"<sub>Open (red) falling toward closed (green) = Anthropic is acting.</sub>\n{CEND}")
+            f"<sub>Open (cyan) counts real cyber/aup false positives. The closed jump on 2026-06-26 is "
+            f"the 261 auto-mode-classifier (harness) reports ClAudit withdrew as out of scope. Closed "
+            f"rising after that point is Anthropic acting.</sub>\n{CEND}")
 
     block = render_md(counts, when)
     with open(README) as fh:
