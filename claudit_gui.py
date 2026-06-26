@@ -265,6 +265,51 @@ class AnimatedBanner(QtWidgets.QWidget):
         p.end()
 
 
+class BreakdownBars(QtWidgets.QWidget):
+    """Horizontal bar breakdown of the corpus (QPainter, no GL): open/closed and by kind."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(150)
+        self.data = []   # [(label, value, color), ...]
+
+    def set_data(self, rows):
+        self.data = rows
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        if not self.data:
+            p.end()
+            return
+        mx = max((v for _, v, _ in self.data), default=1) or 1
+        x0, pad = 130, 6
+        track_w = max(40, self.width() - x0 - 52)
+        rowh = (self.height() - pad) / max(1, len(self.data))
+        font = QtGui.QFont()
+        font.setPointSize(10)
+        p.setFont(font)
+        for i, (label, val, color) in enumerate(self.data):
+            y = pad + i * rowh
+            bh = max(8, rowh - 8)
+            p.setPen(QtGui.QColor("#aeb6c2"))
+            p.drawText(0, int(y), x0 - 10, int(bh),
+                       QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter, label)
+            tr = QtCore.QRectF(x0, y, track_w, bh)
+            pth = QtGui.QPainterPath()
+            pth.addRoundedRect(tr, bh / 2, bh / 2)
+            p.fillPath(pth, QtGui.QColor("#20242c"))
+            bw = track_w * val / mx
+            if bw > 1:
+                fr = QtGui.QPainterPath()
+                fr.addRoundedRect(QtCore.QRectF(x0, y, bw, bh), bh / 2, bh / 2)
+                p.fillPath(fr, QtGui.QColor(color))
+            p.setPen(QtGui.QColor("#e6e8ec"))
+            p.drawText(int(x0 + track_w + 8), int(y), 44, int(bh),
+                       QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter, str(val))
+        p.end()
+
+
 def make_banner():
     """The animated header. Default = safe QPainter AnimatedBanner (no GL). The native GLSL shader
     is opt-in via CLAUDIT_GL=1 because some GL stacks segfault on a QOpenGLWidget context."""
@@ -1073,13 +1118,20 @@ class Main(QtWidgets.QMainWindow):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
         v.addWidget(self._build_poll_panel())
+        charts = QtWidgets.QHBoxLayout()
         if _HAVE_SVG:
             box = QtWidgets.QGroupBox("📈 Reports over time")
             bl = QtWidgets.QVBoxLayout(box)
             self.trend_svg = QSvgWidget()
             self.trend_svg.setMinimumHeight(180)
             bl.addWidget(self.trend_svg)
-            v.addWidget(box)
+            charts.addWidget(box, 3)
+        bbox = QtWidgets.QGroupBox("📊 Breakdown")
+        bbl = QtWidgets.QVBoxLayout(bbox)
+        self.breakdown = BreakdownBars()
+        bbl.addWidget(self.breakdown)
+        charts.addWidget(bbox, 2)
+        v.addLayout(charts)
         self.stats_summary = QtWidgets.QLabel("Loading project stats…")
         self.stats_summary.setObjectName("brand")
         self.stats_summary.setWordWrap(True)
@@ -1370,6 +1422,15 @@ class Main(QtWidgets.QMainWindow):
             f"cyber {kinds['cyber']} · aup {kinds['aup']} · harness {kinds['harness']} &nbsp;|&nbsp; "
             f"🛡 {defended} &nbsp; ♻ {reopened} &nbsp; "
             f"<span style='color:#5eead4'>+{nday} today</span>")
+        if hasattr(self, "breakdown"):
+            self.breakdown.set_data([
+                ("open", nopen, "#3fb950"),
+                ("closed", nclosed, "#a371f7"),
+                ("cyber", kinds["cyber"], "#4aa3ff"),
+                ("aup", kinds["aup"], "#d29922"),
+                ("harness", kinds["harness"], "#8a5a5a"),
+                ("defended", defended, "#5eead4"),
+            ])
 
     def _on_community(self, items, me):
         self.community, self.me = items, me
