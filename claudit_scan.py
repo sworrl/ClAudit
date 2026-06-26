@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.61"
+__version__ = "2.0.62"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -189,74 +189,105 @@ def assistant_text(entry):
 
 
 _SCAN_CACHE = {"t": -1e9, "val": None}
+_FILE_CACHE = {}   # path -> (mtime, [findings], [log_lines], counts) so unchanged files aren't re-parsed
+
+
+def _parse_file(path, name, root):
+    """Parse ONE session transcript -> (findings list, log lines, logged-only counts). No shared
+    state, so the result can be cached by mtime and reused until the file changes."""
+    findings, log_lines = {}, []
+    counts = {"overloaded": 0, "limit": 0, "other": 0, "harness": 0}
+    last_prompt, recent = None, collections.deque(maxlen=6)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                hp = human_text(entry)
+                if hp:
+                    last_prompt = hp
+                    recent.append(("user", hp[:300]))
+                    continue
+                hd = harness_denial(entry)
+                if hd:
+                    ts = entry.get("timestamp", "")
+                    log_lines.append(json.dumps({"kind": "harness", "ts": ts, "session": name, "req": None}))
+                    if not REPORT_HARNESS:   # log-only: local classifier decision, not an API FP
+                        counts["harness"] += 1
+                        continue
+                    s = sig("harness", hd[:300])
+                    f = findings.setdefault(s, {"sig": s, "kind": "harness",
+                                                "prompt": last_prompt or "(no preceding prompt)",
+                                                "occ": [], "block_text": hd, "leadup": list(recent)})
+                    f["occ"].append({"req": None, "ts": ts, "session": name, "proj": os.path.basename(root)})
+                    continue
+                err = error_text(entry)
+                if err is None:
+                    at = assistant_text(entry)
+                    if at:
+                        recent.append(("assistant", at[:300]))
+                    continue
+                kind = classify(err)
+                ts = entry.get("timestamp", "")
+                m = REQ_ID.search(err)
+                req = m.group(0) if m else None
+                log_lines.append(json.dumps({"kind": kind, "ts": ts, "session": name, "req": req}))
+                if kind not in FILE_KINDS:
+                    counts[kind] = counts.get(kind, 0) + 1
+                    continue
+                prompt = last_prompt or "(triggering prompt not recoverable)"
+                s = sig(kind, prompt)
+                f = findings.setdefault(s, {"sig": s, "kind": kind, "prompt": prompt,
+                                            "occ": [], "block_text": err, "leadup": list(recent)})
+                f["occ"].append({"req": req, "ts": ts, "session": name, "proj": os.path.basename(root)})
+    except OSError:
+        pass
+    return list(findings.values()), log_lines, counts
 
 
 def scan(ttl=0.0):
-    """Walk all sessions -> (findings dict[sig]->finding, logged-only counts).
-    With ttl>0, reuse the last result if it's younger than ttl seconds — backfill drips
-    re-scan hundreds of files otherwise, which is what made it crawl."""
+    """Walk all sessions -> (findings dict[sig]->finding, logged-only counts). Incremental: each
+    file is parsed once and cached by mtime, so a re-scan only re-parses the files that changed
+    (usually just the active session). With ttl>0, reuse the whole result if it's younger than ttl."""
     if ttl and _SCAN_CACHE["val"] is not None and time.monotonic() - _SCAN_CACHE["t"] < ttl:
         return _SCAN_CACHE["val"]
     findings, logged, log_lines = {}, {"overloaded": 0, "limit": 0, "other": 0, "harness": 0}, []
+    seen = set()
     for root, _, files in os.walk(PROJECTS):
         for name in files:
             if not name.endswith(".jsonl"):
                 continue
-            last_prompt = None
-            recent = collections.deque(maxlen=6)   # rolling conversation leadup
+            path = os.path.join(root, name)
+            seen.add(path)
             try:
-                with open(os.path.join(root, name), encoding="utf-8") as fh:
-                    for line in fh:
-                        try:
-                            entry = json.loads(line)
-                        except ValueError:
-                            continue
-                        hp = human_text(entry)
-                        if hp:
-                            last_prompt = hp
-                            recent.append(("user", hp[:300]))
-                            continue
-                        hd = harness_denial(entry)
-                        if hd:
-                            ts = entry.get("timestamp", "")
-                            log_lines.append(json.dumps({"kind": "harness", "ts": ts,
-                                                         "session": name, "req": None}))
-                            if not REPORT_HARNESS:   # log-only: local classifier decision, not an API FP
-                                logged["harness"] += 1
-                                continue
-                            s = sig("harness", hd[:300])
-                            f = findings.setdefault(s, {"sig": s, "kind": "harness",
-                                                        "prompt": last_prompt or "(no preceding prompt)",
-                                                        "occ": [], "block_text": hd, "leadup": list(recent)})
-                            f["occ"].append({"req": None, "ts": ts, "session": name,
-                                             "proj": os.path.basename(root)})
-                            continue
-                        err = error_text(entry)
-                        if err is None:
-                            at = assistant_text(entry)
-                            if at:
-                                recent.append(("assistant", at[:300]))
-                            continue
-                        kind = classify(err)
-                        ts = entry.get("timestamp", "")
-                        m = REQ_ID.search(err)
-                        req = m.group(0) if m else None
-                        log_lines.append(json.dumps({"kind": kind, "ts": ts, "session": name, "req": req}))
-                        if kind not in FILE_KINDS:
-                            logged[kind] += 1
-                            continue
-                        prompt = last_prompt or "(triggering prompt not recoverable)"
-                        s = sig(kind, prompt)
-                        f = findings.setdefault(s, {"sig": s, "kind": kind, "prompt": prompt,
-                                                    "occ": [], "block_text": err, "leadup": list(recent)})
-                        f["occ"].append({"req": req, "ts": ts, "session": name,
-                                         "proj": os.path.basename(root)})
+                mtime = os.path.getmtime(path)
             except OSError:
                 continue
+            cached = _FILE_CACHE.get(path)
+            if cached and cached[0] == mtime:
+                ff, fl, fc = cached[1], cached[2], cached[3]
+            else:
+                ff, fl, fc = _parse_file(path, name, root)
+                _FILE_CACHE[path] = (mtime, ff, fl, fc)
+            log_lines.extend(fl)
+            for k, v in fc.items():
+                logged[k] = logged.get(k, 0) + v
+            for f in ff:                      # merge by signature across files
+                ex = findings.get(f["sig"])
+                if ex:
+                    ex["occ"].extend(f["occ"])
+                else:
+                    findings[f["sig"]] = {**f, "occ": list(f["occ"])}   # copy so cache isn't mutated
+    for p in [p for p in _FILE_CACHE if p not in seen]:   # evict deleted files
+        del _FILE_CACHE[p]
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(ERROR_LOG, "w", encoding="utf-8") as fh:
         fh.write("\n".join(log_lines) + ("\n" if log_lines else ""))
-    return findings, logged
+    result = (findings, logged)
+    _SCAN_CACHE["t"], _SCAN_CACHE["val"] = time.monotonic(), result
+    return result
 
 
 def _pid_alive(pid):

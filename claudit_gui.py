@@ -318,6 +318,186 @@ class BreakdownBars(QtWidgets.QWidget):
         p.end()
 
 
+# kind -> (color, lane label), in back-to-front lane order for the chrono-line
+KIND_VIZ = {
+    "cyber":      ("#4aa3ff", "cyber FP"),
+    "aup":        ("#d29922", "AUP FP"),
+    "harness":    ("#8a5a5a", "harness"),
+    "limit":      ("#f0883e", "rate limit"),
+    "overloaded": ("#a371f7", "overloaded"),
+    "other":      ("#5b6472", "other"),
+}
+LANE_ORDER = ["cyber", "aup", "harness", "limit", "overloaded", "other"]
+
+
+def _iso_epoch(ts):
+    """ISO-8601 (with trailing Z) -> POSIX seconds; 0.0 if unparseable."""
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+class ChronoLine(QtWidgets.QWidget):
+    """Pseudo-3D timeline of every block in ERROR_LOG. Pure QPainter with a hand-rolled perspective
+    projection — NO OpenGL, so it cannot segfault on any GL stack. Each kind is a depth lane; events
+    plot along a tilted time axis. Drag to rotate, wheel to zoom, double-click to toggle auto-orbit."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(360)
+        self.events = []          # [(epoch, kind), ...] sorted by epoch
+        self.tmin = self.tmax = 0.0
+        self.yaw, self.pitch, self.zoom = 0.45, 0.50, 1.0
+        self._drag = None
+        self._auto = True
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(80)     # ~12fps: idle orbit / drag follow, cheap for 811 points
+
+    def _tick(self):
+        if self._auto and self._drag is None:
+            self.yaw += 0.0022    # slow auto-orbit when untouched
+        self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._timer.isActive():
+            self._timer.start(80)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._timer.stop()        # don't spin while the tab/tray is hidden
+
+    def set_events(self, events):
+        ev = sorted(events, key=lambda x: x[0])
+        self.events = ev
+        if ev:
+            self.tmin, self.tmax = ev[0][0], ev[-1][0]
+        self.update()
+
+    def mousePressEvent(self, e):
+        self._drag = (e.position().x(), e.position().y(), self.yaw, self.pitch)
+
+    def mouseMoveEvent(self, e):
+        if self._drag is None:
+            return
+        x0, y0, yaw0, pitch0 = self._drag
+        self.yaw = yaw0 + (e.position().x() - x0) * 0.010
+        self.pitch = max(-0.15, min(1.15, pitch0 + (e.position().y() - y0) * 0.008))
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+    def wheelEvent(self, e):
+        self.zoom = max(0.4, min(3.0, self.zoom * (1.0 + e.angleDelta().y() / 1200.0)))
+        self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        self._auto = not self._auto
+
+    def _project(self, x, y, z, cx, cy, scale):
+        """Rotate (yaw about Y, pitch about X) then perspective-divide -> (sx, sy, depthfactor)."""
+        cyw, syw = math.cos(self.yaw), math.sin(self.yaw)
+        xr, zr = x * cyw + z * syw, -x * syw + z * cyw
+        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
+        yr, zr2 = y * cp - zr * sp, y * sp + zr * cp
+        f = 3.2 / (3.2 + zr2)
+        return cx + xr * f * scale, cy - yr * f * scale, f
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(self.rect(), QtGui.QColor(13, 16, 22))
+        if not self.events:
+            p.setPen(QtGui.QColor("#6b7280"))
+            p.drawText(self.rect(), QtCore.Qt.AlignmentFlag.AlignCenter,
+                       "No blocks recorded yet — the timeline fills as ClAudit scans.")
+            p.end()
+            return
+        cx, cy = w * 0.46, h * 0.54
+        scale = min(w, h) * 0.40 * self.zoom
+        span = max(1.0, self.tmax - self.tmin)
+        nz = len(LANE_ORDER)
+        lane_i = {k: i for i, k in enumerate(LANE_ORDER)}
+
+        def tx(epoch):                       # time -> x in [-1.25, 1.05] (recent end pulled in so it won't clip)
+            return -1.25 + 2.3 * (epoch - self.tmin) / span
+
+        def lz(kind):                        # lane -> z depth in [-0.85, 0.85]
+            return -0.85 + 1.7 * lane_i.get(kind, nz - 1) / max(1, nz - 1)
+
+        # floor: one rail per lane
+        for k in LANE_ORDER:
+            z = lz(k)
+            a = self._project(-1.3, 0, z, cx, cy, scale)
+            b = self._project(1.3, 0, z, cx, cy, scale)
+            p.setPen(QtGui.QPen(QtGui.QColor(38, 44, 54), 1))
+            p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
+            col = QtGui.QColor(KIND_VIZ[k][0])
+            p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 150))
+            f = QtGui.QFont(); f.setPointSize(8); p.setFont(f)
+            p.drawText(QtCore.QPointF(a[0] - 4, a[1] + 3), KIND_VIZ[k][1])
+
+        # month gridlines across all lanes, with date labels on the front rail
+        zf, zb = lz(LANE_ORDER[-1]), lz(LANE_ORDER[0])
+        t0 = datetime.datetime.fromtimestamp(self.tmin, tz=datetime.timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        m = (t0.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)   # first whole month inside the range
+        for _ in range(18):
+            ep = m.timestamp()
+            if ep > self.tmax:
+                break
+            if ep >= self.tmin:
+                x = tx(ep)
+                a = self._project(x, 0, zb, cx, cy, scale)
+                b = self._project(x, 0, zf, cx, cy, scale)
+                p.setPen(QtGui.QPen(QtGui.QColor(32, 38, 47), 1))
+                p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
+                p.setPen(QtGui.QColor("#6b7280"))
+                p.drawText(QtCore.QPointF(b[0] - 10, b[1] + 16), m.strftime("%b"))
+            m = (m.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)
+
+        # per-lane connecting thread, then event dots (height grows with each repeat in a lane)
+        per = {k: [] for k in LANE_ORDER}
+        for epoch, kind in self.events:
+            per.get(kind, per["other"]).append(epoch)
+        now = self.tmax
+        for k in LANE_ORDER:
+            col = QtGui.QColor(KIND_VIZ[k][0])
+            z = lz(k)
+            eps = per[k]
+            line = [self._project(tx(ep), 0.05, z, cx, cy, scale) for ep in eps]
+            if len(line) > 1:
+                p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 55), 1.2))
+                path = QtGui.QPainterPath()
+                path.moveTo(line[0][0], line[0][1])
+                for q in line[1:]:
+                    path.lineTo(q[0], q[1])
+                p.drawPath(path)
+            for ep in eps:
+                recency = (ep - self.tmin) / span            # newer events stand taller
+                sx, sy, f = self._project(tx(ep), 0.05 + 0.18 * recency, z, cx, cy, scale)
+                r = max(1.6, 3.2 * f)
+                fresh = (now - ep) < 86400 * 3                # within 3 days -> bright + glow
+                alpha = 235 if fresh else 120
+                if fresh:
+                    g = QtGui.QRadialGradient(sx, sy, r * 3)
+                    g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), 120))
+                    g.setColorAt(1.0, QtGui.QColor(col.red(), col.green(), col.blue(), 0))
+                    p.setBrush(QtGui.QBrush(g)); p.setPen(QtCore.Qt.PenStyle.NoPen)
+                    p.drawEllipse(QtCore.QPointF(sx, sy), r * 3, r * 3)
+                p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))
+                p.setPen(QtCore.Qt.PenStyle.NoPen)
+                p.drawEllipse(QtCore.QPointF(sx, sy), r, r)
+
+        p.setPen(QtGui.QColor("#8b94a3"))
+        f = QtGui.QFont(); f.setPointSize(9); p.setFont(f)
+        p.drawText(12, h - 12, f"{len(self.events)} blocks · drag to rotate · wheel to zoom · "
+                                "double-click toggles orbit")
+        p.end()
+
+
 def make_banner():
     """The animated header. Default = safe QPainter AnimatedBanner (no GL). The native GLSL shader
     is opt-in via CLAUDIT_GL=1 because some GL stacks segfault on a QOpenGLWidget context."""
@@ -1168,14 +1348,52 @@ class Main(QtWidgets.QMainWindow):
     def _build_activity_tab(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
-        v.addWidget(QtWidgets.QLabel("Everything the watcher does — filed, defended, reopened, "
-                                     "closures detected — newest first."))
+        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+
+        top = QtWidgets.QWidget()
+        tl = QtWidgets.QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.addWidget(QtWidgets.QLabel("Block timeline — every cyber/AUP/harness/limit/overloaded event "
+                                      "over time, one depth lane per kind. Recent blocks stand taller and glow."))
+        self.chrono = ChronoLine()
+        tl.addWidget(self.chrono, 1)
+        split.addWidget(top)
+
+        bot = QtWidgets.QWidget()
+        bl = QtWidgets.QVBoxLayout(bot)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(QtWidgets.QLabel("Watcher activity — filed, defended, reopened, closures — newest first."))
         self.activity = QtWidgets.QListWidget()
-        v.addWidget(self.activity, 1)
+        bl.addWidget(self.activity, 1)
         b = QtWidgets.QPushButton("Clear")
         b.clicked.connect(lambda: self.activity.clear())
-        v.addWidget(b)
+        bl.addWidget(b)
+        split.addWidget(bot)
+
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        v.addWidget(split)
+        self._load_chrono()
         return w
+
+    def _load_chrono(self):
+        """Feed the chrono-line from ERROR_LOG (rewritten by every scan)."""
+        if not hasattr(self, "chrono"):
+            return
+        events = []
+        try:
+            with open(cs.ERROR_LOG, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    ep = _iso_epoch(e.get("ts", ""))
+                    if ep:
+                        events.append((ep, e.get("kind", "other")))
+        except OSError:
+            pass
+        self.chrono.set_events(events)
 
     def _log(self, msg):
         """Prepend a timestamped line to the in-app activity feed (capped at 300)."""
@@ -1381,7 +1599,7 @@ class Main(QtWidgets.QMainWindow):
 
     def _scan_then(self):
         with STATE_LOCK:
-            self.findings = cs.scan()[0]
+            self.findings = cs.scan(ttl=20)[0]   # reuse the watcher's recent scan; don't re-walk per refresh
         QtCore.QMetaObject.invokeMethod(self, "_repopulate", QtCore.Qt.ConnectionType.QueuedConnection)
 
     @QtCore.pyqtSlot()
@@ -1477,6 +1695,7 @@ class Main(QtWidgets.QMainWindow):
         self.act_pending.setText(f"Report {len(pend)} pending")
         self.act_pending.setEnabled(len(pend) > 0)
         self._update_stats_bar(nopen)
+        self._load_chrono()   # ERROR_LOG was just rewritten by the scan that triggered this repopulate
 
     def _update_stats_bar(self, nopen):
         if not hasattr(self, "stats_bar"):

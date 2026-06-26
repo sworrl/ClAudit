@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.61-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.62-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -73,7 +73,21 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <div align="center">
 
-<img src="docs/screenshot.png" alt="ClAudit community dashboard — every false-positive issue, newest first, yours highlighted" width="780">
+<img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
+
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status.</em>
+
+<br><br>
+
+<img src="docs/screenshot-project.png" alt="ClAudit Project tab — community vote, reports-over-time trend, kind breakdown, stargazers" width="780">
+
+<em>Project tab: the community vote, the reports-over-time trend (open FPs, closed FPs, withdrawn harness blocks), the per-kind breakdown bars, and repo stargazers.</em>
+
+<br><br>
+
+<img src="docs/screenshot-activity.png" alt="ClAudit Activity tab — pseudo-3D chrono-line of every block over time, one depth lane per kind" width="780">
+
+<em>Activity tab: a pseudo-3D chrono-line of all 811 recorded blocks. One depth lane per kind (cyber, AUP, harness, rate limit, overloaded, other); recent blocks stand taller and glow. Drag to rotate, wheel to zoom, double-click to toggle auto-orbit. Pure QPainter, no OpenGL.</em>
 
 </div>
 
@@ -302,8 +316,12 @@ title.
   the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
   that has no defense yet.
 - **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
-- **Activity tab:** a live feed of everything the watcher does (filed, backfilled, defended,
-  reopened, queued), timestamped, newest first.
+- **Activity tab:** a **pseudo-3D chrono-line** of every recorded block over time, one depth lane per
+  kind (cyber, AUP, harness, rate limit, overloaded, other). Recent blocks stand taller and glow.
+  Drag to rotate, wheel to zoom, double-click to toggle the slow auto-orbit. It is pure QPainter with
+  a hand-rolled perspective projection, no OpenGL, so it cannot segfault on any GL stack. Below it, a
+  live feed of everything the watcher does (filed, backfilled, defended, reopened, queued),
+  timestamped, newest first.
 - **Project tab:** two charts plus repo traction. The **Reports over time** chart plots three lines,
   normalized to API blocks: open `cyber`/`aup` false positives (cyan), `cyber`/`aup` closed by
   Anthropic (green), and the withdrawn `harness` class (muted, a separate line that does not count as
