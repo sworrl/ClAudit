@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.60"
+__version__ = "2.0.61"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -774,7 +774,7 @@ def prune_stale_pending(state):
 
 def newest_transient_ts():
     """Most recent overloaded / rate-limit error timestamp from the error log, or '' if none.
-    Used by the optional auto-retry: a NEW transient error means a session is stuck and can resume."""
+    The GUI alerts (toast only) when a NEW one appears; ClAudit never auto-types into your session."""
     latest = ""
     try:
         with open(ERROR_LOG) as fh:
@@ -788,36 +788,6 @@ def newest_transient_ts():
     except Exception:
         pass
     return latest
-
-
-def send_continue():
-    """Best-effort: type 'continue' + Enter into the FOCUSED window so a rate-limited Claude Code
-    session resumes. Per-OS automation; returns True if a tool ran. The Claude Code window must be
-    focused. macOS: System Events. Windows: SendKeys. Linux Wayland: ydotool (needs ydotoold);
-    X11: xdotool."""
-    sysname = platform.system()
-    try:
-        if sysname == "Darwin":
-            return subprocess.run(
-                ["osascript", "-e", 'tell application "System Events" to keystroke "continue"',
-                 "-e", 'tell application "System Events" to key code 36'], timeout=8).returncode == 0
-        if sysname == "Windows":
-            return subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 "Add-Type -AssemblyName System.Windows.Forms;"
-                 "[System.Windows.Forms.SendKeys]::SendWait('continue{ENTER}')"], timeout=8).returncode == 0
-        wayland = os.environ.get("XDG_SESSION_TYPE") == "wayland"
-        if wayland and shutil.which("ydotool"):
-            return subprocess.run(["ydotool", "type", "continue\r"], timeout=8).returncode == 0
-        if shutil.which("xdotool"):
-            subprocess.run(["xdotool", "type", "--clearmodifiers", "continue"], timeout=8)
-            return subprocess.run(["xdotool", "key", "Return"], timeout=8).returncode == 0
-        if shutil.which("ydotool"):
-            return subprocess.run(["ydotool", "type", "continue\r"], timeout=8).returncode == 0
-        print("send_continue: no keystroke tool found (need ydotool/xdotool/osascript)", file=sys.stderr)
-    except Exception as e:
-        print("send_continue failed:", e, file=sys.stderr)
-    return False
 
 
 def _latest_ts(f):
