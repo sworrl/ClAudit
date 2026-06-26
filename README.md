@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.52-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.53-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -44,9 +44,9 @@ pattern is to ignore. **That's** how this gets fixed.
 → It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
 
 <!-- COUNTER:START -->
-### 📊 459 open false-positive blocks reported by ClAudit right now
+### 📊 265 open false-positive blocks reported by ClAudit right now
 
-Across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **526 filed**, **67 closed** · _updated 2026-06-26 06:01 UTC_
+Across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **526 filed**, **261 closed** · _updated 2026-06-26 06:22 UTC_
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
@@ -60,7 +60,7 @@ Across **all** ClAudit users, live from [`anthropics/claude-code`](https://githu
 Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
-**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-06-26 06:01 UTC_
+**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-06-26 06:22 UTC_
 
 | | | |
 |---|---:|---|
