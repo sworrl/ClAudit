@@ -15,6 +15,7 @@ Run:  python3 claudit_gui.py [--interval 30] [-R owner/repo] [--auto]
 import argparse
 import datetime
 import json
+import math
 import os
 import subprocess
 import sys
@@ -215,16 +216,59 @@ if _HAVE_GL:
                 self.ok = False
 
 
+class AnimatedBanner(QtWidgets.QWidget):
+    """Safe animated header (pure QPainter, NO OpenGL) — a slow-drifting gradient with soft moving
+    glows. Cannot segfault on any GL stack; works on every machine. This is the default."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("header")
+        self.setMinimumHeight(56)
+        self._t0 = time.monotonic()
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self.update)
+        self._timer.start(50)             # ~20 fps, negligible CPU
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = time.monotonic() - self._t0
+        a = 0.5 + 0.5 * math.sin(t * 0.4)
+        b = 0.5 + 0.5 * math.sin(t * 0.4 + 2.1)
+        g = QtGui.QLinearGradient(0, 0, w, h)
+        g.setColorAt(0.0, QtGui.QColor(18, 13, 31))
+        g.setColorAt(0.5, QtGui.QColor(int(34 + 26 * a), int(60 + 34 * b), int(62 + 26 * a)))
+        g.setColorAt(1.0, QtGui.QColor(int(60 + 34 * b), int(44 + 18 * a), int(104 + 30 * b)))
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(QtCore.QRectF(self.rect()), 8, 8)
+        p.fillPath(path, g)
+        p.setClipPath(path)
+        for i, (spd, glow) in enumerate(((0.23, QtGui.QColor(139, 92, 246, 46)),
+                                         (0.31, QtGui.QColor(94, 234, 212, 36)))):
+            cx = w * (0.5 + 0.45 * math.sin(t * spd + i * 2.0))
+            cy = h * (0.5 + 0.4 * math.cos(t * spd * 1.3 + i))
+            rg = QtGui.QRadialGradient(cx, cy, h * 1.4)
+            rg.setColorAt(0.0, glow)
+            rg.setColorAt(1.0, QtGui.QColor(0, 0, 0, 0))
+            p.fillRect(self.rect(), QtGui.QBrush(rg))
+        p.end()
+
+
 def make_banner():
-    """A ShaderBanner if GL is usable, else a plain styled header widget (graceful fallback)."""
-    if _HAVE_GL:
+    """The animated header. Default = safe QPainter AnimatedBanner (no GL). The native GLSL shader
+    is opt-in via CLAUDIT_GL=1 because some GL stacks segfault on a QOpenGLWidget context."""
+    if os.environ.get("CLAUDIT_GL") == "1" and _HAVE_GL:
         try:
             return ShaderBanner()
         except Exception as e:
-            print("no GL banner:", e, file=sys.stderr)
-    w = QtWidgets.QWidget()
-    w.setObjectName("header")
-    return w
+            print("GL banner unavailable, using animated fallback:", e, file=sys.stderr)
+    try:
+        return AnimatedBanner()
+    except Exception as e:
+        print("animated banner failed, using static header:", e, file=sys.stderr)
+        w = QtWidgets.QWidget()
+        w.setObjectName("header")
+        return w
 
 
 # ----------------------------- background workers -----------------------------
