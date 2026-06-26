@@ -770,6 +770,7 @@ class Main(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(board, "Issues")
         self.tabs.addTab(self._build_stats_tab(), "Project")
+        self.tabs.addTab(self._build_activity_tab(), "Activity")
         self.tabs.currentChanged.connect(
             lambda i: (self._fetch_stats(), self._fetch_poll()) if i == 1 else None)
 
@@ -964,6 +965,27 @@ class Main(QtWidgets.QMainWindow):
             f"{total} vote(s) · click an option to cast or switch your vote "
             "(one 👍/👎/👀 reaction on the pinned issue)")
 
+    def _build_activity_tab(self):
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        v.addWidget(QtWidgets.QLabel("Everything the watcher does — filed, defended, reopened, "
+                                     "closures detected — newest first."))
+        self.activity = QtWidgets.QListWidget()
+        v.addWidget(self.activity, 1)
+        b = QtWidgets.QPushButton("Clear")
+        b.clicked.connect(lambda: self.activity.clear())
+        v.addWidget(b)
+        return w
+
+    def _log(self, msg):
+        """Prepend a timestamped line to the in-app activity feed (capped at 300)."""
+        if not hasattr(self, "activity"):
+            return
+        ts = datetime.datetime.now().astimezone().strftime("%H:%M:%S")
+        self.activity.insertItem(0, f"{ts}   {msg}")
+        while self.activity.count() > 300:
+            self.activity.takeItem(self.activity.count() - 1)
+
     def _build_stats_tab(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
@@ -1057,6 +1079,7 @@ class Main(QtWidgets.QMainWindow):
 
     def _on_deduped(self, num, ok):
         self.btn_dedup.setEnabled(True)
+        self._log(f"{'🛡 defended' if ok else '⚠ defend failed on'} #{num}")
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                 else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
         if ok:
@@ -1097,6 +1120,8 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit · 🛡 dedup defended",
                               f"Defended {n} flagged issue(s) on {self.repo} (👎 + 'not a duplicate')."
                               if n else "No new flagged issues to defend — all caught up.", icon)
+        self._log(f"🛡 defend-all: defended {n} flagged issue(s)" if n
+                  else "🛡 defend-all: nothing to do")
         self.refresh()
 
     # ---- data ----
@@ -1249,14 +1274,17 @@ class Main(QtWidgets.QMainWindow):
             self.tray.setToolTip("ClAudit — backfilling (historical)")
             self.tray.showMessage("ClAudit · 📦 HISTORICAL",
                                   f"Backfilled {n} block(s) from your backlog.", icon)
+            self._log(f"📦 backfilled {n} historical block(s)")
             return   # board_timer handles the list refresh (no per-drip refetch)
         if kind == "defend":     # auto-defended dup-bot flags
             self.tray.showMessage("ClAudit · 🛡 DEFENDED",
                                   f"Auto-defended {n} dup-bot-flagged issue(s) (👎 + note).", icon)
+            self._log(f"🛡 auto-defended {n} dup-bot-flagged issue(s)")
             return
         if kind == "reopen":     # reopened dup-bot-closed issues
             self.tray.showMessage("ClAudit · ♻ REOPENED",
                                   f"Reopened {n} issue(s) the dup-bot wrongly closed as duplicate.", icon)
+            self._log(f"♻ reopened {n} dup-bot-closed issue(s)")
             return
         if kind == "pruned":     # stale backlog reconciled at startup — just refresh the count
             self._update_bf()
@@ -1265,8 +1293,10 @@ class Main(QtWidgets.QMainWindow):
             self.tray.setToolTip("ClAudit — watching live")
             self.tray.showMessage("ClAudit · 🔴 LIVE",
                                   f"Reported {n} block(s) the moment it happened — {self.repo}.", icon)
+            self._log(f"🔴 filed {n} LIVE block(s)")
         else:
             self.tray.showMessage("ClAudit", f"{n} new block(s) queued — use ‘Report pending’.", icon)
+            self._log(f"📥 queued {n} new block(s)")
         self.refresh()
 
     def report_pending(self):
