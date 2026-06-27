@@ -235,6 +235,26 @@ def test_amplify_skips_own_and_harness_and_dedups(monkeypatch):
     assert cs.amplify_community("o/r", state, me="me") == 0  # idempotent: nothing new
 
 
+def test_defense_note_is_contextual(monkeypatch):
+    # the 'not a duplicate' note must name the SPECIFIC issues the bot cited and rebut each as its
+    # own Request ID — not a generic note.
+    posted = {}
+
+    def fake_run(args, **k):
+        if "comment" in args:
+            posted["body"] = args[args.index("--body") + 1]
+        return type("R", (), {"returncode": 0, "stdout": "THUMBS_DOWN", "stderr": ""})()
+
+    monkeypatch.setattr(cs.subprocess, "run", fake_run)
+    ok = cs._push_not_dup("o/r", 71857, "CMT", "#71860", "reason.", "body", compose=False,
+                          flag_body="Found 3 duplicates: #71860 #71858 #71861",
+                          cited=["71860", "71858", "71861"])
+    assert ok
+    b = posted["body"]
+    assert "#71860" in b and "#71858" in b and "#71861" in b   # names every cited issue
+    assert "distinct" in b.lower() and "Request ID" in b
+
+
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)

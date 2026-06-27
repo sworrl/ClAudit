@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.77"
+__version__ = "2.0.78"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1128,8 +1128,10 @@ def dedup_guard(state, repo, limit, apply, on_done=None):
     return distinct + dupes
 
 
-def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True):
-    """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue.
+def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
+                  flag_body="", cited=None):
+    """👎 the dup-bot comment and post a factual 'not a duplicate' note on one issue. The note is
+    CONTEXTUAL: it names the specific issues the bot cited and rebuts each as a distinct Request ID.
     Returns True only if the 👎 reaction actually landed (failures are logged, not swallowed).
     compose=False uses the templated note (no LLM) — for bulk runs where N claude calls is silly."""
     reacted = False
@@ -1144,16 +1146,32 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True):
                   file=sys.stderr)
     else:
         print(f"  ! #{num}: no dup-bot comment found to 👎 (only posting the note)", file=sys.stderr)
-    body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
-                 f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
-    bc = claudit.llm_compose(
-        f"Write a brief, professional, factual GitHub comment (2-3 sentences) explaining why this issue "
-        f"is NOT a duplicate of {of or 'the flagged issue'}. Reason: {reason}. Note it's a distinct "
-        f"block with its own Request ID.", issue_body[:1500]) if compose else None
-    if bc and _is_refusal(bc):
-        bc = None                          # never post the model's refusal — keep the template note
-    if bc:
-        body = scrub(bc)[0]
+    cited = cited or []
+    if cited:                              # contextual: address the exact issues the bot named
+        cited_str = ", ".join(f"#{c}" for c in cited[:10])
+        body = scrub(
+            f"Not a duplicate. The bot cited {cited_str}, but each of those is a **distinct** "
+            f"false-positive block with its **own Request ID**, on the reporter's own authorized "
+            f"infrastructure. They are the same *class* of over-block, not the same incident — every "
+            f"Request ID is a separate event Anthropic looks up server-side, so closing them as "
+            f"duplicates discards the distinct IDs needed to diagnose each one. {reason} See the "
+            f"Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
+    else:
+        body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
+                     f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
+    if compose:
+        ctx = (f"Duplicate-detection bot comment (quoted):\n{flag_body[:1400]}\n\n"
+               f"This issue's body:\n{issue_body[:1200]}")
+        bc = claudit.llm_compose(
+            "A Claude Code duplicate-detection bot (quoted below) claims this issue duplicates the ones "
+            "it cites. Write a brief, professional, factual GitHub reply (2-4 sentences) explaining why "
+            "it is NOT a duplicate: each cited issue is a distinct false-positive block with its OWN "
+            "Request ID on the reporter's own authorized infrastructure — the same class of over-block "
+            "but separate incidents Anthropic must look up individually, so closing them as duplicates "
+            "discards distinct Request IDs. Reference the specific issue numbers it cited. Invent nothing; "
+            "do not restate private details from the body.", ctx)
+        if bc and not _is_refusal(bc):     # never post the model's refusal — keep the contextual note
+            body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
                         "--body", claudit.llm_redact(body)], capture_output=True, text=True)
     posted = c.returncode == 0
@@ -1172,12 +1190,14 @@ def mark_not_duplicate(state, repo, num):
     flag = next((c for c in (data.get("comments") or [])
                  if "possible duplicate" in c.get("body", "").lower()
                  or "closed as a duplicate" in c.get("body", "").lower()), None)
-    of = ""
+    of, flag_body, cited = "", (flag.get("body", "") if flag else ""), []
     if flag:
-        m = re.search(r"#(\d+)", flag["body"])
+        m = re.search(r"#(\d+)", flag_body)
         of = f"#{m.group(1)}" if m else ""
+        cited = [c for c in re.findall(r"#(\d+)", flag_body) if c != str(num)]
     reacted = _push_not_dup(repo, num, (flag or {}).get("id"), of,
-                            "you reviewed it and it is a distinct block", data.get("body", ""))
+                            "Reviewed and confirmed a distinct block.", data.get("body", ""),
+                            flag_body=flag_body, cited=cited)
     state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
     save_state(state)
     return reacted
@@ -1221,13 +1241,14 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
             deduped[str(num)] = "not-duplicate"         # search lag — already noted
             continue
         flag = _dup_flag(comments)                      # None for a label-only flag — note still posts
-        m = re.search(r"#(\d+)", flag["body"]) if flag else None
+        flag_body = flag.get("body", "") if flag else ""
+        cited = [c for c in re.findall(r"#(\d+)", flag_body) if c != str(num)]   # the issues it named
+        m = re.search(r"#(\d+)", flag_body) if flag else None
         posted = _push_not_dup(
             repo, num, flag.get("id") if flag else None, f"#{m.group(1)}" if m else "",
-            "this is a distinct false-positive block (its own Request ID) on the reporter's OWN "
-            "authorized infrastructure — the classifier flagged in-scope administration of systems "
-            "the reporter owns and operates, not an attack on anyone else's.",
-            data.get("body", ""), compose=compose)
+            "The classifier flagged in-scope administration of systems the reporter owns and operates, "
+            "not an attack on anyone else's.",
+            data.get("body", ""), compose=compose, flag_body=flag_body, cited=cited)
         if posted:                                      # only mark done on SUCCESS -> failures retry
             deduped[str(num)] = "not-duplicate"
             save_state(state)

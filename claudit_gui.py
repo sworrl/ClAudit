@@ -1024,7 +1024,7 @@ class Watcher(QtCore.QThread):
                 self.last_defend = now
                 try:
                     with STATE_LOCK:
-                        d = cs.defend_all(self.repo, self.state)
+                        d = cs.defend_all(self.repo, self.state, compose=claudit.BURN_TOKENS)
                     if d:
                         self.acted.emit(d, "defend")
                 except Exception as e:
