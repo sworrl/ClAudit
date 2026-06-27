@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.76"
+__version__ = "2.0.77"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -495,7 +495,15 @@ def build_issue(f, note, crossref=""):
 
     crossref_block = (f"\n### Related reports (same work session, linked)\n{scrub(crossref)[0]}\n"
                       if crossref else "")
-    body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
+    # Structured triage line — ClAudit can't add GitHub labels (no triage perm on the repo), so it
+    # puts the categorization in the body for maintainers to sort on.
+    repro = ("yes — server-side via the Request ID(s) below" if reqs
+             else "local auto-mode-classifier denial (no server-side Request ID)")
+    triage = (f"**Triage:** kind `{f['kind']}` · domain `{categorize(f)}` · "
+              f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
+    body = f"""{triage}
+
+**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
 {why_block}
 
@@ -562,6 +570,34 @@ def gh_login():
     """Current authenticated GitHub login, or '' if unknown."""
     d = _gh_json(["api", "user", "--jq", "{login: .login}"])
     return (d or {}).get("login", "") if isinstance(d, dict) else ""
+
+
+def amplify_community(repo, state, me=None, limit=200):
+    """Solidarity 👍: react thumbs-up on OTHER ClAudit users' open cyber/aup false-positive issues to
+    amplify the shared signal. Never touches your own issues. Idempotent via state['__amplified__'].
+    Returns count newly reacted. A no-op while you are the only reporter."""
+    me = me or gh_login()
+    done = state.setdefault("__amplified__", [])
+    seen = set(done)
+    issues = _gh_json(["issue", "list", "-R", repo, "--state", "open", "--limit", str(limit),
+                       "--search", '"Filed automatically by ClAudit"',
+                       "--json", "number,author,title"]) or []
+    n = 0
+    for it in issues:
+        num, author = it["number"], (it.get("author") or {}).get("login", "")
+        title = (it.get("title", "") or "").lower()
+        if author == me or not author or str(num) in seen:
+            continue                              # skip your own + already-reacted
+        if "[cyber]" not in title and "[aup]" not in title:
+            continue                              # real API false positives only
+        r = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/reactions",
+                            "-f", "content=+1"], capture_output=True, text=True)
+        if r.returncode == 0:
+            done.append(str(num)); seen.add(str(num)); n += 1
+            time.sleep(0.5)
+    if n:
+        save_state(state)
+    return n
 
 
 def poll_counts():

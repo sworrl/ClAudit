@@ -212,6 +212,29 @@ def test_dwell_skips_blocks_the_gate_rejects(monkeypatch):
     assert "A" in state["__skipped_reqs__"]
 
 
+def test_build_issue_has_triage_header():
+    _, body = cs.build_issue(_finding(), "")
+    assert body.lstrip().startswith("**Triage:**")          # structured triage line for maintainers
+    assert "kind `cyber`" in body and "session-halted" in body
+
+
+def test_amplify_skips_own_and_harness_and_dedups(monkeypatch):
+    issues = [{"number": 1, "author": {"login": "me"}, "title": "[cyber] mine"},
+              {"number": 2, "author": {"login": "other"}, "title": "[aup] theirs"},
+              {"number": 3, "author": {"login": "other"}, "title": "[harness] theirs"},
+              {"number": 4, "author": {"login": "other"}, "title": "[cyber] theirs"}]
+    monkeypatch.setattr(cs, "_gh_json", lambda a: issues)
+    reacted = []
+    monkeypatch.setattr(cs.subprocess, "run",
+                        lambda args, **k: reacted.append(args[2]) or type("R", (), {"returncode": 0})())
+    state = {}
+    n = cs.amplify_community("o/r", state, me="me")
+    assert n == 2                                           # #2 and #4 only (others' cyber/aup)
+    assert "repos/o/r/issues/2/reactions" in reacted and "repos/o/r/issues/4/reactions" in reacted
+    assert not any("issues/1/" in u or "issues/3/" in u for u in reacted)   # never own / harness
+    assert cs.amplify_community("o/r", state, me="me") == 0  # idempotent: nothing new
+
+
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)

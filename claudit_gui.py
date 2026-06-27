@@ -968,12 +968,14 @@ class Watcher(QtCore.QThread):
         self.dwell = False                 # dwell auto-file: hold new Request IDs, LLM-judge+compose,
                                            # then file each as its own linked bespoke issue (opt-in)
         self.reopen = False                # auto-reopen dup-bot-CLOSED issues; opt-in (off by default)
+        self.amplify = False               # solidarity 👍 on other users' FP issues; opt-in (dormant solo)
         self._transient_mark = ""          # newest overloaded/rate-limit ts we've alerted on
         self.bf_done = 0
         self.last_live = 0.0
         self.last_bf = 0.0
         self.last_defend = 0.0
         self.last_reopen = 0.0
+        self.last_amplify = 0.0
         self.last_transient = 0.0
         self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
 
@@ -1037,6 +1039,16 @@ class Watcher(QtCore.QThread):
                         self.acted.emit(rr, "reopen")
                 except Exception as e:
                     print("reopen error:", e, file=sys.stderr)
+            # AMPLIFY: opt-in solidarity 👍 on OTHER users' open false-positive issues (every 30 min).
+            if self.amplify and now - self.last_amplify >= 1800:
+                self.last_amplify = now
+                try:
+                    with STATE_LOCK:
+                        a = cs.amplify_community(self.repo, self.state)
+                    if a:
+                        self.acted.emit(a, "amplify")
+                except Exception as e:
+                    print("amplify error:", e, file=sys.stderr)
             # RATE-LIMIT ALERT: a NEW overloaded/rate-limit error means a session got throttled.
             # Toast it (informational only; ClAudit never auto-types into your session).
             if now - self.last_transient >= 12:
@@ -1576,6 +1588,7 @@ class Main(QtWidgets.QMainWindow):
         self._build_tray(auto, backfill)
         self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
         self.watcher.dwell = bool(cs.load_config().get("dwell_autofile"))   # opt-in dwell auto-filer
+        self.watcher.amplify = bool(cs.load_config().get("amplify"))        # opt-in community 👍
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.bf_timer = QtCore.QTimer(self)
@@ -2390,6 +2403,11 @@ class Main(QtWidgets.QMainWindow):
             self.tray.showMessage("ClAudit · ♻ REOPENED",
                                   f"Reopened {n} issue(s) the dup-bot wrongly closed as duplicate.", icon)
             self._log(f"♻ reopened {n} dup-bot-closed issue(s)")
+            return
+        if kind == "amplify":    # 👍 on other users' false-positive issues
+            self.tray.showMessage("ClAudit · 👍 AMPLIFIED",
+                                  f"👍 {n} open false-positive issue(s) from other ClAudit users.", icon)
+            self._log(f"👍 amplified {n} community false-positive issue(s)")
             return
         if kind == "pruned":     # stale backlog reconciled at startup — just refresh the count
             self._update_bf()
