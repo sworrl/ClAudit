@@ -871,6 +871,8 @@ class Watcher(QtCore.QThread):
         self.backfill_interval = backfill_interval
         self.backfill_max = backfill_max
         self.defend = defend               # auto-defend dup-bot flags; toggled from the tray menu
+        self.dwell = False                 # dwell auto-file: hold new Request IDs, LLM-judge+compose,
+                                           # then file each as its own linked bespoke issue (opt-in)
         self.reopen = False                # auto-reopen dup-bot-CLOSED issues; opt-in (off by default)
         self._transient_mark = ""          # newest overloaded/rate-limit ts we've alerted on
         self.bf_done = 0
@@ -895,12 +897,14 @@ class Watcher(QtCore.QThread):
                 self.last_live = now
                 try:
                     with STATE_LOCK:
-                        if self.auto:
+                        if self.dwell:
+                            n = cs.dwell_cycle(self.state, self.repo, 0, lambda *a: None)
+                        elif self.auto:
                             n = cs.auto_cycle(self.state, self.repo, 0, lambda *a: None)
                         else:
                             n = cs.monitor_cycle(self.state, lambda fresh: None)
                     if n:
-                        self.acted.emit(n, "auto" if self.auto else "queued")
+                        self.acted.emit(n, "dwell" if self.dwell else ("auto" if self.auto else "queued"))
                 except Exception as e:
                     print("live error:", e, file=sys.stderr)
             # BACKFILL: as fast as GitHub allows — speed up on success, back off on rate-limit.
@@ -1475,6 +1479,7 @@ class Main(QtWidgets.QMainWindow):
 
         self._build_tray(auto, backfill)
         self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
+        self.watcher.dwell = bool(cs.load_config().get("dwell_autofile"))   # opt-in dwell auto-filer
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.bf_timer = QtCore.QTimer(self)
@@ -1567,6 +1572,10 @@ class Main(QtWidgets.QMainWindow):
         self.act_auto.setCheckable(True)
         self.act_auto.setChecked(auto)
         self.act_auto.toggled.connect(self._toggle_auto)
+        self.act_dwell = menu.addAction("Dwell auto-file (LLM judge + 15-min batch + cross-link)")
+        self.act_dwell.setCheckable(True)
+        self.act_dwell.setChecked(bool(cs.load_config().get("dwell_autofile")))
+        self.act_dwell.toggled.connect(self._toggle_dwell)
         self.act_backfill = menu.addAction("Backfill old blocks (slow drip)")
         self.act_backfill.setCheckable(True)
         self.act_backfill.setChecked(backfill)
@@ -1606,6 +1615,21 @@ class Main(QtWidgets.QMainWindow):
         self.watcher.auto = on
         self.tray.showMessage("ClAudit", "Auto-post ENABLED — new blocks file automatically."
                               if on else "Auto-post disabled — blocks queue for review.")
+
+    def _toggle_dwell(self, on):
+        if not self.watcher:
+            return
+        self.watcher.dwell = on
+        if on:                              # the dwell filer needs the LLM to judge + compose
+            cs.GATE = claudit.BURN_TOKENS = claudit.LLM_SCRUB = True
+            self.act_llm.setChecked(True)
+        cfg = cs.load_config()
+        cfg["dwell_autofile"] = on
+        cs.save_config(cfg)
+        mins = cs.DWELL_SECONDS // 60
+        self.tray.showMessage("ClAudit", f"Dwell auto-file ENABLED — new blocks wait ~{mins} min, the "
+                              "LLM judges + writes each, then files one linked bespoke issue per Request "
+                              "ID. No manual push." if on else "Dwell auto-file disabled.")
 
     def _toggle_llm(self, on):
         claudit.LLM_SCRUB = on
@@ -2177,7 +2201,13 @@ class Main(QtWidgets.QMainWindow):
         if kind == "pruned":     # stale backlog reconciled at startup — just refresh the count
             self._update_bf()
             return
-        if kind == "auto":       # live: a block that just happened
+        if kind == "dwell":      # dwell auto-filer: ripe Request IDs, LLM-judged, filed + cross-linked
+            self.tray.setToolTip("ClAudit — dwell auto-filing")
+            self.tray.showMessage("ClAudit · 🕒 DWELL FILED",
+                                  f"Filed {n} bespoke report(s) after the dwell (one per Request ID, "
+                                  f"cross-linked) — {self.repo}.", icon)
+            self._log(f"🕒 dwell-filed {n} linked bespoke report(s)")
+        elif kind == "auto":     # live: a block that just happened
             self.tray.setToolTip("ClAudit — watching live")
             self.tray.showMessage("ClAudit · 🔴 LIVE",
                                   f"Reported {n} block(s) the moment it happened — {self.repo}.", icon)
@@ -2260,6 +2290,10 @@ def main():
             cs.save_config(cfg)
     if args.burn_tokens or cfg.get("burn_tokens"):
         claudit.BURN_TOKENS = claudit.LLM_SCRUB = True   # bespoke LLM reports need the LLM
+    if cfg.get("dwell_autofile"):                        # dwell mode = LLM judges + composes each report
+        cs.GATE = claudit.BURN_TOKENS = claudit.LLM_SCRUB = True
+        if "dwell_seconds" in cfg:
+            cs.DWELL_SECONDS = int(cfg["dwell_seconds"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

@@ -171,6 +171,47 @@ def test_file_one_files_once(monkeypatch):
 
 
 # ---------------- the honesty gate ----------------
+def _multi(sig, kind, reqs, proj="-h-u-Documents-GitHub-x"):
+    return {"sig": sig, "kind": kind, "prompt": "scan my host",
+            "occ": [{"req": r, "ts": "2026-06-27T00:00:00Z", "session": "s", "proj": proj} for r in reqs],
+            "block_text": f"{kind} block", "leadup": [("user", "in-scope work")]}
+
+
+def test_dwell_files_one_linked_issue_per_request_id(monkeypatch):
+    # the bespoke model: each Request ID becomes its OWN issue, cross-linked into a string.
+    findings = [({}, {})]
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: findings[0])
+    posted, comments = [], []
+    monkeypatch.setattr(cs, "gh_create",
+                        lambda r, t, b: posted.append((t, b)) or f"https://github.com/{r}/issues/{len(posted)}")
+    monkeypatch.setattr(cs, "gh_comment", lambda r, n, b: comments.append((n, b)))
+    monkeypatch.setattr(cs, "log_issue", lambda *a: None)
+    monkeypatch.setattr(claudit, "llm_is_false_positive", lambda *a: (True, ""))
+    state = {}
+    assert cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0) == 0   # baseline: files nothing
+    findings[0] = ({"s1": _multi("s1", "cyber", ["A", "B"]), "s2": _multi("s2", "aup", ["C"])}, {})
+    n = cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)
+    assert n == 3                                          # 3 Request IDs -> 3 bespoke issues
+    assert len(posted) == 3
+    assert set(state["__filed_reqs__"]) == {"A", "B", "C"}
+    assert "A" in posted[0][0] and "B" in posted[1][0]    # each title carries its own Request ID
+    assert len(comments) == 2                             # 2nd and 3rd back-link the prior sibling
+    assert "#2" in posted[2][1] or "#1" in posted[2][1]   # later report forward-links earlier ones
+
+
+def test_dwell_skips_blocks_the_gate_rejects(monkeypatch):
+    findings = [({}, {})]
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: findings[0])
+    monkeypatch.setattr(cs, "gh_create", lambda r, t, b: "https://github.com/o/r/issues/1")
+    monkeypatch.setattr(cs, "log_issue", lambda *a: None)
+    monkeypatch.setattr(claudit, "llm_is_false_positive", lambda *a: (False, "correct block"))
+    state = {}
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)
+    findings[0] = ({"s1": _multi("s1", "cyber", ["A"])}, {})
+    assert cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0) == 0   # gate rejects -> not filed
+    assert "A" in state["__skipped_reqs__"]
+
+
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)

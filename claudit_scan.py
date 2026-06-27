@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.70"
+__version__ = "2.0.71"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -60,6 +60,8 @@ REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY b
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
                # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
+DWELL_SECONDS = 900   # dwell-auto-file: hold a new Request ID this long (repeats accrete as their own
+                      # linked issues) before the LLM judges + composes + files it. Config: dwell_seconds.
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
 DEFAULT_NOTE = ("False positive — in-scope, authorized security work; not out of scope. "
@@ -413,7 +415,7 @@ def _is_refusal(text):
     return any(m in low for m in _REFUSAL_MARKERS)
 
 
-def build_issue(f, note):
+def build_issue(f, note, crossref=""):
     reqs = reqs_of(f)
     first_ts = min((o["ts"] for o in f["occ"] if o["ts"]), default="")
     sessions = len({o["session"] for o in f["occ"]})
@@ -491,6 +493,8 @@ def build_issue(f, note):
                      f"{blocked_phrase}. Filing as a false positive. {recur}")
         note_block = f"\n### In-scope justification\n{note_clean}\n"
 
+    crossref_block = (f"\n### Related reports (same work session, linked)\n{scrub(crossref)[0]}\n"
+                      if crossref else "")
     body = f"""**Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
 
 {why_block}
@@ -501,7 +505,7 @@ def build_issue(f, note):
 > {block_clean}
 
 **Environment:** Claude Code, Linux. · **Work domain:** `{categorize(f)}`
-
+{crossref_block}
 ---
 <sub>🔎 Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) — a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
     # Title is built from already-scrubbed parts + the Request ID — regex/denylist scrub only
@@ -742,6 +746,118 @@ def auto_cycle(state, repo, delay, on_event):
             acted += 1
             time.sleep(delay)
     return acted
+
+
+def _proj_of(f):
+    """The work session/project a finding belongs to (its most common occurrence project)."""
+    projs = [o.get("proj") for o in f["occ"] if o.get("proj")]
+    return collections.Counter(projs).most_common(1)[0][0] if projs else "unknown"
+
+
+def _single_req_finding(f, req):
+    """A view of finding f narrowed to one Request ID — so each API ID files as its own bespoke
+    issue, not folded into a shared one."""
+    g = dict(f)
+    g["occ"] = [o for o in f["occ"] if o.get("req") == req] or f["occ"][:1]
+    return g
+
+
+def _dwell_crossref(chain):
+    """Forward cross-reference body line: the prior bespoke issues from the same work session."""
+    if not chain:
+        return ""
+    return ("Distinct false-positive blocks from the same work session, each its own report:\n"
+            + ", ".join(f"#{n}" for n in chain[-20:]))
+
+
+def dwell_cycle(state, repo, delay, on_event, dwell=None):
+    """Auto-file on a dwell. Each NEW cyber/aup Request ID is held for `dwell` seconds (repeats in
+    that window accrue as their OWN linked issues); once ripe, the LLM gate judges it a real false
+    positive and burn-tokens composes it, then it files as a bespoke issue cross-linked to its
+    siblings from the same work session. One issue per Request ID; no manual push. Returns count filed.
+    The pre-existing backlog is baselined (not flooded) on first run — only blocks seen after that
+    auto-file."""
+    dwell = DWELL_SECONDS if dwell is None else dwell
+    findings, _ = scan(ttl=8)
+    now = time.time()
+    seen = state.setdefault("__dwell_seen__", [])
+    hold = state.setdefault("__dwell_hold__", {})        # req -> first_seen_epoch
+    filed = state.setdefault("__filed_reqs__", {})       # req -> issue number
+    skipped = state.setdefault("__skipped_reqs__", [])
+    chains = state.setdefault("__proj_chain__", {})      # proj -> [issue numbers], the linked string
+    # req -> finding for every fileable (cyber/aup + Request ID) occurrence currently in the corpus
+    current = {}
+    for f in findings.values():
+        if not should_file(f):
+            continue
+        for o in f["occ"]:
+            if o.get("req"):
+                current[o["req"]] = f
+    seen_set, filed_set, skip_set = set(seen), set(filed), set(skipped)
+    # First run on this state: baseline everything already present so we don't flood the backlog.
+    if not state.get("__dwell_baselined__"):
+        seen[:] = sorted(set(seen) | set(current) | filed_set)
+        state["__dwell_baselined__"] = True
+        save_state(state)
+        return 0
+    # Register genuinely new Request IDs into the dwell hold.
+    for req in current:
+        if req not in seen_set and req not in filed_set and req not in skip_set:
+            hold.setdefault(req, now)
+            seen.append(req)
+    ripe = [r for r, t0 in hold.items() if now - t0 >= dwell and r in current][:8]   # cap bursts
+    acted, gate_cache = 0, {}
+    for req in ripe:
+        f = current[req]
+        sig = f["sig"]
+        if sig not in gate_cache:            # judge once per block, reuse for its other Request IDs
+            ctx = " ".join(t for _, t in (f.get("leadup") or []))
+            ok, reason = claudit.llm_is_false_positive(f["kind"], f.get("block_text", ""), ctx)
+            gate_cache[sig] = (ok, reason)
+        ok, reason = gate_cache[sig]
+        if not ok:                           # LLM judged it a correct block -> never file it
+            skipped.append(req)
+            hold.pop(req, None)
+            print(f"  dwell skip {req} — not a false positive: {(reason or '')[:70]}", file=sys.stderr)
+            continue
+        proj = _proj_of(f)
+        chain = chains.setdefault(proj, [])
+        g = _single_req_finding(f, req)
+        title, body = build_issue(g, "", _dwell_crossref(chain))
+        try:
+            url = gh_create(repo, title, body)
+        except Exception as e:
+            print(f"  ! dwell file {req}: {e}", file=sys.stderr)
+            continue                         # leave in hold; retry next cycle
+        num = url.rsplit("/", 1)[-1]
+        if chain:                            # back-link the previous sibling -> this new report
+            try:
+                gh_comment(repo, chain[-1],
+                           f"🔗 Related false positive from the same work session: #{num}")
+            except Exception:
+                pass
+        chain.append(num)
+        filed[req] = num
+        hold.pop(req, None)
+        log_issue(g, repo, url)
+        save_state(state)
+        on_event("dwell-filed", title, url)
+        acted += 1
+        time.sleep(delay)
+    if ripe:
+        save_state(state)
+    return acted
+
+
+def dwell_status(state, dwell=None):
+    """(#holding, seconds until the next one ripens) for the UI."""
+    dwell = DWELL_SECONDS if dwell is None else dwell
+    hold = state.get("__dwell_hold__", {})
+    if not hold:
+        return 0, 0
+    now = time.time()
+    nxt = min((dwell - (now - t0)) for t0 in hold.values())
+    return len(hold), max(0, int(nxt))
 
 
 def backfill_one(f, repo, state):
