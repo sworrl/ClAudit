@@ -355,14 +355,16 @@ class ChronoLine(QtWidgets.QWidget):
         self.tmin = self.tmax = 0.0
         self.yaw, self.pitch, self.zoom = 0.45, 0.50, 1.0
         self._drag = None
-        self._auto = True
+        self._auto = False                   # still by default: a tab left open must not burn CPU
         self._fly = False
         self._flt = 0.0                      # fly-mode clock (seconds)
         self.hover = -1
         self._pts = []                       # [(sx, sy, idx, r)] cached each paint for hit-testing
+        self._f_lane = QtGui.QFont(); self._f_lane.setPointSize(8)   # reused each frame, not realloc'd
+        self._f_ui = QtGui.QFont(); self._f_ui.setPointSize(9)
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(40)                # ~25fps while animating; idle frames are skipped
+        self._timer.start(50)                # 20fps, and only repaints while orbiting/flying
 
     # ---- data ----
     def set_items(self, items):
@@ -388,7 +390,7 @@ class ChronoLine(QtWidgets.QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         if not self._timer.isActive():
-            self._timer.start(40)
+            self._timer.start(50)
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -509,7 +511,7 @@ class ChronoLine(QtWidgets.QWidget):
             p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
             col = QtGui.QColor(KIND_VIZ[k][0])
             p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 160))
-            fnt = QtGui.QFont(); fnt.setPointSize(8); p.setFont(fnt)
+            p.setFont(self._f_lane)
             p.drawText(QtCore.QPointF(a[0] - 4, a[1] + 3), KIND_VIZ[k][1])
 
         # month gridlines, labels on the front rail
@@ -585,11 +587,11 @@ class ChronoLine(QtWidgets.QWidget):
 
         # footer
         p.setPen(QtGui.QColor("#8b94a3"))
-        fnt = QtGui.QFont(); fnt.setPointSize(9); p.setFont(fnt)
+        p.setFont(self._f_ui)
         mode = "FLY" if self._fly else ("orbit" if self._auto else "still")
         mine_n = sum(1 for d in self.items if d["mine"])
         p.drawText(12, h - 12, f"{len(self.items)} issues · {mine_n} yours (ringed) · {mode} · "
-                                "hover for detail · double-click a point to open")
+                                "hover for detail · drag rotate · 2×click point=open / empty=orbit")
         p.end()
 
     def _draw_tooltip(self, p, w, h):
@@ -610,8 +612,8 @@ class ChronoLine(QtWidgets.QWidget):
                 line = (line + " " + wd).strip()
         if line and len(rows) < 7:
             rows.append(line)
-        fnt = QtGui.QFont(); fnt.setPointSize(9); p.setFont(fnt)
-        fm = QtGui.QFontMetrics(fnt)
+        p.setFont(self._f_ui)
+        fm = QtGui.QFontMetrics(self._f_ui)
         tw = max(fm.horizontalAdvance(r) for r in rows) + 20
         th = len(rows) * (fm.height() + 2) + 12
         sx = sy = 0
