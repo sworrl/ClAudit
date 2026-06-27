@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.74-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.75-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -307,8 +307,10 @@ title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
   (cyber / aup / harness), how many you have defended and reopened, and how many you filed today.
-- **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup / harness), **defended /
-  not-defended**, and a search that matches the title or a `#number`.
+- **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
+  not-defended**, and a search that matches the title or a `#number`. The list shows only the **real
+  cyber/AUP false positives** — the withdrawn auto-mode-classifier (harness) reports are never listed
+  (they stay a separate "harness withdrawn (false)" tally in the stats bar).
 - **Ownership colors:** your issues in purple, other ClAudit users' in teal; newest first with exact
   local timestamps.
 - **Double-click any row** for a **detail panel**: status and close reason, kind, Request IDs, and a

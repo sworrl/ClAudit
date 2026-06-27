@@ -1472,7 +1472,7 @@ class Main(QtWidgets.QMainWindow):
         self.f_state = QtWidgets.QComboBox()
         self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
         self.f_kind = QtWidgets.QComboBox()
-        self.f_kind.addItems(["All kinds", "cyber", "aup", "harness"])
+        self.f_kind.addItems(["All kinds", "cyber", "aup"])   # harness is excluded from the list
         self.f_dedup = QtWidgets.QComboBox()
         self.f_dedup.addItems(["Any", "Defended", "Not defended"])
         self.f_search = QtWidgets.QLineEdit()
@@ -2188,6 +2188,8 @@ class Main(QtWidgets.QMainWindow):
             st = it.get("state", "").lower()
             author = (it.get("author") or {}).get("login", "—")
             title = it.get("title", "")
+            if "[harness]" in title.lower():
+                continue                     # harness = withdrawn auto-classifier noise; never list it
             if scope == "Mine only" and self.me and author != self.me:
                 continue
             if statef == "Open only" and st != "open":
@@ -2246,10 +2248,11 @@ class Main(QtWidgets.QMainWindow):
         self.empty.setGeometry(self.table.viewport().rect())
         self.empty.setText("No issues match this filter.")
         self.empty.setVisible(len(rows) == 0)
-        nopen = sum(1 for it in self.community if it.get("state", "").lower() == "open")
-        mine = sum(1 for it in self.community if (it.get("author") or {}).get("login") == self.me)
+        real = [it for it in self.community if "[harness]" not in (it.get("title", "") or "").lower()]
+        nopen = sum(1 for it in real if it.get("state", "").lower() == "open")
+        mine = sum(1 for it in real if (it.get("author") or {}).get("login") == self.me)
         self.status.setText(
-            f"{len(self.community)} issues · {nopen} open · showing {len(rows)} &nbsp;|&nbsp; "
+            f"{len(real)} real false positives · {nopen} open · showing {len(rows)} &nbsp;|&nbsp; "
             f"<span style='color:#b794f6'>■ yours ({mine})</span> &nbsp; "
             f"<span style='color:#5eead4'>■ other ClAudit</span>")
         self.btn_report.setEnabled(len(pend) > 0)
