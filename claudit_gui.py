@@ -658,6 +658,31 @@ class ChronoLine(QtWidgets.QWidget):
             sx, sy, f = proj(x, y, z)
             fx, fy, _ff = proj(x, 0, z)
             drawn.append((f, sx, sy, fx, fy, i, d))
+
+        # chain threads: link issues from the same work session into a visible string (weaving across
+        # lanes). Hovering any point lights its whole chain. Drawn under the dots.
+        by_chain = {}
+        for _f, sx, sy, _fx, _fy, _i, d in drawn:
+            if d.get("chain"):
+                by_chain.setdefault(d["chain"], []).append((d["epoch"], sx, sy))
+        hover_chain = (self.items[self.hover].get("chain")
+                       if 0 <= self.hover < len(self.items) else None)
+        for ck, pts in by_chain.items():
+            if len(pts) < 2:
+                continue
+            hot = (ck == hover_chain)
+            if not hot and len(pts) > 20:    # giant chains fan into noise at rest; show them on hover
+                continue
+            pts.sort(key=lambda t: t[0])
+            cc = self._chain_color(ck)
+            p.setPen(QtGui.QPen(QtGui.QColor(cc.red(), cc.green(), cc.blue(), 225 if hot else 32),
+                                2.4 if hot else 1.0))
+            path = QtGui.QPainterPath()
+            path.moveTo(pts[0][1], pts[0][2])
+            for _e, px, py in pts[1:]:
+                path.lineTo(px, py)
+            p.drawPath(path)
+
         drawn.sort(key=lambda t: t[0])       # far (small depth factor) first
         for f, sx, sy, fx, fy, i, d in drawn:
             grow, ripple, is_post = 1.0, None, False
@@ -725,7 +750,8 @@ class ChronoLine(QtWidgets.QWidget):
         mode = "FLY" if self._fly else ("orbit" if self._auto else "live")
         opn = sum(1 for d in self.items if d.get("closure", "open") == "open")
         p.drawText(12, h - 12, f"{len(self.items)} real false positives · {opn} open · {mode} · "
-                                "height = age · ✓ fixed · ✕ dismissed · hover for detail")
+                                "height = age · ✓ fixed · ✕ dismissed · threads = work-session chains "
+                                "(hover lights one)")
         p.end()
 
     def _draw_background(self, p, w, h):
@@ -761,6 +787,13 @@ class ChronoLine(QtWidgets.QWidget):
             a = 40 + int(45 * (0.5 + 0.5 * math.sin(t * 0.8 + ph)))
             p.setBrush(QtGui.QColor(150, 165, 200, a)); p.setPen(QtCore.Qt.PenStyle.NoPen)
             p.drawEllipse(QtCore.QPointF(x * w, fy * h), sz, sz)
+
+    def _chain_color(self, key):
+        """Stable, vivid colour per work-session chain (deterministic hue from the key)."""
+        v = 0
+        for ch in str(key):
+            v = (v * 131 + ord(ch)) & 0xffffffff
+        return QtGui.QColor.fromHsv(v % 360, 150, 235)
 
     def _draw_reticle(self, p, sx, sy, r, col):
         """Static marker on the newest issue so the latest is findable without animation."""
@@ -1756,6 +1789,7 @@ class Main(QtWidgets.QMainWindow):
         closure: open, done (closed COMPLETED = real action), or dismissed (closed any other way)."""
         if not hasattr(self, "chrono"):
             return
+        chain_of = self._chain_map()         # issue number -> work-session chain key
         items = []
         for it in self.community:
             ep = _iso_epoch(it.get("createdAt", ""))
@@ -1774,8 +1808,30 @@ class Main(QtWidgets.QMainWindow):
                 "epoch": ep, "kind": kind, "author": author, "title": title,
                 "num": it.get("number"), "state": state, "closure": closure,
                 "url": it.get("url", ""), "mine": author == self.me,
+                "chain": chain_of.get(str(it.get("number"))),
             })
         self.chrono.set_items(items)
+
+    def _chain_map(self):
+        """issue number -> chain key (the work session it belongs to). From the local issues DB
+        (every ClAudit-filed issue records its project) plus the authoritative dwell chains."""
+        chain = {}
+        try:
+            with open(cs.ISSUES_DB, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    num, projs = str(rec.get("issue") or ""), rec.get("projects") or []
+                    if num and projs:
+                        chain[num] = projs[0]
+        except OSError:
+            pass
+        for proj, nums in (self.state.get("__proj_chain__", {}) or {}).items():
+            for n in nums:
+                chain[str(n)] = proj         # dwell chains are authoritative
+        return chain
 
     def _log(self, msg):
         """Prepend a timestamped line to the in-app activity feed (capped at 300)."""
@@ -1986,7 +2042,7 @@ class Main(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def _repopulate(self):
-        DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922"}
+        DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922", "dwelling": "#5eead4"}
         scope = self.f_scope.currentText()
         statef = self.f_state.currentText()
         kindf = self.f_kind.currentText()
@@ -2005,6 +2061,41 @@ class Main(QtWidgets.QMainWindow):
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
                 rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", ""))
+
+        # Dwelling: new Request IDs the dwell auto-filer is holding before it files them as their own
+        # linked bespoke issues. Show the countdown + which chain (work session) each belongs to.
+        hold = self.state.get("__dwell_hold__", {}) or {}
+        if hold and statef != "Closed only":
+            chains = self.state.get("__proj_chain__", {}) or {}
+            reqmap = {o["req"]: f for f in self.findings.values()
+                      for o in f.get("occ", []) if o.get("req")}
+            now = time.time()
+            hold_proj = {}                               # proj -> count of dwelling reqs (the pending chain)
+            for req in hold:
+                fnd = reqmap.get(req)
+                hold_proj[cs._proj_of(fnd) if fnd else "?"] = hold_proj.get(
+                    cs._proj_of(fnd) if fnd else "?", 0) + 1
+            for req, t0 in hold.items():
+                fnd = reqmap.get(req)
+                kind = fnd.get("kind", "?") if fnd else "?"
+                snippet = (cs.scrub(fnd.get("prompt", ""))[0])[:70] if fnd else req
+                title = f"[{kind}] {snippet}"
+                if needle and needle not in title.lower() and needle not in req.lower():
+                    continue
+                mins = max(0, int((cs.DWELL_SECONDS - (now - t0)) // 60))
+                proj = cs._proj_of(fnd) if fnd else "?"
+                filed_sibs = chains.get(proj, [])
+                pending_sibs = hold_proj.get(proj, 1)
+                if filed_sibs:
+                    chain = "🔗 chain: " + ", ".join(f"#{n}" for n in filed_sibs[-4:])
+                    if pending_sibs > 1:
+                        chain += f" (+{pending_sibs - 1} more dwelling)"
+                elif pending_sibs > 1:
+                    chain = f"🔗 new chain forming — {pending_sibs} dwelling together"
+                else:
+                    chain = "first in a new chain"
+                rows.append(("9998", "dwelling", "⏳ DWELL", "you",
+                             f"files in ~{mins}m", f"{title}  ·  {chain}", "", chain))
 
         for it in self.community:
             st = it.get("state", "").lower()
