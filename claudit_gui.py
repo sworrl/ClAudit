@@ -78,8 +78,21 @@ def git_pull_if_behind():
     return False
 
 
+def _code_changed(a, b):
+    """True if any run-affecting file (.py / deps) changed between commits a and b. The counter bot
+    pushes docs/counter/poll/trend + README refreshes every couple hours; those must NOT trigger a
+    restart. Unsure -> True (restart to be safe)."""
+    try:
+        out = _git("diff", "--name-only", a, b, timeout=10).stdout
+    except Exception:
+        return True
+    return any(f.strip().endswith(".py") or f.strip() in ("requirements.txt", "pyproject.toml")
+               for f in out.splitlines())
+
+
 class UpdateChecker(QtCore.QThread):
-    """Off-thread: pull new commits from GitHub (if clean+behind), then flag if HEAD moved."""
+    """Off-thread: pull new commits from GitHub (if clean+behind), then flag if CODE moved. A pull
+    that only refreshes docs/counter/poll/trend updates the checkout but does not restart the app."""
     updated = QtCore.pyqtSignal()
 
     def __init__(self, launch_head):
@@ -87,10 +100,10 @@ class UpdateChecker(QtCore.QThread):
         self.launch_head = launch_head
 
     def run(self):
-        git_pull_if_behind()                 # auto-update from GitHub
+        git_pull_if_behind()                 # auto-update from GitHub (stays current either way)
         cur = git_commit()
-        if cur and self.launch_head and cur != self.launch_head:
-            self.updated.emit()
+        if cur and self.launch_head and cur != self.launch_head and _code_changed(self.launch_head, cur):
+            self.updated.emit()              # restart only when real code changed
 
 
 def fmt_ts(iso):
