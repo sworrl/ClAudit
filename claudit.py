@@ -107,6 +107,13 @@ def _extra_terms():
     return _EXTRA
 
 
+def _deny_regex(term):
+    """Letter-only boundaries instead of \\b: catches a denylisted term glued to '_', '-', or a
+    digit (e.g. PYTHIA in 'PYTHIA_DRY_RUN', which \\b misses because '_' is a word char), while
+    still leaving letter-substrings alone ('Mark' does not redact 'Markdown', 'FT' not 'after')."""
+    return r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
+
+
 def llm_redact(text: str) -> str:
     """Opt-in: ask the `claude` CLI to find PII the regex can't (names, org abbreviations,
     hostnames, codenames). The model only IDENTIFIES terms; redaction is applied here
@@ -131,7 +138,7 @@ def llm_redact(text: str) -> str:
     for t in sorted({str(x).strip() for x in terms if isinstance(x, str)}, key=len, reverse=True):
         if len(t) < 2 or protect.match(t) or t.lower().startswith("req_"):
             continue
-        text = re.sub(r"\b" + re.escape(t) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
+        text = re.sub(_deny_regex(t), "[REDACTED]", text, flags=re.IGNORECASE)
     return text
 
 
@@ -167,7 +174,7 @@ def scrub(text: str):
         if n:
             counts[label] = counts.get(label, 0) + n
     for term in _extra_terms():
-        text, n = re.subn(r"\b" + re.escape(term) + r"\b", "[REDACTED]", text, flags=re.IGNORECASE)
+        text, n = re.subn(_deny_regex(term), "[REDACTED]", text, flags=re.IGNORECASE)
         if n:
             counts["custom"] = counts.get("custom", 0) + n
     return text, counts

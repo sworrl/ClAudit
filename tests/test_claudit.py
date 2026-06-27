@@ -46,6 +46,18 @@ def test_scrub_denylist_word_boundary(monkeypatch):
     assert "Markdown" in out               # must NOT over-redact substrings
 
 
+def test_scrub_denylist_underscore_glued(monkeypatch):
+    # a denylisted name glued to '_' / '-' / a digit must still be caught — \b misses it because
+    # '_' is a word char, which is how 'PYTHIA' leaked into a public issue title (PYTHIA_DRY_RUN).
+    monkeypatch.setattr(claudit, "_EXTRA", ["Pythia"])
+    out, _ = claudit.scrub("Starting PYTHIA_DRY_RUN=0 and pythia-bot and Pythia2 today")
+    assert "PYTHIA" not in out.upper().replace("REDACTED", "")   # every occurrence redacted
+    assert "[REDACTED]_DRY_RUN" in out
+    # letter-substrings still safe: 'Pythian' (letter suffix) and 'Markdown' must be untouched
+    out2, _ = claudit.scrub("the Pythian games and Markdown")
+    assert "Pythian" in out2 and "Markdown" in out2
+
+
 # ---------------- classification ----------------
 @pytest.mark.parametrize("text,kind", [
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),

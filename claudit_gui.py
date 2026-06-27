@@ -291,7 +291,7 @@ class BreakdownBars(QtWidgets.QWidget):
             p.end()
             return
         mx = max((v for _, v, _ in self.data), default=1) or 1
-        x0, pad = 130, 6
+        x0, pad = 180, 6   # wide label gutter: "harness withdrawn (false)" / "closed (Anthropic)"
         track_w = max(40, self.width() - x0 - 52)
         rowh = (self.height() - pad) / max(1, len(self.data))
         font = QtGui.QFont()
@@ -339,163 +339,305 @@ def _iso_epoch(ts):
 
 
 class ChronoLine(QtWidgets.QWidget):
-    """Pseudo-3D timeline of every block in ERROR_LOG. Pure QPainter with a hand-rolled perspective
-    projection — NO OpenGL, so it cannot segfault on any GL stack. Each kind is a depth lane; events
-    plot along a tilted time axis. Drag to rotate, wheel to zoom, double-click to toggle auto-orbit."""
+    """Pseudo-3D timeline of every filed ClAudit issue. Pure QPainter perspective projection — NO
+    OpenGL, so it cannot segfault on any GL stack. Each kind is a depth lane; issues plot along a
+    tilted time axis. Hover a point for its number, author, time, and title; the running user's own
+    issues are ringed. Drag to rotate, wheel to zoom, double-click toggles auto-orbit, and the
+    Cinematic fly button sends the camera on a slow scripted path. Emits openIssue(url) on click."""
+    openIssue = QtCore.pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(360)
-        self.events = []          # [(epoch, kind), ...] sorted by epoch
+        self.setMinimumHeight(380)
+        self.setMouseTracking(True)          # hover hit-testing needs moves with no button held
+        self.items = []                      # [{epoch,kind,author,title,num,state,url,mine}] by epoch
+        self.lanes = []                      # kinds actually present, back-to-front
         self.tmin = self.tmax = 0.0
         self.yaw, self.pitch, self.zoom = 0.45, 0.50, 1.0
         self._drag = None
         self._auto = True
+        self._fly = False
+        self._flt = 0.0                      # fly-mode clock (seconds)
+        self.hover = -1
+        self._pts = []                       # [(sx, sy, idx, r)] cached each paint for hit-testing
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(80)     # ~12fps: idle orbit / drag follow, cheap for 811 points
+        self._timer.start(40)                # ~25fps while animating; idle frames are skipped
 
-    def _tick(self):
-        if self._auto and self._drag is None:
-            self.yaw += 0.0022    # slow auto-orbit when untouched
+    # ---- data ----
+    def set_items(self, items):
+        self.items = sorted(items, key=lambda d: d["epoch"])
+        present = {d["kind"] for d in self.items}
+        self.lanes = [k for k in LANE_ORDER if k in present] or ["other"]
+        if self.items:
+            self.tmin = self.items[0]["epoch"]
+            self.tmax = self.items[-1]["epoch"]
+        self.hover = -1
         self.update()
+
+    # ---- animation ----
+    def _tick(self):
+        if self._fly:
+            self._flt += 0.04
+            self.update()
+        elif self._auto and self._drag is None:
+            self.yaw += 0.0022               # slow auto-orbit when untouched
+            self.update()
+        # else idle: no repaint (hover repaints are driven by mouseMoveEvent)
 
     def showEvent(self, e):
         super().showEvent(e)
         if not self._timer.isActive():
-            self._timer.start(80)
+            self._timer.start(40)
 
     def hideEvent(self, e):
         super().hideEvent(e)
-        self._timer.stop()        # don't spin while the tab/tray is hidden
+        self._timer.stop()                   # don't spin while the tab/tray is hidden
 
-    def set_events(self, events):
-        ev = sorted(events, key=lambda x: x[0])
-        self.events = ev
-        if ev:
-            self.tmin, self.tmax = ev[0][0], ev[-1][0]
+    def set_fly(self, on):
+        self._fly = bool(on)
+        if on:
+            self._auto = False
         self.update()
 
+    # ---- camera ----
+    def _camera(self):
+        """(yaw, pitch, zoom, pan). Fly mode overlays a slow scripted path on the base camera."""
+        if not self._fly:
+            return self.yaw, self.pitch, self.zoom, 0.0
+        t = self._flt
+        yaw = self.yaw + 0.5 * math.sin(t * 0.13) + 0.18 * math.sin(t * 0.37)
+        pitch = 0.42 + 0.30 * (0.5 + 0.5 * math.sin(t * 0.10))
+        zoom = 1.15 + 0.55 * math.sin(t * 0.06)
+        pan = 0.55 * math.sin(t * 0.045)     # glide along the time axis
+        return yaw, pitch, zoom, pan
+
+    def _project(self, x, y, z, cam, cx, cy, scale):
+        yaw, pitch, _zoom, pan = cam
+        x = x - pan
+        cyw, syw = math.cos(yaw), math.sin(yaw)
+        xr, zr = x * cyw + z * syw, -x * syw + z * cyw
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        yr, zr2 = y * cp - zr * sp, y * sp + zr * cp
+        f = 3.2 / (3.2 + zr2)
+        return cx + xr * f * scale, cy - yr * f * scale, f
+
+    # ---- interaction ----
     def mousePressEvent(self, e):
         self._drag = (e.position().x(), e.position().y(), self.yaw, self.pitch)
 
     def mouseMoveEvent(self, e):
-        if self._drag is None:
+        if self._drag is not None and (e.buttons() & QtCore.Qt.MouseButton.LeftButton):
+            x0, y0, yaw0, pitch0 = self._drag
+            self.yaw = yaw0 + (e.position().x() - x0) * 0.010
+            self.pitch = max(-0.15, min(1.15, pitch0 + (e.position().y() - y0) * 0.008))
+            self._fly = False                # taking the stick cancels fly mode
+            self.update()
             return
-        x0, y0, yaw0, pitch0 = self._drag
-        self.yaw = yaw0 + (e.position().x() - x0) * 0.010
-        self.pitch = max(-0.15, min(1.15, pitch0 + (e.position().y() - y0) * 0.008))
-        self.update()
+        mx, my = e.position().x(), e.position().y()
+        best, bd = -1, 14.0 ** 2
+        for sx, sy, idx, r in self._pts:
+            d = (sx - mx) ** 2 + (sy - my) ** 2
+            if d < bd:
+                bd, best = d, idx
+        if best != self.hover:
+            self.hover = best
+            self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor if best >= 0
+                           else QtCore.Qt.CursorShape.ArrowCursor)
+            self.update()
 
     def mouseReleaseEvent(self, e):
         self._drag = None
+
+    def leaveEvent(self, e):
+        if self.hover != -1:
+            self.hover = -1
+            self.update()
 
     def wheelEvent(self, e):
         self.zoom = max(0.4, min(3.0, self.zoom * (1.0 + e.angleDelta().y() / 1200.0)))
         self.update()
 
     def mouseDoubleClickEvent(self, e):
-        self._auto = not self._auto
+        if 0 <= self.hover < len(self.items):
+            url = self.items[self.hover].get("url")
+            if url:
+                self.openIssue.emit(url)      # double-click a point -> open that issue
+                return
+        if self._fly:
+            self._fly = False
+        else:
+            self._auto = not self._auto
+        self.update()
 
-    def _project(self, x, y, z, cx, cy, scale):
-        """Rotate (yaw about Y, pitch about X) then perspective-divide -> (sx, sy, depthfactor)."""
-        cyw, syw = math.cos(self.yaw), math.sin(self.yaw)
-        xr, zr = x * cyw + z * syw, -x * syw + z * cyw
-        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
-        yr, zr2 = y * cp - zr * sp, y * sp + zr * cp
-        f = 3.2 / (3.2 + zr2)
-        return cx + xr * f * scale, cy - yr * f * scale, f
-
+    # ---- paint ----
     def paintEvent(self, _e):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QtGui.QColor(13, 16, 22))
-        if not self.events:
+        bg = QtGui.QLinearGradient(0, 0, 0, h)
+        bg.setColorAt(0.0, QtGui.QColor(16, 19, 28))
+        bg.setColorAt(1.0, QtGui.QColor(9, 11, 16))
+        p.fillRect(self.rect(), bg)
+        if not self.items:
             p.setPen(QtGui.QColor("#6b7280"))
             p.drawText(self.rect(), QtCore.Qt.AlignmentFlag.AlignCenter,
-                       "No blocks recorded yet — the timeline fills as ClAudit scans.")
+                       "No issues yet — the timeline fills as ClAudit files reports.")
             p.end()
             return
+        cam = self._camera()
         cx, cy = w * 0.46, h * 0.54
-        scale = min(w, h) * 0.40 * self.zoom
+        scale = min(w, h) * 0.40 * cam[2]
         span = max(1.0, self.tmax - self.tmin)
-        nz = len(LANE_ORDER)
-        lane_i = {k: i for i, k in enumerate(LANE_ORDER)}
+        nz = len(self.lanes)
+        lane_i = {k: i for i, k in enumerate(self.lanes)}
 
-        def tx(epoch):                       # time -> x in [-1.25, 1.05] (recent end pulled in so it won't clip)
+        def tx(epoch):
             return -1.25 + 2.3 * (epoch - self.tmin) / span
 
-        def lz(kind):                        # lane -> z depth in [-0.85, 0.85]
+        def lz(kind):
             return -0.85 + 1.7 * lane_i.get(kind, nz - 1) / max(1, nz - 1)
 
-        # floor: one rail per lane
-        for k in LANE_ORDER:
+        def proj(x, y, z):
+            return self._project(x, y, z, cam, cx, cy, scale)
+
+        # lane rails + labels
+        for k in self.lanes:
             z = lz(k)
-            a = self._project(-1.3, 0, z, cx, cy, scale)
-            b = self._project(1.3, 0, z, cx, cy, scale)
+            a, b = proj(-1.3, 0, z), proj(1.3, 0, z)
             p.setPen(QtGui.QPen(QtGui.QColor(38, 44, 54), 1))
             p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
             col = QtGui.QColor(KIND_VIZ[k][0])
-            p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 150))
-            f = QtGui.QFont(); f.setPointSize(8); p.setFont(f)
+            p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 160))
+            fnt = QtGui.QFont(); fnt.setPointSize(8); p.setFont(fnt)
             p.drawText(QtCore.QPointF(a[0] - 4, a[1] + 3), KIND_VIZ[k][1])
 
-        # month gridlines across all lanes, with date labels on the front rail
-        zf, zb = lz(LANE_ORDER[-1]), lz(LANE_ORDER[0])
-        t0 = datetime.datetime.fromtimestamp(self.tmin, tz=datetime.timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        m = (t0.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)   # first whole month inside the range
-        for _ in range(18):
+        # month gridlines, labels on the front rail
+        zf, zb = lz(self.lanes[-1]), lz(self.lanes[0])
+        t0 = datetime.datetime.fromtimestamp(self.tmin, tz=datetime.timezone.utc).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0)
+        m = (t0.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)
+        for _ in range(24):
             ep = m.timestamp()
             if ep > self.tmax:
                 break
             if ep >= self.tmin:
                 x = tx(ep)
-                a = self._project(x, 0, zb, cx, cy, scale)
-                b = self._project(x, 0, zf, cx, cy, scale)
-                p.setPen(QtGui.QPen(QtGui.QColor(32, 38, 47), 1))
+                a, b = proj(x, 0, zb), proj(x, 0, zf)
+                p.setPen(QtGui.QPen(QtGui.QColor(30, 36, 45), 1))
                 p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
                 p.setPen(QtGui.QColor("#6b7280"))
-                p.drawText(QtCore.QPointF(b[0] - 10, b[1] + 16), m.strftime("%b"))
+                p.drawText(QtCore.QPointF(b[0] - 10, b[1] + 16), m.strftime("%b %y"))
             m = (m.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)
 
-        # per-lane connecting thread, then event dots (height grows with each repeat in a lane)
-        per = {k: [] for k in LANE_ORDER}
-        for epoch, kind in self.events:
-            per.get(kind, per["other"]).append(epoch)
-        now = self.tmax
-        for k in LANE_ORDER:
+        # per-lane connecting threads
+        by_lane = {k: [] for k in self.lanes}
+        for i, d in enumerate(self.items):
+            by_lane.get(d["kind"], by_lane[self.lanes[-1]]).append(i)
+        for k in self.lanes:
             col = QtGui.QColor(KIND_VIZ[k][0])
             z = lz(k)
-            eps = per[k]
-            line = [self._project(tx(ep), 0.05, z, cx, cy, scale) for ep in eps]
-            if len(line) > 1:
-                p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 55), 1.2))
+            idxs = by_lane[k]
+            if len(idxs) > 1:
+                p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 42), 1.1))
                 path = QtGui.QPainterPath()
-                path.moveTo(line[0][0], line[0][1])
-                for q in line[1:]:
-                    path.lineTo(q[0], q[1])
+                started = False
+                for i in idxs:
+                    sx, sy, _f = proj(tx(self.items[i]["epoch"]), 0.05, z)
+                    if not started:
+                        path.moveTo(sx, sy); started = True
+                    else:
+                        path.lineTo(sx, sy)
                 p.drawPath(path)
-            for ep in eps:
-                recency = (ep - self.tmin) / span            # newer events stand taller
-                sx, sy, f = self._project(tx(ep), 0.05 + 0.18 * recency, z, cx, cy, scale)
-                r = max(1.6, 3.2 * f)
-                fresh = (now - ep) < 86400 * 3                # within 3 days -> bright + glow
-                alpha = 235 if fresh else 120
-                if fresh:
-                    g = QtGui.QRadialGradient(sx, sy, r * 3)
-                    g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), 120))
-                    g.setColorAt(1.0, QtGui.QColor(col.red(), col.green(), col.blue(), 0))
-                    p.setBrush(QtGui.QBrush(g)); p.setPen(QtCore.Qt.PenStyle.NoPen)
-                    p.drawEllipse(QtCore.QPointF(sx, sy), r * 3, r * 3)
-                p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))
-                p.setPen(QtCore.Qt.PenStyle.NoPen)
-                p.drawEllipse(QtCore.QPointF(sx, sy), r, r)
 
+        # dots: project all, depth-sort so nearer ones draw on top, cache for hit-testing
+        now = self.tmax
+        self._pts = []
+        drawn = []
+        for i, d in enumerate(self.items):
+            recency = (d["epoch"] - self.tmin) / span
+            sx, sy, f = proj(tx(d["epoch"]), 0.05 + 0.18 * recency, lz(d["kind"]))
+            drawn.append((f, sx, sy, i, d))
+        drawn.sort(key=lambda t: t[0])       # far (small depth factor) first
+        for f, sx, sy, i, d in drawn:
+            col = QtGui.QColor(KIND_VIZ[d["kind"]][0])
+            mine, hovered = d["mine"], (i == self.hover)
+            fresh = (now - d["epoch"]) < 86400 * 3
+            r = max(1.8, 3.4 * f) * (1.8 if hovered else 1.0) * (1.2 if mine else 1.0)
+            if hovered or fresh:             # glow only for the few that warrant it (cheap at scale)
+                gr = r * (4 if hovered else 3)
+                g = QtGui.QRadialGradient(sx, sy, gr)
+                g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), 150 if hovered else 95))
+                g.setColorAt(1.0, QtGui.QColor(col.red(), col.green(), col.blue(), 0))
+                p.setBrush(QtGui.QBrush(g)); p.setPen(QtCore.Qt.PenStyle.NoPen)
+                p.drawEllipse(QtCore.QPointF(sx, sy), gr, gr)
+            alpha = 255 if (hovered or d["state"] == "open") else 120
+            p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))
+            if mine:                         # your issues: white ring (cheap, scales to hundreds)
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 200 if hovered else 130), 1.3))
+            else:
+                p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.drawEllipse(QtCore.QPointF(sx, sy), r, r)
+            self._pts.append((sx, sy, i, r))
+
+        if 0 <= self.hover < len(self.items):
+            self._draw_tooltip(p, w, h)
+
+        # footer
         p.setPen(QtGui.QColor("#8b94a3"))
-        f = QtGui.QFont(); f.setPointSize(9); p.setFont(f)
-        p.drawText(12, h - 12, f"{len(self.events)} blocks · drag to rotate · wheel to zoom · "
-                                "double-click toggles orbit")
+        fnt = QtGui.QFont(); fnt.setPointSize(9); p.setFont(fnt)
+        mode = "FLY" if self._fly else ("orbit" if self._auto else "still")
+        mine_n = sum(1 for d in self.items if d["mine"])
+        p.drawText(12, h - 12, f"{len(self.items)} issues · {mine_n} yours (ringed) · {mode} · "
+                                "hover for detail · double-click a point to open")
         p.end()
+
+    def _draw_tooltip(self, p, w, h):
+        d = self.items[self.hover]
+        col = QtGui.QColor(KIND_VIZ[d["kind"]][0])
+        when = datetime.datetime.fromtimestamp(d["epoch"]).astimezone().strftime("%Y-%m-%d %H:%M")
+        num = f"#{d['num']}" if d.get("num") else "(queued)"
+        rows = [f"{num} · [{d['kind']}] · {d['state'] or '?'}",
+                f"by {d['author']}" + ("  · you" if d["mine"] else ""),
+                when]
+        words, line = d["title"].split(), ""
+        for wd in words:                     # wrap the title to <=46 chars, max 3 lines
+            if len(line) + len(wd) + 1 > 46:
+                rows.append(line); line = wd
+                if len(rows) >= 6:
+                    break
+            else:
+                line = (line + " " + wd).strip()
+        if line and len(rows) < 7:
+            rows.append(line)
+        fnt = QtGui.QFont(); fnt.setPointSize(9); p.setFont(fnt)
+        fm = QtGui.QFontMetrics(fnt)
+        tw = max(fm.horizontalAdvance(r) for r in rows) + 20
+        th = len(rows) * (fm.height() + 2) + 12
+        sx = sy = 0
+        for px, py, idx, _r in self._pts:
+            if idx == self.hover:
+                sx, sy = px, py
+                break
+        bx = min(max(8, sx + 14), w - tw - 8)
+        by = min(max(8, sy - th - 10), h - th - 8)
+        panel = QtGui.QPainterPath()
+        panel.addRoundedRect(QtCore.QRectF(bx, by, tw, th), 8, 8)
+        p.fillPath(panel, QtGui.QColor(18, 22, 30, 242))
+        p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 210), 1.2))
+        p.drawPath(panel)
+        y = by + fm.ascent() + 7
+        for i, row in enumerate(rows):
+            if i == 0:
+                p.setPen(col.lighter(125))
+            elif i == 1:
+                p.setPen(QtGui.QColor("#e6e8ec") if d["mine"] else QtGui.QColor("#aeb6c2"))
+            elif i == 2:
+                p.setPen(QtGui.QColor("#8b94a3"))
+            else:
+                p.setPen(QtGui.QColor("#cdd3dc"))
+            p.drawText(int(bx + 10), int(y), row)
+            y += fm.height() + 2
 
 
 def make_banner():
@@ -1353,9 +1495,17 @@ class Main(QtWidgets.QMainWindow):
         top = QtWidgets.QWidget()
         tl = QtWidgets.QVBoxLayout(top)
         tl.setContentsMargins(0, 0, 0, 0)
-        tl.addWidget(QtWidgets.QLabel("Block timeline — every cyber/AUP/harness/limit/overloaded event "
-                                      "over time, one depth lane per kind. Recent blocks stand taller and glow."))
+        head = QtWidgets.QHBoxLayout()
+        head.addWidget(QtWidgets.QLabel("Issue timeline — every filed report over time, one depth lane per "
+                                        "kind. Your issues are ringed; hover any point for author, time, and title."))
+        head.addStretch(1)
+        self.fly_btn = QtWidgets.QPushButton("🎬 Cinematic fly")
+        self.fly_btn.setCheckable(True)
+        self.fly_btn.toggled.connect(lambda on: self.chrono.set_fly(on))
+        head.addWidget(self.fly_btn)
+        tl.addLayout(head)
         self.chrono = ChronoLine()
+        self.chrono.openIssue.connect(lambda url: QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)))
         tl.addWidget(self.chrono, 1)
         split.addWidget(top)
 
@@ -1377,23 +1527,24 @@ class Main(QtWidgets.QMainWindow):
         return w
 
     def _load_chrono(self):
-        """Feed the chrono-line from ERROR_LOG (rewritten by every scan)."""
+        """Feed the chrono-line from the filed community issues (author/time/title per point)."""
         if not hasattr(self, "chrono"):
             return
-        events = []
-        try:
-            with open(cs.ERROR_LOG, encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        e = json.loads(line)
-                    except ValueError:
-                        continue
-                    ep = _iso_epoch(e.get("ts", ""))
-                    if ep:
-                        events.append((ep, e.get("kind", "other")))
-        except OSError:
-            pass
-        self.chrono.set_events(events)
+        items = []
+        for it in self.community:
+            ep = _iso_epoch(it.get("createdAt", ""))
+            if not ep:
+                continue
+            title = it.get("title", "") or ""
+            tl = title.lower()
+            kind = next((k for k in ("cyber", "aup", "harness") if f"[{k}]" in tl), "other")
+            author = (it.get("author") or {}).get("login", "") or "?"
+            items.append({
+                "epoch": ep, "kind": kind, "author": author, "title": title,
+                "num": it.get("number"), "state": (it.get("state", "") or "").lower(),
+                "url": it.get("url", ""), "mine": author == self.me,
+            })
+        self.chrono.set_items(items)
 
     def _log(self, msg):
         """Prepend a timestamped line to the in-app activity feed (capped at 300)."""
@@ -1701,14 +1852,22 @@ class Main(QtWidgets.QMainWindow):
         if not hasattr(self, "stats_bar"):
             return
         c = self.community
-        nclosed = len(c) - nopen
+        # split closures honestly: harness reports are ClAudit's OWN withdrawn false reports
+        # (auto-mode-classifier, log-only), NOT issues Anthropic closed. Count them apart.
         kinds = {"cyber": 0, "aup": 0, "harness": 0}
+        harness_withdrawn = 0   # closed harness = withdrawn false reports
+        real_closed = 0         # closed cyber/aup/bespoke = actually closed by Anthropic
         for it in c:
             t = (it.get("title", "") or "").lower()
-            for k in kinds:
-                if f"[{k}]" in t:
-                    kinds[k] += 1
-                    break
+            closed = (it.get("state", "") or "").lower() == "closed"
+            k = next((x for x in kinds if f"[{x}]" in t), None)
+            if k:
+                kinds[k] += 1
+            if closed:
+                if k == "harness":
+                    harness_withdrawn += 1
+                else:
+                    real_closed += 1
         deduped = self.state.get("__deduped__", {}) or {}
         defended = sum(1 for v in deduped.values() if v == "not-duplicate")
         reopened = sum(1 for v in (self.state.get("__reopened__", {}) or {}).values()
@@ -1717,17 +1876,22 @@ class Main(QtWidgets.QMainWindow):
         nday = sum(1 for it in c if (it.get("createdAt", "") or "")[:10] == today)
         self.stats_bar.setText(
             f"<span style='color:#3fb950'>● {nopen} open</span> &nbsp; "
-            f"<span style='color:#a371f7'>● {nclosed} closed</span> &nbsp;|&nbsp; "
-            f"cyber {kinds['cyber']} · aup {kinds['aup']} · harness {kinds['harness']} &nbsp;|&nbsp; "
+            f"<span style='color:#a371f7'>● {real_closed} closed by Anthropic</span> &nbsp;|&nbsp; "
+            f"cyber {kinds['cyber']} · aup {kinds['aup']} &nbsp;|&nbsp; "
+            f"<span style='color:#b58a8a'>⊘ {harness_withdrawn} harness withdrawn (false)</span> &nbsp;|&nbsp; "
             f"🛡 {defended} &nbsp; ♻ {reopened} &nbsp; "
             f"<span style='color:#5eead4'>+{nday} today</span>")
+        self.stats_bar.setToolTip(
+            f"{real_closed} cyber/aup reports actually closed by Anthropic.\n"
+            f"{harness_withdrawn} harness (auto-mode-classifier) reports were ClAudit's own false "
+            "reports, withdrawn as log-only — they do NOT count as Anthropic closing a ticket.")
         if hasattr(self, "breakdown"):
             self.breakdown.set_data([
                 ("open", nopen, "#3fb950"),
-                ("closed", nclosed, "#a371f7"),
+                ("closed (Anthropic)", real_closed, "#a371f7"),
                 ("cyber", kinds["cyber"], "#4aa3ff"),
                 ("aup", kinds["aup"], "#d29922"),
-                ("harness", kinds["harness"], "#8a5a5a"),
+                ("harness withdrawn (false)", harness_withdrawn, "#b58a8a"),
                 ("defended", defended, "#5eead4"),
             ])
 
