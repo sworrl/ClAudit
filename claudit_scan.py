@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.79"
+__version__ = "2.0.80"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1231,8 +1231,7 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
     acted on this pass."""
     deduped = state.setdefault("__deduped__", {})
     me = gh_login()
-    cutoff = (datetime.datetime.now(datetime.timezone.utc)
-              - datetime.timedelta(days=since_days)).strftime("%Y-%m-%d")
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
     flagged = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
                         "--label", "duplicate", "--search", f"updated:>={cutoff}",
                         "--limit", str(limit or 200), "--json", "number"])
