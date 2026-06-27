@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.83"
+__version__ = "2.0.84"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -62,6 +62,15 @@ GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop th
                # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
 DWELL_SECONDS = 900   # dwell-auto-file: hold a new Request ID this long (repeats accrete as their own
                       # linked issues) before the LLM judges + composes + files it. Config: dwell_seconds.
+# ClAudit's OWN `claude -p` calls (compose / scrub / gate / dup-defense). When one is blocked it lands
+# in a transcript; scan() must skip it or ClAudit reports its own prompts — a feedback loop.
+INTERNAL_PROMPTS = (
+    "Write ONE specific GitHub issue title",
+    "Write a tight, factual 2-3 sentence explanation",
+    "strict PII redactor",
+    "duplicate-detection bot",
+    "false_positive=TRUE",
+)
 PROJECT_URL = "https://github.com/sworrl/ClAudit"   # issues link back here for transparency
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claudit_icon.png")
 DEFAULT_NOTE = ("False positive — in-scope, authorized security work; not out of scope. "
@@ -234,6 +243,8 @@ def _parse_file(path, name, root):
                     if at:
                         recent.append(("assistant", at[:300]))
                     continue
+                if last_prompt and any(mk in last_prompt for mk in INTERNAL_PROMPTS):
+                    continue                    # ClAudit's own LLM prompt got blocked — never self-report
                 kind = classify(err)
                 ts = entry.get("timestamp", "")
                 m = REQ_ID.search(err)
@@ -836,6 +847,23 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         state["__dwell_baselined__"] = True
         save_state(state)
         return 0
+    # Drain the deprecated manual queue (__pending__) into the dwell pipeline so it doesn't hang as
+    # un-processable QUEUED rows — each pending block's Request IDs get held + filed like any other.
+    pend = state.get("__pending__", [])
+    if pend:
+        for s in pend:
+            f = findings.get(s)
+            if not (f and should_file(f)):
+                continue
+            for o in f["occ"]:
+                req = o.get("req")
+                if req and req not in filed_set and req not in skip_set:
+                    hold.setdefault(req, now)
+                    seen_set.add(req)
+                    if req not in seen:
+                        seen.append(req)
+        state["__pending__"] = []
+        save_state(state)
     # Register genuinely new Request IDs into the dwell hold.
     for req in current:
         if req not in seen_set and req not in filed_set and req not in skip_set:

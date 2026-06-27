@@ -262,6 +262,27 @@ def test_cited_issues_parses_urls_and_hashes():
     assert cs._cited_issues(body, "71866") == ["71861", "71867", "71868"]
 
 
+def test_scan_excludes_claudit_own_llm_prompts(tmp_path):
+    # ClAudit's own compose/scrub/gate `claude -p` calls get blocked and land in transcripts; scan
+    # must NOT re-report them (feedback loop). A block preceded by an internal prompt is dropped.
+    own = tmp_path / "own.jsonl"
+    own.write_text("\n".join(json.dumps(x) for x in [
+        {"type": "user", "message": {"content": "Write ONE specific GitHub issue title for this block"}},
+        {"isApiErrorMessage": True, "timestamp": "2026-06-27T00:00:00Z",
+         "message": {"content": "API Error: flagged this message for a cybersecurity topic. "
+                                "Request ID: req_011CcOWN"}}]))
+    assert cs._parse_file(str(own), "own.jsonl", str(tmp_path))[0] == []   # excluded
+    # a REAL user prompt before the same block IS captured
+    real = tmp_path / "real.jsonl"
+    real.write_text("\n".join(json.dumps(x) for x in [
+        {"type": "user", "message": {"content": "audit my own firewall config"}},
+        {"isApiErrorMessage": True, "timestamp": "2026-06-27T00:00:00Z",
+         "message": {"content": "API Error: flagged this message for a cybersecurity topic. "
+                                "Request ID: req_011CcREAL"}}]))
+    findings = cs._parse_file(str(real), "real.jsonl", str(tmp_path))[0]
+    assert len(findings) == 1 and findings[0]["kind"] == "cyber"
+
+
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)
