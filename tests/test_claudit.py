@@ -255,6 +255,13 @@ def test_defense_note_is_contextual(monkeypatch):
     assert "distinct" in b.lower() and "Request ID" in b
 
 
+def test_cited_issues_parses_urls_and_hashes():
+    # the dup-bot cites via full URLs, sometimes #NNN; both must parse, excluding the issue itself
+    body = ("Found duplicates:\n1. https://github.com/anthropics/claude-code/issues/71867\n"
+            "2. https://github.com/anthropics/claude-code/issues/71868\nalso #71861 and self #71866")
+    assert cs._cited_issues(body, "71866") == ["71861", "71867", "71868"]
+
+
 def test_gate_is_noop_without_llm():
     ok, _ = claudit.llm_is_false_positive("cyber", "some block reason", "context")
     assert ok is True                               # LLM off -> file everything (prior behavior)

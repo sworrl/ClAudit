@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.78"
+__version__ = "2.0.79"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1192,9 +1192,8 @@ def mark_not_duplicate(state, repo, num):
                  or "closed as a duplicate" in c.get("body", "").lower()), None)
     of, flag_body, cited = "", (flag.get("body", "") if flag else ""), []
     if flag:
-        m = re.search(r"#(\d+)", flag_body)
-        of = f"#{m.group(1)}" if m else ""
-        cited = [c for c in re.findall(r"#(\d+)", flag_body) if c != str(num)]
+        cited = _cited_issues(flag_body, num)
+        of = f"#{cited[0]}" if cited else ""
     reacted = _push_not_dup(repo, num, (flag or {}).get("id"), of,
                             "Reviewed and confirmed a distinct block.", data.get("body", ""),
                             flag_body=flag_body, cited=cited)
@@ -1203,60 +1202,76 @@ def mark_not_duplicate(state, repo, num):
     return reacted
 
 
+def _is_dup_flag_body(body):
+    b = (body or "").lower()
+    return "possible duplicate" in b or "closed as a duplicate" in b
+
+
 def _dup_flag(comments):
     """The dup-bot's flag comment among an issue's comments, or None."""
-    return next((c for c in (comments or [])
-                 if "possible duplicate" in c.get("body", "").lower()
-                 or "closed as a duplicate" in c.get("body", "").lower()), None)
+    return next((c for c in (comments or []) if _is_dup_flag_body(c.get("body", ""))), None)
 
 
-def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False):
-    """Local dedup-defender: on EVERY open issue the dup-bot FLAGGED (by the `duplicate` label), post
-    a factual 'not a duplicate' note — and 👎 the dup-bot comment when there is one. Handles
-    LABEL-ONLY flags too (the bot labels an issue before/without ever commenting; the note still
-    goes, there's just no comment to 👎). Idempotent (state['__deduped__']) and paced. No LLM gate:
-    each ClAudit issue is already a distinct prompt + Request ID. Returns count defended."""
+def _cited_issues(body, exclude=""):
+    """Issue numbers the dup-bot cited — it uses full URLs (/issues/NNN), sometimes #NNN."""
+    nums = re.findall(r"(?:#|/issues/)(\d+)", body or "")
+    return sorted({n for n in nums if n != str(exclude)}, key=int)
+
+
+DEFEND_REASON = ("The classifier flagged in-scope administration of systems the reporter owns and "
+                 "operates, not an attack on anyone else's.")
+
+
+def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
+    """Dedup-defender that answers RE-FLAGS. The dup-bot re-posts a 'possible duplicate' comment each
+    time it re-evaluates; ClAudit responds (👎 + a contextual 'not a duplicate' note naming the cited
+    issues) whenever the bot's latest flag is NEWER than ClAudit's last defense on that issue — so a
+    re-flag gets a fresh contextual reply, while a settled issue (defense already after the bot) is
+    left alone. Scans flagged issues updated within `since_days` (the auto-close window). Returns count
+    acted on this pass."""
     deduped = state.setdefault("__deduped__", {})
+    me = gh_login()
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=since_days)).strftime("%Y-%m-%d")
     flagged = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-                        "--label", "duplicate", "--limit", str(limit or 500), "--json", "number"])
+                        "--label", "duplicate", "--search", f"updated:>={cutoff}",
+                        "--limit", str(limit or 200), "--json", "number"])
     if flagged is None:
         print("defend_all: cannot list flagged issues", file=sys.stderr)
         return 0
-    flagged_nums = [it["number"] for it in flagged]
-    if not flagged_nums:
-        return 0
-    # GROUND TRUTH for what's already defended: ONE search (issues where I commented the note),
-    # instead of a slow per-issue view. This is what makes the sweep finish fast enough to run
-    # every cycle — and it can't wrongly skip a failed post, because failures aren't in the result.
-    me = gh_login()
-    sr = _gh_json(["search", "issues", "--repo", repo, f'"not a duplicate" commenter:{me}',
-                   "--limit", "1000", "--json", "number"]) or []
-    defended = {it["number"] for it in sr}
-    todo = [n for n in flagged_nums if n not in defended]
     done = 0
-    for num in todo:
+    for it in flagged:
+        num = it["number"]
         data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
         comments = data.get("comments") or []
-        if any("not a duplicate" in c.get("body", "").lower() for c in comments):
-            deduped[str(num)] = "not-duplicate"         # search lag — already noted
+        my_defenses = [c.get("createdAt", "") for c in comments
+                       if (c.get("author") or {}).get("login") == me
+                       and "not a duplicate" in c.get("body", "").lower()]
+        my_last = max(my_defenses) if my_defenses else ""
+        dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
+        if not dup_comments:                            # label-only flag: post the note once
+            if str(num) not in deduped and _push_not_dup(repo, num, None, "", DEFEND_REASON,
+                                                         data.get("body", ""), compose=compose):
+                deduped[str(num)] = "not-duplicate"
+                save_state(state)
+                done += 1
             continue
-        flag = _dup_flag(comments)                      # None for a label-only flag — note still posts
-        flag_body = flag.get("body", "") if flag else ""
-        cited = [c for c in re.findall(r"#(\d+)", flag_body) if c != str(num)]   # the issues it named
-        m = re.search(r"#(\d+)", flag_body) if flag else None
-        posted = _push_not_dup(
-            repo, num, flag.get("id") if flag else None, f"#{m.group(1)}" if m else "",
-            "The classifier flagged in-scope administration of systems the reporter owns and operates, "
-            "not an attack on anyone else's.",
-            data.get("body", ""), compose=compose, flag_body=flag_body, cited=cited)
-        if posted:                                      # only mark done on SUCCESS -> failures retry
+        latest = dup_comments[-1]
+        # only act if the bot's latest flag is newer than our last defense (i.e. an unanswered re-flag)
+        if my_last and latest.get("createdAt", "") <= my_last:
+            continue
+        cited_now = _cited_issues(latest.get("body", ""), num)
+        posted = _push_not_dup(repo, num, latest.get("id"), f"#{cited_now[0]}" if cited_now else "",
+                               DEFEND_REASON, data.get("body", ""), compose=compose,
+                               flag_body=latest.get("body", ""), cited=cited_now)
+        if posted:                                      # only record on SUCCESS -> failures retry
             deduped[str(num)] = "not-duplicate"
             save_state(state)
             done += 1
             if on_done:
                 on_done(num, posted)
             time.sleep(delay)
-    print(f"defend_all: {len(todo)} undefended, defended {done} this pass.", file=sys.stderr)
+    print(f"defend_all: {len(flagged)} active flagged, answered {done} this pass.", file=sys.stderr)
     return done
 
 
