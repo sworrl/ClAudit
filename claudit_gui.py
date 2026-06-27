@@ -338,12 +338,23 @@ def _iso_epoch(ts):
         return 0.0
 
 
+SPAWN_DUR = 0.85       # seconds a point takes to grow in
+INTRO_SPAN = 1.9       # stagger window for the first-load build-in (oldest -> newest)
+
+
+def _ease_out_back(x):
+    """Overshoot easing: a point grows past full size then settles, giving a little 'pop'."""
+    c1 = 1.70158
+    return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2
+
+
 class ChronoLine(QtWidgets.QWidget):
     """Pseudo-3D timeline of every filed ClAudit issue. Pure QPainter perspective projection — NO
     OpenGL, so it cannot segfault on any GL stack. Each kind is a depth lane; issues plot along a
-    tilted time axis. Hover a point for its number, author, time, and title; the running user's own
-    issues are ringed. Drag to rotate, wheel to zoom, double-click toggles auto-orbit, and the
-    Cinematic fly button sends the camera on a slow scripted path. Emits openIssue(url) on click."""
+    tilted time axis. New issues grow in place with a ripple as they post; the first view builds in
+    oldest -> newest. Hover a point for its number, author, time, and title; your own issues are
+    ringed and the newest carries a reticle. Drag to rotate, wheel to zoom, and the Cinematic button
+    flies the camera along each lane in turn. Emits openIssue(url) on double-click."""
     openIssue = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -357,14 +368,19 @@ class ChronoLine(QtWidgets.QWidget):
         self._drag = None
         self._auto = False                   # still by default: a tab left open must not burn CPU
         self._fly = False
-        self._flt = 0.0                      # fly-mode clock (seconds)
+        self._flt = 0.0                      # cinematic-tour clock (seconds)
         self.hover = -1
         self._pts = []                       # [(sx, sy, idx, r)] cached each paint for hit-testing
+        self._spawn = {}                     # num -> (start_monotonic, is_new_post) for grow-in anim
+        self._known = set()                  # issue numbers already seen (new-post detection)
+        self._primed = False
+        self._intro_played = False
         self._f_lane = QtGui.QFont(); self._f_lane.setPointSize(8)   # reused each frame, not realloc'd
         self._f_ui = QtGui.QFont(); self._f_ui.setPointSize(9)
+        self._f_new = QtGui.QFont(); self._f_new.setPointSize(8); self._f_new.setBold(True)
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(50)                # 20fps, and only repaints while orbiting/flying
+        self._timer.start(50)                # 20fps, and only repaints while something is animating
 
     # ---- data ----
     def set_items(self, items):
@@ -374,23 +390,55 @@ class ChronoLine(QtWidgets.QWidget):
         if self.items:
             self.tmin = self.items[0]["epoch"]
             self.tmax = self.items[-1]["epoch"]
+        now = time.monotonic()
+        nums = {d["num"] for d in self.items if d.get("num") is not None}
+        if not self._primed:
+            self._known = set(nums)          # first load: baseline, don't flag everything as 'new'
+            self._primed = bool(nums)
+        else:
+            for d in self.items:             # genuine new posts -> pop in place with a ripple + NEW
+                n = d.get("num")
+                if n is not None and n not in self._known:
+                    self._spawn[n] = (now, True)
+            self._known |= nums
+        if self.items and not self._intro_played and self.isVisible():
+            self._start_intro(now)
         self.hover = -1
         self.update()
 
+    def _start_intro(self, now):
+        """First time the chart is seen: stagger every point's grow-in oldest -> newest."""
+        self._intro_played = True
+        n = len(self.items)
+        for rank, d in enumerate(self.items):
+            num = d.get("num")
+            if num is not None:
+                self._spawn[num] = (now + (rank / max(1, n - 1)) * INTRO_SPAN, False)
+
     # ---- animation ----
     def _tick(self):
+        now = time.monotonic()
+        active = False
+        if self._spawn:
+            for num in [k for k, (s, _p) in self._spawn.items() if now - s > SPAWN_DUR]:
+                del self._spawn[num]
+            active = bool(self._spawn)
         if self._fly:
-            self._flt += 0.04
-            self.update()
+            self._flt += 0.05
+            active = True
         elif self._auto and self._drag is None:
             self.yaw += 0.0022               # slow auto-orbit when untouched
+            active = True
+        if active:
             self.update()
-        # else idle: no repaint (hover repaints are driven by mouseMoveEvent)
 
     def showEvent(self, e):
         super().showEvent(e)
         if not self._timer.isActive():
             self._timer.start(50)
+        if self.items and not self._intro_played:
+            self._start_intro(time.monotonic())   # play the build-in the first time it's revealed
+            self.update()
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -400,23 +448,37 @@ class ChronoLine(QtWidgets.QWidget):
         self._fly = bool(on)
         if on:
             self._auto = False
+            self._flt = 0.0                  # start the tour at the first lane
         self.update()
 
     # ---- camera ----
     def _camera(self):
-        """(yaw, pitch, zoom, pan). Fly mode overlays a slow scripted path on the base camera."""
+        """(yaw, pitch, zoom, panx, panz). Cinematic mode flies along one lane at a time: it pans
+        the focused lane across the centre (back and forth, lane after lane) so each row is read in
+        turn. Off-mode returns the static base camera."""
         if not self._fly:
-            return self.yaw, self.pitch, self.zoom, 0.0
+            return self.yaw, self.pitch, self.zoom, 0.0, 0.0
         t = self._flt
-        yaw = self.yaw + 0.5 * math.sin(t * 0.13) + 0.18 * math.sin(t * 0.37)
-        pitch = 0.42 + 0.30 * (0.5 + 0.5 * math.sin(t * 0.10))
-        zoom = 1.15 + 0.55 * math.sin(t * 0.06)
-        pan = 0.55 * math.sin(t * 0.045)     # glide along the time axis
-        return yaw, pitch, zoom, pan
+        n = len(self.lanes) or 1
+        seg = 4.6                            # seconds spent flying along one lane
+        i = int(t / seg)
+        lane = i % n
+        u = (t - i * seg) / seg              # 0..1 along this lane
+
+        def lzf(idx):
+            return -0.85 + 1.7 * idx / max(1, n - 1)
+
+        forward = (i % 2 == 0)               # boustrophedon: L->R, then R->L, then L->R ...
+        panx = (-1.15 + 2.3 * u) if forward else (1.15 - 2.3 * u)
+        blend = min(1.0, u / 0.22)
+        blend = blend * blend * (3 - 2 * blend)        # smoothstep the lane-to-lane glide
+        panz = lzf((i - 1) % n) + (lzf(lane) - lzf((i - 1) % n)) * blend
+        yaw = 0.36 + 0.05 * math.sin(t * 0.3)
+        return yaw, 0.30, 1.55, panx, panz
 
     def _project(self, x, y, z, cam, cx, cy, scale):
-        yaw, pitch, _zoom, pan = cam
-        x = x - pan
+        yaw, pitch, _zoom, panx, panz = cam
+        x, z = x - panx, z - panz
         cyw, syw = math.cos(yaw), math.sin(yaw)
         xr, zr = x * cyw + z * syw, -x * syw + z * cyw
         cp, sp = math.cos(pitch), math.sin(pitch)
@@ -493,6 +555,7 @@ class ChronoLine(QtWidgets.QWidget):
         span = max(1.0, self.tmax - self.tmin)
         nz = len(self.lanes)
         lane_i = {k: i for i, k in enumerate(self.lanes)}
+        mono = time.monotonic()
 
         def tx(epoch):
             return -1.25 + 2.3 * (epoch - self.tmin) / span
@@ -554,6 +617,7 @@ class ChronoLine(QtWidgets.QWidget):
 
         # dots: project all, depth-sort so nearer ones draw on top, cache for hit-testing
         now = self.tmax
+        newest = len(self.items) - 1
         self._pts = []
         drawn = []
         for i, d in enumerate(self.items):
@@ -562,27 +626,52 @@ class ChronoLine(QtWidgets.QWidget):
             drawn.append((f, sx, sy, i, d))
         drawn.sort(key=lambda t: t[0])       # far (small depth factor) first
         for f, sx, sy, i, d in drawn:
+            grow, ripple, is_post = 1.0, None, False
+            sp = self._spawn.get(d.get("num"))
+            if sp is not None:
+                el = mono - sp[0]
+                if el < 0:
+                    continue                 # intro: this point has not grown in yet (skip + no hit)
+                if el < SPAWN_DUR:
+                    ripple = el / SPAWN_DUR
+                    grow = _ease_out_back(ripple)
+                    is_post = sp[1]
             col = QtGui.QColor(KIND_VIZ[d["kind"]][0])
             mine, hovered = d["mine"], (i == self.hover)
             fresh = (now - d["epoch"]) < 86400 * 3
-            r = max(1.8, 3.4 * f) * (1.8 if hovered else 1.0) * (1.2 if mine else 1.0)
-            if hovered or fresh:             # glow only for the few that warrant it (cheap at scale)
-                gr = r * (4 if hovered else 3)
+            fog = max(0.4, min(1.0, (f - 0.5) / 0.8))           # atmospheric depth: far = dimmer
+            r = max(1.8, 3.4 * f) * (1.8 if hovered else 1.0) * (1.2 if mine else 1.0) * grow
+            if ripple is not None:                              # expanding spawn ring
+                rr = r + ripple * (34 if is_post else 18)
+                p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(),
+                                                 int((1 - ripple) * (190 if is_post else 110))), 1.6))
+                p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QtCore.QPointF(sx, sy), rr, rr)
+            if hovered or fresh or ripple is not None:
+                gr = r * (4 if (hovered or ripple is not None) else 3)
+                ga = 170 if ripple is not None else (150 if hovered else 95)
                 g = QtGui.QRadialGradient(sx, sy, gr)
-                g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), 150 if hovered else 95))
+                g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), ga))
                 g.setColorAt(1.0, QtGui.QColor(col.red(), col.green(), col.blue(), 0))
                 p.setBrush(QtGui.QBrush(g)); p.setPen(QtCore.Qt.PenStyle.NoPen)
                 p.drawEllipse(QtCore.QPointF(sx, sy), gr, gr)
-            alpha = 255 if (hovered or d["state"] == "open") else 120
-            p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), alpha))
+            base_a = 255 if (hovered or d["state"] == "open") else 120
+            p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), int(base_a * fog)))
             if mine:                         # your issues: white ring (cheap, scales to hundreds)
-                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 200 if hovered else 130), 1.3))
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, int((200 if hovered else 130) * fog)), 1.3))
             else:
                 p.setPen(QtCore.Qt.PenStyle.NoPen)
             p.drawEllipse(QtCore.QPointF(sx, sy), r, r)
+            if i == newest and ripple is None:
+                self._draw_reticle(p, sx, sy, r, col)
+            if is_post and ripple is not None:                  # 'NEW' tag that fades and rises
+                p.setFont(self._f_new)
+                p.setPen(QtGui.QColor(255, 255, 255, int((1 - ripple) * 255)))
+                p.drawText(QtCore.QPointF(sx - 11, sy - r - 8 - ripple * 7), "NEW")
             self._pts.append((sx, sy, i, r))
 
         if 0 <= self.hover < len(self.items):
+            self._draw_dropline(p, proj, tx, lz)
             self._draw_tooltip(p, w, h)
 
         # footer
@@ -593,6 +682,33 @@ class ChronoLine(QtWidgets.QWidget):
         p.drawText(12, h - 12, f"{len(self.items)} issues · {mine_n} yours (ringed) · {mode} · "
                                 "hover for detail · drag rotate · 2×click point=open / empty=orbit")
         p.end()
+
+    def _draw_reticle(self, p, sx, sy, r, col):
+        """Static marker on the newest issue so the latest is findable without animation."""
+        rr = r + 5
+        p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 150), 1.0))
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QtCore.QPointF(sx, sy), rr, rr)
+        for dx, dy in ((rr + 3, 0), (-rr - 3, 0), (0, rr + 3), (0, -rr - 3)):
+            p.drawPoint(QtCore.QPointF(sx + dx, sy + dy))
+
+    def _draw_dropline(self, p, proj, tx, lz):
+        """Drop a faint plumb line from the hovered point to its lane rail, labelled with the date."""
+        d = self.items[self.hover]
+        sx = sy = None
+        for px, py, idx, _r in self._pts:
+            if idx == self.hover:
+                sx, sy = px, py
+                break
+        if sx is None:
+            return
+        rx, ry, _f = proj(tx(d["epoch"]), 0, lz(d["kind"]))
+        p.setPen(QtGui.QPen(QtGui.QColor(150, 160, 175, 110), 1, QtCore.Qt.PenStyle.DashLine))
+        p.drawLine(QtCore.QPointF(sx, sy), QtCore.QPointF(rx, ry))
+        p.setPen(QtGui.QColor("#aeb6c2"))
+        p.setFont(self._f_lane)
+        p.drawText(QtCore.QPointF(rx - 18, ry + 14),
+                   datetime.datetime.fromtimestamp(d["epoch"]).astimezone().strftime("%b %d"))
 
     def _draw_tooltip(self, p, w, h):
         d = self.items[self.hover]
@@ -1501,8 +1617,9 @@ class Main(QtWidgets.QMainWindow):
         head.addWidget(QtWidgets.QLabel("Issue timeline — every filed report over time, one depth lane per "
                                         "kind. Your issues are ringed; hover any point for author, time, and title."))
         head.addStretch(1)
-        self.fly_btn = QtWidgets.QPushButton("🎬 Cinematic fly")
+        self.fly_btn = QtWidgets.QPushButton("🎬 Cinematic")
         self.fly_btn.setCheckable(True)
+        self.fly_btn.setToolTip("Fly the camera along each lane in turn, reading every row")
         self.fly_btn.toggled.connect(lambda on: self.chrono.set_fly(on))
         head.addWidget(self.fly_btn)
         tl.addLayout(head)
