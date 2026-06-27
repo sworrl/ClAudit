@@ -31,6 +31,18 @@ import claudit_scan as cs  # noqa: E402
 STATE_LOCK = threading.Lock()
 
 
+def _snap(d):
+    """Shallow-copy a state sub-dict the watcher thread may be mutating, before the GUI iterates it.
+    The watcher holds STATE_LOCK during long network/LLM work, so the GUI never blocks on it; instead
+    it copies defensively and tolerates the rare 'dict changed size' mid-copy by retrying."""
+    for _ in range(5):
+        try:
+            return dict(d) if d else {}
+        except RuntimeError:
+            continue
+    return {}
+
+
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 try:
@@ -595,7 +607,7 @@ class ChronoLine(QtWidgets.QWidget):
             return
         mx, my = e.position().x(), e.position().y()
         best, bd = -1, 14.0 ** 2
-        for sx, sy, idx, r in self._pts:
+        for sx, sy, idx, _r in self._pts:
             d = (sx - mx) ** 2 + (sy - my) ** 2
             if d < bd:
                 bd, best = d, idx
@@ -1879,7 +1891,7 @@ class Main(QtWidgets.QMainWindow):
                         chain[num] = projs[0]
         except OSError:
             pass
-        for proj, nums in (self.state.get("__proj_chain__", {}) or {}).items():
+        for proj, nums in _snap(self.state.get("__proj_chain__")).items():
             for n in nums:
                 chain[str(n)] = proj         # dwell chains are authoritative
         return chain
@@ -2151,9 +2163,9 @@ class Main(QtWidgets.QMainWindow):
 
         # Dwelling: new Request IDs the dwell auto-filer is holding before it files them as their own
         # linked bespoke issues. Show the countdown + which chain (work session) each belongs to.
-        hold = self.state.get("__dwell_hold__", {}) or {}
+        hold = _snap(self.state.get("__dwell_hold__"))   # copy before iterating (watcher mutates it)
         if hold and statef != "Closed only":
-            chains = self.state.get("__proj_chain__", {}) or {}
+            chains = _snap(self.state.get("__proj_chain__"))
             reqmap = {o["req"]: f for f in self.findings.values()
                       for o in f.get("occ", []) if o.get("req")}
             now = time.time()
@@ -2225,7 +2237,7 @@ class Main(QtWidgets.QMainWindow):
         self._chain_delegate.set_data(graph, nlanes_)
 
         self.table.setRowCount(len(rows))
-        for r, (_, st, num, author, created, title, url, why, _chain) in enumerate(rows):
+        for r, (_, _st, num, author, created, title, url, why, _chain) in enumerate(rows):
             is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
             if author == "you" or (self.me and author == self.me):
                 owner = "#b794f6"          # yours = purple
@@ -2281,9 +2293,8 @@ class Main(QtWidgets.QMainWindow):
                     harness_withdrawn += 1
                 else:
                     real_closed += 1
-        deduped = self.state.get("__deduped__", {}) or {}
-        defended = sum(1 for v in deduped.values() if v == "not-duplicate")
-        reopened = sum(1 for v in (self.state.get("__reopened__", {}) or {}).values()
+        defended = sum(1 for v in _snap(self.state.get("__deduped__")).values() if v == "not-duplicate")
+        reopened = sum(1 for v in _snap(self.state.get("__reopened__")).values()
                        if not str(v).startswith("review"))
         today = datetime.datetime.now().astimezone().strftime("%Y-%m-%d")
         nday = sum(1 for it in c if (it.get("createdAt", "") or "")[:10] == today)

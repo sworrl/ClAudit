@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="claudit_icon.png" alt="ClAudit" width="220">
+<img src="claudit_icon.png" alt="ClAudit" width="300">
 
 # ClAudit
 
@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.75-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.76-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -26,7 +26,7 @@ Day.**
 
 <div align="center">
 
-<img src="docs/phrasing.gif" alt="Phrasing." width="520"><br>
+<img src="docs/phrasing.gif" alt="Phrasing." width="100%"><br>
 <sub><i>Rephrase it. Reword it. Tiptoe around the words. <b>Phrasing.</b> — every dev dodging the classifier</i></sub>
 
 </div>
@@ -371,7 +371,6 @@ python3 claudit_scan.py                       # dry-run: list new findings, file
 python3 claudit_scan.py --watch               # notify-only: detect + queue new blocks
 python3 claudit_scan.py --watch --auto        # auto-file new blocks the instant they're seen
 python3 claudit_scan.py --watch --auto --backfill --defend   # file + drain backlog + auto-defend
-python3 claudit_scan.py --watch --auto --defend --track 70895   # also keep a tracking issue fresh
 python3 claudit_scan.py --pending             # list what's queued
 python3 claudit_scan.py --file-pending        # file the queue (user-initiated)
 python3 claudit_scan.py --post                # one-shot: review the backlog in $EDITOR, then file
@@ -414,8 +413,6 @@ Defend, reopen, and track:
 | `--reopen-dupes` | One-shot: reopen issues the dup-bot closed as duplicates |
 | `--watch --reopen` | Run the reopen sweep on a timer (opt-in) |
 | `--reopen-humans` | Also reopen issues a human maintainer closed as duplicate (default: bot only) |
-| `--update-tracking N` | Refresh consolidated tracking issue N from local data, then exit |
-| `--watch --track N` | Keep tracking issue N auto-refreshed (no new issues) |
 | `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (dry-run without `--apply`) |
 
 PII and output:
@@ -476,11 +473,15 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved prefs (`llm_scrub`, `burn_tokens`, opt-in `gate`) |
+| `config.json` | Saved prefs: `llm_scrub`, `burn_tokens`, opt-in `gate`, `dwell_autofile`, `dwell_seconds` |
 | `scrub.txt` | Your local PII denylist (never committed) |
-| `filed.json` | Dedup state: which findings/issues are filed/baselined |
+| `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
 | `error-log.jsonl` | Every classified block, including the logged-only kinds |
+
+`dwell_autofile: true` turns on the dwell auto-filer (hold each new cyber/AUP block ~15 min, LLM-judge
+it, then file one cross-linked bespoke issue per Request ID); `dwell_seconds` overrides the 900s dwell.
+Both are off by default and also toggle from the tray.
 
 ## Auto-update & self-restart
 
