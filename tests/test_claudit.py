@@ -74,6 +74,8 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),
     ("flagged this message as a cybersecurity", "cyber"),          # PR #5
     ("safety filter detected cybersecurity", "cyber"),             # PR #5
+    ("API Error: Opus 4.8's safeguards flagged this message for a cybersecurity topic", "cyber"),  # reworded
+    ("Sonnet's safeguards flagged this message for a cybersecurity topic", "cyber"),               # reworded
     ("appears to violate our Usage Policy", "aup"),
     ("Claude Code is unable to respond to this request", "aup"),
     ("blocked: against our usage policy", "aup"),                  # PR #5

@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.69"
+__version__ = "2.0.70"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -86,8 +86,11 @@ WHY = {
 
 def classify(text):
     t = text.lower()
-    if ("safety measures that flagged this message for a cybersecurity topic" in t
-            or "flagged this message as a cybersecurity" in t
+    # cyber = the cybersecurity-topic classifier flagged it. Match the flagging signature, not one
+    # exact sentence — Anthropic reworded it from "safety measures" to "Opus 4.8's safeguards" and
+    # the old fixed strings stopped matching, silently dropping real cyber blocks to 'other'.
+    # error_text() only ever feeds real API-error messages here, so this can't catch model refusals.
+    if (("cybersecurity" in t and "flag" in t)
             or "safety filter detected cybersecurity" in t):
         return "cyber"
     if ("violate our usage policy" in t or "unable to respond to this request" in t
