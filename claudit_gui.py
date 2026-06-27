@@ -364,23 +364,33 @@ class ChronoLine(QtWidgets.QWidget):
         self.items = []                      # [{epoch,kind,author,title,num,state,url,mine}] by epoch
         self.lanes = []                      # kinds actually present, back-to-front
         self.tmin = self.tmax = 0.0
-        self.yaw, self.pitch, self.zoom = 0.45, 0.50, 1.0
+        self.HOME = (0.45, 0.50, 1.0)        # the legible default angle the camera eases back to
+        self.yaw, self.pitch, self.zoom = self.HOME
         self._drag = None
         self._auto = False                   # still by default: a tab left open must not burn CPU
         self._fly = False
         self._flt = 0.0                      # cinematic-tour clock (seconds)
+        self._last_act = 0.0                 # monotonic of last user input (for idle auto-recenter)
+        self._bg = 0.0                        # abstract-background animation phase
+        self._bgpix = None                    # cached gradient+nebula (costly); refreshed as it drifts
+        self._bgpix_t = -99.0
+        self._frame = 0
         self.hover = -1
         self._pts = []                       # [(sx, sy, idx, r)] cached each paint for hit-testing
         self._spawn = {}                     # num -> (start_monotonic, is_new_post) for grow-in anim
         self._known = set()                  # issue numbers already seen (new-post detection)
         self._primed = False
         self._intro_played = False
+        # deterministic starfield for the abstract background (no Math.random needed)
+        self._stars = [((i * 73 % 1000) / 1000.0, (i * 37 % 1000) / 1000.0,
+                        1.0 + (i * 13 % 4) * 0.5, 0.15 + (i % 6) * 0.06, (i * 0.7) % 6.28)
+                       for i in range(72)]
         self._f_lane = QtGui.QFont(); self._f_lane.setPointSize(8)   # reused each frame, not realloc'd
         self._f_ui = QtGui.QFont(); self._f_ui.setPointSize(9)
         self._f_new = QtGui.QFont(); self._f_new.setPointSize(8); self._f_new.setBold(True)
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(50)                # 20fps, and only repaints while something is animating
+        self._timer.start(50)                # 20fps active; ~5fps idle for the ambient background
 
     # ---- data ----
     def set_items(self, items):
@@ -418,19 +428,35 @@ class ChronoLine(QtWidgets.QWidget):
     # ---- animation ----
     def _tick(self):
         now = time.monotonic()
-        active = False
+        self._bg += 0.05                     # abstract background drifts continuously, gently
+        self._frame += 1
         if self._spawn:
             for num in [k for k, (s, _p) in self._spawn.items() if now - s > SPAWN_DUR]:
                 del self._spawn[num]
-            active = bool(self._spawn)
+        returning = False
+        if not self._fly and not self._auto and self._drag is None and not self._spawn \
+                and now - self._last_act > 2.5:
+            returning = self._ease_home()    # idle: glide the camera back to the readable angle
         if self._fly:
             self._flt += 0.05
-            active = True
         elif self._auto and self._drag is None:
             self.yaw += 0.0022               # slow auto-orbit when untouched
-            active = True
-        if active:
+        # the background drifts while the scene animates; when fully idle we stop repainting (0% CPU)
+        if self._fly or self._auto or bool(self._spawn) or returning:
             self.update()
+
+    def _ease_home(self):
+        """Glide yaw/pitch/zoom back toward HOME by the shortest path. Returns True while moving."""
+        hy, hp, hz = self.HOME
+        dy = (self.yaw - hy + math.pi) % (2 * math.pi) - math.pi   # shortest angular path
+        self.yaw = hy + dy
+        if abs(dy) + abs(self.pitch - hp) + abs(self.zoom - hz) < 0.004:
+            self.yaw, self.pitch, self.zoom = self.HOME
+            return False
+        self.yaw += (hy - self.yaw) * 0.10
+        self.pitch += (hp - self.pitch) * 0.10
+        self.zoom += (hz - self.zoom) * 0.10
+        return True
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -446,6 +472,7 @@ class ChronoLine(QtWidgets.QWidget):
 
     def set_fly(self, on):
         self._fly = bool(on)
+        self._last_act = time.monotonic()
         if on:
             self._auto = False
             self._flt = 0.0                  # start the tour at the first lane
@@ -489,6 +516,7 @@ class ChronoLine(QtWidgets.QWidget):
     # ---- interaction ----
     def mousePressEvent(self, e):
         self._drag = (e.position().x(), e.position().y(), self.yaw, self.pitch)
+        self._last_act = time.monotonic()
 
     def mouseMoveEvent(self, e):
         if self._drag is not None and (e.buttons() & QtCore.Qt.MouseButton.LeftButton):
@@ -496,6 +524,7 @@ class ChronoLine(QtWidgets.QWidget):
             self.yaw = yaw0 + (e.position().x() - x0) * 0.010
             self.pitch = max(-0.15, min(1.15, pitch0 + (e.position().y() - y0) * 0.008))
             self._fly = False                # taking the stick cancels fly mode
+            self._last_act = time.monotonic()
             self.update()
             return
         mx, my = e.position().x(), e.position().y()
@@ -520,6 +549,7 @@ class ChronoLine(QtWidgets.QWidget):
 
     def wheelEvent(self, e):
         self.zoom = max(0.4, min(3.0, self.zoom * (1.0 + e.angleDelta().y() / 1200.0)))
+        self._last_act = time.monotonic()
         self.update()
 
     def mouseDoubleClickEvent(self, e):
@@ -535,33 +565,41 @@ class ChronoLine(QtWidgets.QWidget):
         self.update()
 
     # ---- paint ----
+    def _height(self, d, recency):
+        """Y of a point: open issues ascend with recency; a real-action close lifts above the line;
+        a dismissed/ignored close sinks to the floor."""
+        c = d.get("closure", "open")
+        if c == "done":
+            return 0.10 + 0.34 * recency + 0.20
+        if c == "dismissed":
+            return 0.015
+        return 0.06 + 0.34 * recency
+
     def paintEvent(self, _e):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        bg = QtGui.QLinearGradient(0, 0, 0, h)
-        bg.setColorAt(0.0, QtGui.QColor(16, 19, 28))
-        bg.setColorAt(1.0, QtGui.QColor(9, 11, 16))
-        p.fillRect(self.rect(), bg)
+        self._draw_background(p, w, h)
         if not self.items:
             p.setPen(QtGui.QColor("#6b7280"))
             p.drawText(self.rect(), QtCore.Qt.AlignmentFlag.AlignCenter,
-                       "No issues yet — the timeline fills as ClAudit files reports.")
+                       "No real cyber/AUP false positives yet — the timeline fills as ClAudit files them.")
             p.end()
             return
         cam = self._camera()
-        cx, cy = w * 0.46, h * 0.54
-        scale = min(w, h) * 0.40 * cam[2]
+        cx, cy = w * 0.46, h * 0.60
+        scale = min(w, h) * 0.38 * cam[2]
         span = max(1.0, self.tmax - self.tmin)
         nz = len(self.lanes)
         lane_i = {k: i for i, k in enumerate(self.lanes)}
         mono = time.monotonic()
+        done_col, dismiss_col = QtGui.QColor("#3fb950"), QtGui.QColor("#5b6472")
 
         def tx(epoch):
             return -1.25 + 2.3 * (epoch - self.tmin) / span
 
         def lz(kind):
-            return -0.85 + 1.7 * lane_i.get(kind, nz - 1) / max(1, nz - 1)
+            return -0.7 + 1.4 * lane_i.get(kind, nz - 1) / max(1, nz - 1)
 
         def proj(x, y, z):
             return self._project(x, y, z, cam, cx, cy, scale)
@@ -570,10 +608,10 @@ class ChronoLine(QtWidgets.QWidget):
         for k in self.lanes:
             z = lz(k)
             a, b = proj(-1.3, 0, z), proj(1.3, 0, z)
-            p.setPen(QtGui.QPen(QtGui.QColor(38, 44, 54), 1))
+            p.setPen(QtGui.QPen(QtGui.QColor(40, 46, 58), 1))
             p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
             col = QtGui.QColor(KIND_VIZ[k][0])
-            p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 160))
+            p.setPen(QtGui.QColor(col.red(), col.green(), col.blue(), 170))
             p.setFont(self._f_lane)
             p.drawText(QtCore.QPointF(a[0] - 4, a[1] + 3), KIND_VIZ[k][1])
 
@@ -589,43 +627,26 @@ class ChronoLine(QtWidgets.QWidget):
             if ep >= self.tmin:
                 x = tx(ep)
                 a, b = proj(x, 0, zb), proj(x, 0, zf)
-                p.setPen(QtGui.QPen(QtGui.QColor(30, 36, 45), 1))
+                p.setPen(QtGui.QPen(QtGui.QColor(30, 36, 46), 1))
                 p.drawLine(QtCore.QPointF(a[0], a[1]), QtCore.QPointF(b[0], b[1]))
                 p.setPen(QtGui.QColor("#6b7280"))
                 p.drawText(QtCore.QPointF(b[0] - 10, b[1] + 16), m.strftime("%b %y"))
             m = (m.replace(day=28) + datetime.timedelta(days=8)).replace(day=1)
 
-        # per-lane connecting threads
-        by_lane = {k: [] for k in self.lanes}
-        for i, d in enumerate(self.items):
-            by_lane.get(d["kind"], by_lane[self.lanes[-1]]).append(i)
-        for k in self.lanes:
-            col = QtGui.QColor(KIND_VIZ[k][0])
-            z = lz(k)
-            idxs = by_lane[k]
-            if len(idxs) > 1:
-                p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), 42), 1.1))
-                path = QtGui.QPainterPath()
-                started = False
-                for i in idxs:
-                    sx, sy, _f = proj(tx(self.items[i]["epoch"]), 0.05, z)
-                    if not started:
-                        path.moveTo(sx, sy); started = True
-                    else:
-                        path.lineTo(sx, sy)
-                p.drawPath(path)
-
-        # dots: project all, depth-sort so nearer ones draw on top, cache for hit-testing
-        now = self.tmax
+        # points: a stem from the rail up to each issue, height = age/closure; depth-sorted; cached
         newest = len(self.items) - 1
         self._pts = []
         drawn = []
         for i, d in enumerate(self.items):
             recency = (d["epoch"] - self.tmin) / span
-            sx, sy, f = proj(tx(d["epoch"]), 0.05 + 0.18 * recency, lz(d["kind"]))
-            drawn.append((f, sx, sy, i, d))
+            y = self._height(d, recency)
+            z = lz(d["kind"])
+            x = tx(d["epoch"])
+            sx, sy, f = proj(x, y, z)
+            fx, fy, _ff = proj(x, 0, z)
+            drawn.append((f, sx, sy, fx, fy, i, d))
         drawn.sort(key=lambda t: t[0])       # far (small depth factor) first
-        for f, sx, sy, i, d in drawn:
+        for f, sx, sy, fx, fy, i, d in drawn:
             grow, ripple, is_post = 1.0, None, False
             sp = self._spawn.get(d.get("num"))
             if sp is not None:
@@ -636,32 +657,43 @@ class ChronoLine(QtWidgets.QWidget):
                     ripple = el / SPAWN_DUR
                     grow = _ease_out_back(ripple)
                     is_post = sp[1]
-            col = QtGui.QColor(KIND_VIZ[d["kind"]][0])
+            closure = d.get("closure", "open")
+            col = (done_col if closure == "done" else
+                   dismiss_col if closure == "dismissed" else QtGui.QColor(KIND_VIZ[d["kind"]][0]))
             mine, hovered = d["mine"], (i == self.hover)
-            fresh = (now - d["epoch"]) < 86400 * 3
             fog = max(0.4, min(1.0, (f - 0.5) / 0.8))           # atmospheric depth: far = dimmer
-            r = max(1.8, 3.4 * f) * (1.8 if hovered else 1.0) * (1.2 if mine else 1.0) * grow
+            r = max(1.8, 3.3 * f) * (1.8 if hovered else 1.0) * (1.2 if mine else 1.0) * grow
+            # stem from the rail up to the point (the ascending-height read)
+            sa = int((90 if closure == "open" else 60) * fog)
+            p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(), sa), 1.0))
+            p.drawLine(QtCore.QPointF(fx, fy), QtCore.QPointF(sx, sy))
             if ripple is not None:                              # expanding spawn ring
                 rr = r + ripple * (34 if is_post else 18)
                 p.setPen(QtGui.QPen(QtGui.QColor(col.red(), col.green(), col.blue(),
                                                  int((1 - ripple) * (190 if is_post else 110))), 1.6))
                 p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
                 p.drawEllipse(QtCore.QPointF(sx, sy), rr, rr)
-            if hovered or fresh or ripple is not None:
+            if hovered or ripple is not None or closure == "done":   # glow only where it earns it
                 gr = r * (4 if (hovered or ripple is not None) else 3)
-                ga = 170 if ripple is not None else (150 if hovered else 95)
+                ga = 170 if ripple is not None else (150 if hovered else 110)
                 g = QtGui.QRadialGradient(sx, sy, gr)
                 g.setColorAt(0.0, QtGui.QColor(col.red(), col.green(), col.blue(), ga))
                 g.setColorAt(1.0, QtGui.QColor(col.red(), col.green(), col.blue(), 0))
                 p.setBrush(QtGui.QBrush(g)); p.setPen(QtCore.Qt.PenStyle.NoPen)
                 p.drawEllipse(QtCore.QPointF(sx, sy), gr, gr)
-            base_a = 255 if (hovered or d["state"] == "open") else 120
+            base_a = 255 if (hovered or closure == "open") else (220 if closure == "done" else 140)
             p.setBrush(QtGui.QColor(col.red(), col.green(), col.blue(), int(base_a * fog)))
-            if mine:                         # your issues: white ring (cheap, scales to hundreds)
+            if mine and r >= 2.4:            # your issues: white ring (skip on tiny far dots: invisible + costly)
                 p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, int((200 if hovered else 130) * fog)), 1.3))
             else:
                 p.setPen(QtCore.Qt.PenStyle.NoPen)
             p.drawEllipse(QtCore.QPointF(sx, sy), r, r)
+            if closure == "done":                               # real action: a ✓ above the point
+                p.setFont(self._f_new); p.setPen(QtGui.QColor(180, 255, 200, int(230 * fog)))
+                p.drawText(QtCore.QPointF(sx - 4, sy - r - 4), "✓")
+            elif closure == "dismissed":                        # ignored/dismissed: a faint ✕
+                p.setFont(self._f_lane); p.setPen(QtGui.QColor(150, 160, 175, int(150 * fog)))
+                p.drawText(QtCore.QPointF(sx - 3, sy - r - 3), "✕")
             if i == newest and ripple is None:
                 self._draw_reticle(p, sx, sy, r, col)
             if is_post and ripple is not None:                  # 'NEW' tag that fades and rises
@@ -677,11 +709,45 @@ class ChronoLine(QtWidgets.QWidget):
         # footer
         p.setPen(QtGui.QColor("#8b94a3"))
         p.setFont(self._f_ui)
-        mode = "FLY" if self._fly else ("orbit" if self._auto else "still")
-        mine_n = sum(1 for d in self.items if d["mine"])
-        p.drawText(12, h - 12, f"{len(self.items)} issues · {mine_n} yours (ringed) · {mode} · "
-                                "hover for detail · drag rotate · 2×click point=open / empty=orbit")
+        mode = "FLY" if self._fly else ("orbit" if self._auto else "live")
+        opn = sum(1 for d in self.items if d.get("closure", "open") == "open")
+        p.drawText(12, h - 12, f"{len(self.items)} real false positives · {opn} open · {mode} · "
+                                "height = age · ✓ fixed · ✕ dismissed · hover for detail")
         p.end()
+
+    def _draw_background(self, p, w, h):
+        """Abstract drifting backdrop: deep gradient + two slow nebula blobs (cached to a pixmap and
+        refreshed only as they drift — the per-pixel radial fills are far too costly every frame),
+        plus a live parallax starfield (cheap)."""
+        t = self._bg
+        if (self._bgpix is None or self._bgpix.width() != w or self._bgpix.height() != h
+                or abs(t - self._bgpix_t) > 0.25):
+            pix = QtGui.QPixmap(w, h)
+            pp = QtGui.QPainter(pix)
+            pp.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            grad = QtGui.QLinearGradient(0, 0, w, h)
+            grad.setColorAt(0.0, QtGui.QColor(15, 17, 27))
+            grad.setColorAt(0.55, QtGui.QColor(10, 12, 19))
+            grad.setColorAt(1.0, QtGui.QColor(7, 8, 13))
+            pp.fillRect(0, 0, w, h, grad)
+            for hue, x0, y0, sp, rad in (((96, 70, 150), 0.30, 0.34, 0.11, 0.55),
+                                         ((150, 110, 60), 0.74, 0.64, 0.08, 0.60)):
+                cxp = w * (x0 + 0.10 * math.sin(t * sp))
+                cyp = h * (y0 + 0.10 * math.cos(t * sp * 0.8))
+                rr = min(w, h) * rad
+                g = QtGui.QRadialGradient(cxp, cyp, rr)
+                g.setColorAt(0.0, QtGui.QColor(hue[0], hue[1], hue[2], 30))
+                g.setColorAt(1.0, QtGui.QColor(hue[0], hue[1], hue[2], 0))
+                pp.setBrush(QtGui.QBrush(g)); pp.setPen(QtCore.Qt.PenStyle.NoPen)
+                pp.drawEllipse(QtCore.QPointF(cxp, cyp), rr, rr)
+            pp.end()
+            self._bgpix, self._bgpix_t = pix, t
+        p.drawPixmap(0, 0, self._bgpix)
+        for fx, fy, sz, sp, ph in self._stars:
+            x = (fx + t * sp * 0.02) % 1.0
+            a = 40 + int(45 * (0.5 + 0.5 * math.sin(t * 0.8 + ph)))
+            p.setBrush(QtGui.QColor(150, 165, 200, a)); p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.drawEllipse(QtCore.QPointF(x * w, fy * h), sz, sz)
 
     def _draw_reticle(self, p, sx, sy, r, col):
         """Static marker on the newest issue so the latest is findable without animation."""
@@ -715,7 +781,9 @@ class ChronoLine(QtWidgets.QWidget):
         col = QtGui.QColor(KIND_VIZ[d["kind"]][0])
         when = datetime.datetime.fromtimestamp(d["epoch"]).astimezone().strftime("%Y-%m-%d %H:%M")
         num = f"#{d['num']}" if d.get("num") else "(queued)"
-        rows = [f"{num} · [{d['kind']}] · {d['state'] or '?'}",
+        cstate = {"open": "open", "done": "fixed ✓", "dismissed": "dismissed ✕"}.get(
+            d.get("closure", "open"), d.get("state", "?"))
+        rows = [f"{num} · [{d['kind']}] · {cstate}",
                 f"by {d['author']}" + ("  · you" if d["mine"] else ""),
                 when]
         words, line = d["title"].split(), ""
@@ -1614,8 +1682,8 @@ class Main(QtWidgets.QMainWindow):
         tl = QtWidgets.QVBoxLayout(top)
         tl.setContentsMargins(0, 0, 0, 0)
         head = QtWidgets.QHBoxLayout()
-        head.addWidget(QtWidgets.QLabel("Issue timeline — every filed report over time, one depth lane per "
-                                        "kind. Your issues are ringed; hover any point for author, time, and title."))
+        head.addWidget(QtWidgets.QLabel("Real false positives over time (cyber + AUP). Height = age; ✓ = fixed "
+                                        "(real action), ✕ = dismissed/ignored. New ones grow in as they post."))
         head.addStretch(1)
         self.fly_btn = QtWidgets.QPushButton("🎬 Cinematic")
         self.fly_btn.setCheckable(True)
@@ -1646,7 +1714,9 @@ class Main(QtWidgets.QMainWindow):
         return w
 
     def _load_chrono(self):
-        """Feed the chrono-line from the filed community issues (author/time/title per point)."""
+        """Feed the chrono-line from the filed community issues. ONLY real cyber/AUP API false
+        positives — the harness (auto-mode-classifier) reports are excluded. Each point carries its
+        closure: open, done (closed COMPLETED = real action), or dismissed (closed any other way)."""
         if not hasattr(self, "chrono"):
             return
         items = []
@@ -1656,11 +1726,16 @@ class Main(QtWidgets.QMainWindow):
                 continue
             title = it.get("title", "") or ""
             tl = title.lower()
-            kind = next((k for k in ("cyber", "aup", "harness") if f"[{k}]" in tl), "other")
+            kind = next((k for k in ("cyber", "aup") if f"[{k}]" in tl), None)
+            if kind is None:                 # skip harness/other: not real server-side false positives
+                continue
+            state = (it.get("state", "") or "").lower()
+            reason = (it.get("stateReason", "") or "").upper()
+            closure = "open" if state == "open" else ("done" if reason == "COMPLETED" else "dismissed")
             author = (it.get("author") or {}).get("login", "") or "?"
             items.append({
                 "epoch": ep, "kind": kind, "author": author, "title": title,
-                "num": it.get("number"), "state": (it.get("state", "") or "").lower(),
+                "num": it.get("number"), "state": state, "closure": closure,
                 "url": it.get("url", ""), "mine": author == self.me,
             })
         self.chrono.set_items(items)

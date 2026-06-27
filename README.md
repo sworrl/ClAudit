@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.67-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.68-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -87,7 +87,7 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <img src="docs/screenshot-activity.png" alt="ClAudit Activity tab — pseudo-3D chrono-line of every filed issue, one depth lane per kind, your issues ringed" width="780">
 
-<em>Activity tab: a pseudo-3D chrono-line of every filed report. One depth lane per kind; your own issues are ringed and the newest carries a reticle. New issues grow in place with a ripple and a NEW tag as they post; the first view builds in oldest to newest. Hover a point for its number, author, time, and title (with a plumb line to the date on the rail); double-click to open it on GitHub. Drag to rotate, wheel to zoom, and the Cinematic button flies the camera along each lane in turn. Pure QPainter, no OpenGL, and still when idle.</em>
+<em>Activity tab: a pseudo-3D chrono-line of the real cyber/AUP false positives (the auto-mode-classifier reports are excluded). Two lanes; a stem rises to each issue with height set by age, so the timeline reads as an ascending ridge. Closure shows state: open stands at its age, a real-action close (COMPLETED) turns green and lifts above the line with a ✓, and a dismissed/ignored close greys out and sinks to the floor with a ✕. New issues grow in place with a ripple as they post; your own are ringed; the newest carries a reticle. An abstract drifting backdrop sits behind it. Drag to rotate (it eases back to a readable angle when you let go), wheel to zoom, and the Cinematic button flies the camera along each lane in turn. Pure QPainter, no OpenGL, and zero repaints when idle.</em>
 
 </div>
 
@@ -316,16 +316,17 @@ title.
   the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
   that has no defense yet.
 - **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
-- **Activity tab:** a **pseudo-3D chrono-line** of every filed report, one depth lane per kind. Your
-  own issues are ringed and the newest carries a reticle. **New issues grow in place** with an
-  expanding ripple and a NEW tag the moment they post to GitHub, and the first view **builds in**
-  oldest to newest. Hover any point for its number, author, time, and title (with a plumb line down
-  to the date on the rail); double-click to open it on GitHub. Drag to rotate, wheel to zoom,
-  double-click empty space to toggle auto-orbit, and the **Cinematic** button flies the camera along
-  each lane in turn, reading every row. It is pure QPainter with a hand-rolled perspective projection,
-  no OpenGL, so it cannot segfault on any GL stack, and it stays still (no repaint) when idle. Below
-  it, a live feed of everything the watcher does (filed, backfilled, defended, reopened, queued),
-  timestamped, newest first.
+- **Activity tab:** a **pseudo-3D chrono-line** of the **real cyber/AUP false positives** (the
+  auto-mode-classifier reports are left out). A stem rises to each issue with **height set by age**,
+  so the line reads as an ascending ridge. **Closure is encoded**: open stands at its age, a
+  real-action close (COMPLETED) turns **green and lifts above the line with a ✓**, and a
+  dismissed/ignored close **greys out and sinks to the floor with a ✕**. **New issues grow in place**
+  with an expanding ripple the moment they post; your own are ringed; the newest carries a reticle;
+  an **abstract drifting backdrop** sits behind it. Drag to rotate (it **eases back to a readable
+  angle** when you let go), wheel to zoom, and the **Cinematic** button flies the camera along each
+  lane in turn. Pure QPainter, no OpenGL, and **zero repaints when idle**. Below it, a live feed of
+  everything the watcher does (filed, backfilled, defended, reopened, queued), timestamped, newest
+  first.
 - **Project tab:** two charts plus repo traction. The **Reports over time** chart plots three lines,
   normalized to API blocks: open `cyber`/`aup` false positives (cyan), `cyber`/`aup` closed by
   Anthropic (green), and the withdrawn `harness` class (muted, a separate line that does not count as
