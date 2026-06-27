@@ -1,4 +1,5 @@
 """Core tests for ClAudit — no network, no real gh/claude (all mocked/off)."""
+import json
 import os
 import sys
 
