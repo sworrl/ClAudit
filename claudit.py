@@ -173,10 +173,22 @@ def scrub(text: str):
         text, n = pattern.subn(repl, text)
         if n:
             counts[label] = counts.get(label, 0) + n
+    # Mask Request IDs before the denylist pass: a short denylisted term ('FT') can sit between
+    # digits inside a req ID (req_...JY8FT6dr), and _deny_regex's letter-only boundaries would
+    # match it and corrupt the very ID the report exists to reference. Restore them afterward.
+    reqs = []
+
+    def _hold(m):
+        reqs.append(m.group(0))
+        return f"\x00REQ{len(reqs) - 1}\x00"
+
+    text = re.sub(r"req_[A-Za-z0-9]+", _hold, text)
     for term in _extra_terms():
         text, n = re.subn(_deny_regex(term), "[REDACTED]", text, flags=re.IGNORECASE)
         if n:
             counts["custom"] = counts.get("custom", 0) + n
+    for i, val in enumerate(reqs):
+        text = text.replace(f"\x00REQ{i}\x00", val)
     return text, counts
 
 

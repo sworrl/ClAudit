@@ -58,6 +58,17 @@ def test_scrub_denylist_underscore_glued(monkeypatch):
     assert "Pythian" in out2 and "Markdown" in out2
 
 
+def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
+    # a short denylist term ('FT') can fall between digits inside a Request ID; the denylist pass
+    # must NOT redact it there, or the report loses the ID Anthropic needs to look up.
+    monkeypatch.setattr(claudit, "_EXTRA", ["FT"])
+    out, _ = claudit.scrub("see req_011CcPL8dVfbJY8FT6drDsEj for details")
+    assert "req_011CcPL8dVfbJY8FT6drDsEj" in out      # Request ID intact, FT preserved inside it
+    # a standalone 'FT' outside an ID is still redacted
+    out2, _ = claudit.scrub("hosted by FT corp")
+    assert "FT corp" not in out2 and "[REDACTED]" in out2
+
+
 # ---------------- classification ----------------
 @pytest.mark.parametrize("text,kind", [
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),
