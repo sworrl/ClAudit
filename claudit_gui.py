@@ -361,6 +361,59 @@ def _ease_out_back(x):
     return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2
 
 
+def chain_color(key):
+    """Stable, vivid colour per work-session chain (deterministic hue from the key). Shared by the
+    3D chart threads and the list's chain-graph gutter so a chain is the same colour in both."""
+    v = 0
+    for ch in str(key):
+        v = (v * 131 + ord(ch)) & 0xffffffff
+    return QtGui.QColor.fromHsv(v % 360, 150, 235)
+
+
+class ChainGraphDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints column 0 as a git-graph gutter: each work-session chain gets a vertical colour lane,
+    members are nodes on it, and the line between members shows the link. One project = one lane, so
+    every edge is a clean vertical — no diagonal routing."""
+    LANE_W = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = {}        # row -> {"node_lane", "node_color", "lanes": [(lane,color,up,down,isnode)]}
+        self.lane_count = 1
+
+    def set_data(self, rows, lane_count):
+        self.rows = rows
+        self.lane_count = lane_count
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)        # selection/background only (cell text is empty)
+        if index.column() != 0:
+            return
+        g = self.rows.get(index.row())
+        if not g:
+            return
+        rect = option.rect
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        ymid = rect.center().y() + 0.5
+
+        def lx(lane):
+            return rect.left() + 9 + lane * self.LANE_W
+
+        for lane, color, up, down, _isnode in g["lanes"]:
+            painter.setPen(QtGui.QPen(QtGui.QColor(color), 2.0))
+            x = lx(lane)
+            if up:
+                painter.drawLine(QtCore.QPointF(x, rect.top()), QtCore.QPointF(x, ymid))
+            if down:
+                painter.drawLine(QtCore.QPointF(x, ymid), QtCore.QPointF(x, rect.bottom()))
+        nx = lx(g["node_lane"])
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(g["node_color"]))
+        painter.drawEllipse(QtCore.QPointF(nx, ymid), 4.0, 4.0)
+        painter.restore()
+
+
 class ChronoLine(QtWidgets.QWidget):
     """Pseudo-3D timeline of every filed ClAudit issue. Pure QPainter perspective projection — NO
     OpenGL, so it cannot segfault on any GL stack. Each kind is a depth lane; issues plot along a
@@ -789,11 +842,7 @@ class ChronoLine(QtWidgets.QWidget):
             p.drawEllipse(QtCore.QPointF(x * w, fy * h), sz, sz)
 
     def _chain_color(self, key):
-        """Stable, vivid colour per work-session chain (deterministic hue from the key)."""
-        v = 0
-        for ch in str(key):
-            v = (v * 131 + ord(ch)) & 0xffffffff
-        return QtGui.QColor.fromHsv(v % 360, 150, 235)
+        return chain_color(key)              # shared with the list gutter so colours match
 
     def _draw_reticle(self, p, sx, sy, r, col):
         """Static marker on the newest issue so the latest is findable without animation."""
@@ -1399,6 +1448,8 @@ class Main(QtWidgets.QMainWindow):
 
         self.table = QtWidgets.QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
+        self._chain_delegate = ChainGraphDelegate(self.table)   # column-0 chain-link gutter
+        self.table.setItemDelegateForColumn(0, self._chain_delegate)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -2040,6 +2091,41 @@ class Main(QtWidgets.QMainWindow):
             self.findings = cs.scan(ttl=20)[0]   # reuse the watcher's recent scan; don't re-walk per refresh
         QtCore.QMetaObject.invokeMethod(self, "_repopulate", QtCore.Qt.ConnectionType.QueuedConnection)
 
+    def _build_chain_graph(self, rows, DOT):
+        """Lay the visible rows into git-graph lanes: each multi-member chain gets one vertical lane,
+        members are nodes, the line between them is the link. Returns (per-row paint data, lane count)."""
+        groups = {}
+        for i, row in enumerate(rows):
+            if row[8]:
+                groups.setdefault(row[8], []).append(i)
+        multi = {ck: sorted(v) for ck, v in groups.items() if len(v) > 1}
+        lanes, lane_end = {}, []                  # greedy interval packing, ordered by first member
+        for ck in sorted(multi, key=lambda c: multi[c][0]):
+            lo, hi = multi[ck][0], multi[ck][-1]
+            lane = next((i for i, e in enumerate(lane_end) if e < lo), len(lane_end))
+            if lane == len(lane_end):
+                lane_end.append(hi)
+            else:
+                lane_end[lane] = hi
+            lanes[ck] = lane
+        seg, active = {}, {}
+        for ck, mrows in multi.items():
+            lane, col, mset = lanes[ck], chain_color(ck).name(), set(mrows)
+            for r in range(mrows[0], mrows[-1] + 1):
+                seg.setdefault(r, []).append((lane, col, r > mrows[0], r < mrows[-1], r in mset))
+                active.setdefault(r, set()).add(lane)
+        nlanes = len(lane_end)
+        graph = {}
+        for i, row in enumerate(rows):
+            if row[8] in lanes:
+                node_lane = lanes[row[8]]
+            else:                                 # singleton/no-chain: a free lane so it dodges through-lines
+                act = active.get(i, set())
+                node_lane = next((L for L in range(nlanes + 1) if L not in act), nlanes)
+            graph[i] = {"node_lane": node_lane, "node_color": DOT.get(row[1], "#6b7280"),
+                        "lanes": seg.get(i, [])}
+        return graph, nlanes
+
     @QtCore.pyqtSlot()
     def _repopulate(self):
         DOT = {"open": "#3fb950", "closed": "#a371f7", "queued": "#d29922", "dwelling": "#5eead4"}
@@ -2049,8 +2135,9 @@ class Main(QtWidgets.QMainWindow):
         dedupf = self.f_dedup.currentText()
         needle = self.f_search.text().strip().lstrip("#").lower()
         deduped = self.state.get("__deduped__", {}) or {}
+        chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
 
-        rows = []   # (sort_ts, state, issue_label, author, created, title, url)
+        rows = []   # (sort_ts, state, label, author, created, title, url, why, chain_key)
         pend = set(cs.pending_sigs(self.state))
         for sig in pend:   # your queued-but-unfiled blocks always count as "yours"
             f = self.findings.get(sig)
@@ -2060,7 +2147,7 @@ class Main(QtWidgets.QMainWindow):
             snippet = (cs.scrub(f.get("prompt", ""))[0])[:80]
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
-                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", ""))
+                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", "", None))
 
         # Dwelling: new Request IDs the dwell auto-filer is holding before it files them as their own
         # linked bespoke issues. Show the countdown + which chain (work session) each belongs to.
@@ -2095,7 +2182,7 @@ class Main(QtWidgets.QMainWindow):
                 else:
                     chain = "first in a new chain"
                 rows.append(("9998", "dwelling", "⏳ DWELL", "you",
-                             f"files in ~{mins}m", f"{title}  ·  {chain}", "", chain))
+                             f"files in ~{mins}m", f"{title}  ·  {chain}", "", chain, proj))
 
         for it in self.community:
             st = it.get("state", "").lower()
@@ -2129,12 +2216,14 @@ class Main(QtWidgets.QMainWindow):
                 if reopened and not str(reopened).startswith("review"):
                     why += " · ♻ reopened by ClAudit"
             rows.append((it.get("createdAt", ""), st, label, author, created, title,
-                         it.get("url", ""), why))
+                         it.get("url", ""), why, chain_of.get(str(it.get("number")))))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
+        graph, nlanes_ = self._build_chain_graph(rows, DOT)
+        self._chain_delegate.set_data(graph, nlanes_)
 
         self.table.setRowCount(len(rows))
-        for r, (_, st, num, author, created, title, url, why) in enumerate(rows):
+        for r, (_, st, num, author, created, title, url, why, _chain) in enumerate(rows):
             is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
             if author == "you" or (self.me and author == self.me):
                 owner = "#b794f6"          # yours = purple
@@ -2143,17 +2232,16 @@ class Main(QtWidgets.QMainWindow):
             else:
                 owner = None
             tip = why or ("Click to open in browser" if url else "Not filed yet")
-            for c, val in enumerate(["●", num, author, created, title]):
+            for c, val in enumerate(["", num, author, created, title]):   # col 0 painted by the delegate
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
                 item.setToolTip(tip)
-                if c == 0:
-                    item.setForeground(QtGui.QColor(DOT.get(st, "#6b7280")))
-                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-                elif owner:
+                if c != 0 and owner:
                     item.setForeground(QtGui.QColor(owner))
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
+        nlanes = self._chain_delegate.lane_count
+        self.table.setColumnWidth(0, 16 + max(1, nlanes) * ChainGraphDelegate.LANE_W)
         self.table.setColumnWidth(4, max(340, self.table.columnWidth(4)))
         self.empty.setGeometry(self.table.viewport().rect())
         self.empty.setText("No issues match this filter.")

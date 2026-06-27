@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.72-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.73-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -75,7 +75,7 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
 
-<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status.</em>
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a countdown.</em>
 
 <br><br>
 
@@ -316,6 +316,16 @@ title.
   the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
   that has no defense yet.
 - **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
+- **Chain graph in the list gutter.** The left column is a git-graph: reports from the same work
+  session are strung onto one coloured vertical lane with a node per row, so the cross-linked chains
+  are visible at a glance (the same colours used on the 3D chart). Each Request ID is its own bespoke
+  issue; the lane shows which ones belong together.
+- **Dwell auto-file (opt-in).** Instead of filing immediately or waiting for a manual push, new
+  cyber/AUP blocks are held for a dwell (default 15 min) so repeats accrue as their own incidents,
+  then the LLM gate judges each is a genuine false positive, burn-tokens composes it, and it files as
+  one **bespoke issue per Request ID**, cross-linked to its siblings from the same session. Held items
+  show as **⏳ DWELL** rows with a "files in ~N min" countdown and their chain. Toggle in the tray;
+  off by default (the FOSS default stays review-before-send).
 - **Activity tab:** a **pseudo-3D chrono-line** of the **real cyber/AUP false positives** (the
   auto-mode-classifier reports are left out). A stem rises to each issue with **height set by age**,
   so the line reads as an ascending ridge. **Closure is encoded**: open stands at its age, a
@@ -337,8 +347,9 @@ title.
   comments and @mentions on the ClAudit repos, so you see community engagement (a contributor asking
   to help, a maintainer replying) as it happens. It logs each to the Activity feed.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- Tray toggles, all saved: **Auto-post**, **Backfill**, **Auto-defend dup-bot flags** (on by
-  default), **Auto-reopen dup-bot closes** (off by default), and **Claude PII scrubbing**.
+- Tray toggles, all saved: **Auto-post**, **Dwell auto-file** (LLM-judged 15-min batch, one linked
+  issue per Request ID), **Backfill**, **Auto-defend dup-bot flags** (on by default), **Auto-reopen
+  dup-bot closes** (off by default), and **Claude PII scrubbing**.
 
 The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
 the checkout is clean and behind, then relaunches on the new code. It only ever fast-forwards, so a
