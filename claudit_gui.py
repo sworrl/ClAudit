@@ -933,6 +933,57 @@ class ChronoLine(QtWidgets.QWidget):
             y += fm.height() + 2
 
 
+class ToggleSwitch(QtWidgets.QAbstractButton):
+    """A graphically-pleasing iOS-style on/off switch (pure QPainter, animated). Emits toggled(bool)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(48, 26)
+        self._p = 0.0                                  # knob position 0..1
+        self._anim = QtCore.QPropertyAnimation(self, b"knob", self)
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        self.toggled.connect(lambda on: (self._anim.stop(), self._anim.setEndValue(1.0 if on else 0.0),
+                                         self._anim.start()))
+
+    def set_silent(self, on):                          # set state without animating or emitting
+        self.blockSignals(True)
+        self.setChecked(on)
+        self.blockSignals(False)
+        self._p = 1.0 if on else 0.0
+        self.update()
+
+    def getKnob(self):
+        return self._p
+
+    def setKnob(self, v):
+        self._p = v
+        self.update()
+
+    knob = QtCore.pyqtProperty(float, getKnob, setKnob)
+
+    def sizeHint(self):
+        return QtCore.QSize(48, 26)
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h, t = self.width(), self.height(), self._p
+        r = h / 2
+
+        def mix(a, b):
+            return int(a + (b - a) * t)
+        off, on = (58, 63, 75), (63, 185, 80)          # grey -> green
+        p.setBrush(QtGui.QColor(mix(off[0], on[0]), mix(off[1], on[1]), mix(off[2], on[2])))
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QtCore.QRectF(0, 0, w, h), r, r)
+        kx = r + (w - 2 * r) * t
+        p.setBrush(QtGui.QColor(245, 247, 250))
+        p.drawEllipse(QtCore.QPointF(kx, h / 2), r - 3.5, r - 3.5)
+        p.end()
+
+
 def make_banner():
     """The animated header. Default = safe QPainter AnimatedBanner (no GL). The native GLSL shader
     is opt-in via CLAUDIT_GL=1 because some GL stacks segfault on a QOpenGLWidget context."""
@@ -1576,6 +1627,7 @@ class Main(QtWidgets.QMainWindow):
         self.tabs.addTab(board, "Issues")
         self.tabs.addTab(self._build_stats_tab(), "Project")
         self.tabs.addTab(self._build_activity_tab(), "Activity")
+        self.tabs.addTab(self._build_settings_tab(), "Settings")
         self.tabs.currentChanged.connect(
             lambda i: (self._fetch_stats(), self._fetch_poll()) if i == 1 else None)
 
@@ -1587,8 +1639,13 @@ class Main(QtWidgets.QMainWindow):
 
         self._build_tray(auto, backfill)
         self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
-        self.watcher.dwell = bool(cs.load_config().get("dwell_autofile"))   # opt-in dwell auto-filer
-        self.watcher.amplify = bool(cs.load_config().get("amplify"))        # opt-in community 👍
+        _cfg = cs.load_config()
+        self.watcher.dwell = bool(_cfg.get("dwell_autofile"))              # opt-in dwell auto-filer
+        self.watcher.amplify = bool(_cfg.get("amplify"))                   # opt-in community 👍
+        if "defend" in _cfg:
+            self.watcher.defend = bool(_cfg["defend"])
+        if "reopen" in _cfg:
+            self.watcher.reopen = bool(_cfg["reopen"])
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.bf_timer = QtCore.QTimer(self)
@@ -1691,11 +1748,11 @@ class Main(QtWidgets.QMainWindow):
         self.act_backfill.toggled.connect(self._toggle_backfill)
         self.act_defend = menu.addAction("Auto-defend dup-bot flags")
         self.act_defend.setCheckable(True)
-        self.act_defend.setChecked(True)   # Watcher defaults defend=True
+        self.act_defend.setChecked(bool(self.watcher and self.watcher.defend))
         self.act_defend.toggled.connect(self._toggle_defend)
         self.act_reopen = menu.addAction("Auto-reopen dup-bot closes")
         self.act_reopen.setCheckable(True)
-        self.act_reopen.setChecked(False)  # opt-in: reopening closes is aggressive
+        self.act_reopen.setChecked(bool(self.watcher and self.watcher.reopen))
         self.act_reopen.toggled.connect(self._toggle_reopen)
         self.act_llm = menu.addAction("Claude PII scrubbing")
         self.act_llm.setCheckable(True)
@@ -1722,6 +1779,7 @@ class Main(QtWidgets.QMainWindow):
         if not self.watcher:
             return
         self.watcher.auto = on
+        self._sync_setting_ui("auto", on)
         self.tray.showMessage("ClAudit", "Auto-post ENABLED — new blocks file automatically."
                               if on else "Auto-post disabled — blocks queue for review.")
 
@@ -1735,6 +1793,7 @@ class Main(QtWidgets.QMainWindow):
         cfg = cs.load_config()
         cfg["dwell_autofile"] = on
         cs.save_config(cfg)
+        self._sync_setting_ui("dwell_autofile", on)
         mins = cs.DWELL_SECONDS // 60
         self.tray.showMessage("ClAudit", f"Dwell auto-file ENABLED — new blocks wait ~{mins} min, the "
                               "LLM judges + writes each, then files one linked bespoke issue per Request "
@@ -1745,12 +1804,14 @@ class Main(QtWidgets.QMainWindow):
         cfg = cs.load_config()
         cfg["llm_scrub"] = on
         cs.save_config(cfg)
+        self._sync_setting_ui("llm_scrub", on)
         self.tray.showMessage("ClAudit", f"Claude PII scrubbing {'ON' if on else 'OFF'} (saved).")
 
     def _toggle_backfill(self, on):
         if not self.watcher:
             return
         self.watcher.backfill = on
+        self._sync_setting_ui("backfill", on)
         self.tray.showMessage("ClAudit", f"Backfill ENABLED — drip-filing old backlog "
                               f"(1 / {self.watcher.backfill_interval:g} min)." if on
                               else "Backfill paused.")
@@ -1759,6 +1820,7 @@ class Main(QtWidgets.QMainWindow):
         if not self.watcher:
             return
         self.watcher.defend = on
+        self._sync_setting_ui("defend", on)
         if on:
             self.watcher.last_defend = 0.0   # sweep on the next tick
         self.tray.showMessage("ClAudit", "Auto-defend ENABLED — every dup-bot flag gets 👎 + a "
@@ -1769,6 +1831,7 @@ class Main(QtWidgets.QMainWindow):
         if not self.watcher:
             return
         self.watcher.reopen = on
+        self._sync_setting_ui("reopen", on)
         if on:
             self.watcher.last_reopen = 0.0   # sweep on the next tick
         self.tray.showMessage("ClAudit", "Auto-reopen ENABLED — issues the dup-bot CLOSED as "
@@ -1918,6 +1981,158 @@ class Main(QtWidgets.QMainWindow):
         self.activity.insertItem(0, f"{ts}   {msg}")
         while self.activity.count() > 300:
             self.activity.takeItem(self.activity.count() - 1)
+
+    # ---- settings tab (everything applies on the fly, no save button) ----
+    def _build_settings_tab(self):
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        inner = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(inner)
+        head = QtWidgets.QLabel("Every setting applies the moment you change it — no save button. "
+                                "Choices persist across restarts.")
+        head.setWordWrap(True)
+        v.addWidget(head)
+        self._toggles = {}
+        w = self.watcher
+
+        def grp(title, rows):
+            box = QtWidgets.QGroupBox(title)
+            g = QtWidgets.QVBoxLayout(box)
+            for key, label, desc, on in rows:
+                row = QtWidgets.QHBoxLayout()
+                txt = QtWidgets.QVBoxLayout()
+                txt.setSpacing(1)
+                nm = QtWidgets.QLabel(label)
+                nm.setStyleSheet("font-weight:600;")
+                ds = QtWidgets.QLabel(desc)
+                ds.setObjectName("subtle")
+                ds.setWordWrap(True)
+                txt.addWidget(nm)
+                txt.addWidget(ds)
+                row.addLayout(txt, 1)
+                sw = ToggleSwitch()
+                sw.set_silent(on)
+                sw.toggled.connect(lambda val, k=key: self._apply_setting(k, val))
+                self._toggles[key] = sw
+                row.addWidget(sw, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+                g.addLayout(row)
+            v.addWidget(box)
+
+        grp("Filing & detection", [
+            ("auto", "Auto-post new blocks", "File each new block the instant it's seen.", bool(w and w.auto)),
+            ("dwell_autofile", "Dwell auto-file", "Hold new blocks for the dwell, LLM-judge + compose, then "
+             "file one linked bespoke issue per Request ID. No manual push.", bool(w and w.dwell)),
+            ("backfill", "Backfill old blocks", "Slowly drip-file the baselined backlog while watching.",
+             bool(w and w.backfill)),
+            ("report_harness", "File harness reports too", "Also file auto-mode-classifier (harness) denials. "
+             "Off by default — they're local decisions and often correct.", cs.REPORT_HARNESS)])
+        grp("Defense", [
+            ("defend", "Auto-defend dup-bot flags", "👎 + a contextual 'not a duplicate' note on every "
+             "flagged issue.", bool(w and w.defend)),
+            ("reopen", "Auto-reopen dup-bot closes", "Reopen issues the dup-bot closed as duplicates (your "
+             "own closes are left alone).", bool(w and w.reopen)),
+            ("amplify", "Community 👍 amplification", "👍 other ClAudit users' open false-positive issues to "
+             "boost the shared signal.", bool(w and w.amplify))])
+        grp("LLM & PII", [
+            ("llm_scrub", "Claude PII scrubbing", "Use the claude CLI to catch names/hosts the regex can't, "
+             "before posting.", claudit.LLM_SCRUB),
+            ("burn_tokens", "Burn-tokens bespoke reports", "Have Claude write each report (best PII defense + "
+             "specific titles). Needs the claude CLI.", claudit.BURN_TOKENS),
+            ("gate", "Honesty gate", "LLM pre-judges 'real false positive vs correct block' and skips the "
+             "latter before filing.", cs.GATE)])
+
+        tbox = QtWidgets.QGroupBox("Timing")
+        form = QtWidgets.QFormLayout(tbox)
+        self._slider_row(form, "Dwell time", 1, 60, cs.DWELL_SECONDS // 60, "min", "dwell_seconds",
+                         lambda m: m * 60)
+        self._slider_row(form, "Watch interval", 10, 300, int(w.interval if w else 30), "s", "interval",
+                         lambda s: s)
+        v.addWidget(tbox)
+
+        pii = QtWidgets.QPushButton("Edit PII denylist…")
+        pii.clicked.connect(self._edit_scrub)
+        v.addWidget(pii)
+        v.addStretch(1)
+        area.setWidget(inner)
+        return area
+
+    def _slider_row(self, form, label, lo, hi, init, unit, key, mapper):
+        sl = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        sl.setRange(lo, hi)
+        sl.setValue(int(init))
+        sl.setFixedWidth(230)
+        val = QtWidgets.QLabel(f"{int(init)} {unit}")
+        val.setFixedWidth(56)
+        sl.valueChanged.connect(lambda x: (val.setText(f"{x} {unit}"), self._apply_setting(key, mapper(x))))
+        cont = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(cont)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(sl)
+        row.addWidget(val)
+        form.addRow(label + ":", cont)
+
+    def _apply_setting(self, key, val):
+        """Apply a setting LIVE (running watcher + globals), persist it, and log it — no save button."""
+        w = self.watcher
+        if key == "auto" and w:
+            w.auto = val
+        elif key == "dwell_autofile" and w:
+            w.dwell = val
+            if val:                                    # the dwell filer needs the LLM
+                cs.GATE = claudit.BURN_TOKENS = claudit.LLM_SCRUB = True
+        elif key == "backfill" and w:
+            w.backfill = val
+        elif key == "defend" and w:
+            w.defend = val
+            if val:
+                w.last_defend = 0.0
+        elif key == "reopen" and w:
+            w.reopen = val
+            if val:
+                w.last_reopen = 0.0
+        elif key == "amplify" and w:
+            w.amplify = val
+        elif key == "llm_scrub":
+            claudit.LLM_SCRUB = val
+        elif key == "burn_tokens":
+            claudit.BURN_TOKENS = val
+            if val:
+                claudit.LLM_SCRUB = True
+        elif key == "gate":
+            cs.GATE = val
+        elif key == "report_harness":
+            cs.REPORT_HARNESS = val
+        elif key == "dwell_seconds":
+            cs.DWELL_SECONDS = int(val)
+        elif key == "interval" and w:
+            w.interval = float(val)
+        cfg = cs.load_config()
+        cfg[key] = val
+        cs.save_config(cfg)
+        self._sync_setting_ui(key, val)
+        shown = (f"{int(val) // 60} min" if key == "dwell_seconds" else val)
+        self._log(f"⚙ {key.replace('_', ' ')} → {shown}")
+
+    def _sync_setting_ui(self, key, val):
+        """Keep the tray menu, the settings switches, and dependent toggles in sync after any change."""
+        trays = {"auto": "act_auto", "backfill": "act_backfill", "defend": "act_defend",
+                 "reopen": "act_reopen", "dwell_autofile": "act_dwell", "llm_scrub": "act_llm"}
+        a = getattr(self, trays.get(key, ""), None)
+        if a is not None and a.isChecked() != bool(val):
+            a.blockSignals(True)
+            a.setChecked(bool(val))
+            a.blockSignals(False)
+        sw = getattr(self, "_toggles", {}).get(key)
+        if isinstance(val, bool) and sw is not None and sw.isChecked() != val:
+            sw.set_silent(val)
+        if key in ("dwell_autofile", "burn_tokens") and val:     # both force PII scrubbing on
+            if self._toggles.get("llm_scrub"):
+                self._toggles["llm_scrub"].set_silent(True)
+            if getattr(self, "act_llm", None):
+                self.act_llm.blockSignals(True)
+                self.act_llm.setChecked(True)
+                self.act_llm.blockSignals(False)
 
     def _build_stats_tab(self):
         w = QtWidgets.QWidget()
@@ -2506,6 +2721,17 @@ def main():
         cs.GATE = claudit.BURN_TOKENS = claudit.LLM_SCRUB = True
         if "dwell_seconds" in cfg:
             cs.DWELL_SECONDS = int(cfg["dwell_seconds"])
+    # persisted Settings-tab choices override argparse defaults so they survive restart
+    if "auto" in cfg:
+        args.auto = bool(cfg["auto"])
+    if "backfill" in cfg:
+        args.backfill = bool(cfg["backfill"])
+    if "interval" in cfg:
+        args.interval = float(cfg["interval"])
+    if "gate" in cfg:
+        cs.GATE = bool(cfg["gate"])
+    if "report_harness" in cfg:
+        cs.REPORT_HARNESS = bool(cfg["report_harness"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
