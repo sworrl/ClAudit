@@ -1701,6 +1701,16 @@ class Main(QtWidgets.QMainWindow):
         bl.addWidget(self.table, 1)
         bl.addLayout(bar)
 
+        # build the watcher BEFORE the tabs/tray — both read its live state for their initial toggles
+        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
+        _cfg = cs.load_config()
+        self.watcher.dwell = bool(_cfg.get("dwell_autofile"))              # opt-in dwell auto-filer
+        self.watcher.amplify = bool(_cfg.get("amplify"))                   # opt-in community 👍
+        if "defend" in _cfg:
+            self.watcher.defend = bool(_cfg["defend"])
+        if "reopen" in _cfg:
+            self.watcher.reopen = bool(_cfg["reopen"])
+
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(board, "Issues")
         self.tabs.addTab(self._build_stats_tab(), "Project")
@@ -1716,14 +1726,6 @@ class Main(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
 
         self._build_tray(auto, backfill)
-        self.watcher = Watcher(self.state, repo, interval, auto, backfill, backfill_interval, backfill_max)
-        _cfg = cs.load_config()
-        self.watcher.dwell = bool(_cfg.get("dwell_autofile"))              # opt-in dwell auto-filer
-        self.watcher.amplify = bool(_cfg.get("amplify"))                   # opt-in community 👍
-        if "defend" in _cfg:
-            self.watcher.defend = bool(_cfg["defend"])
-        if "reopen" in _cfg:
-            self.watcher.reopen = bool(_cfg["reopen"])
         self.watcher.acted.connect(self._on_acted)
         self.watcher.start()
         self.bf_timer = QtCore.QTimer(self)
