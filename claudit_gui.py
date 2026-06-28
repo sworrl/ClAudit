@@ -57,6 +57,84 @@ except Exception:
     _rp = None
 
 
+# ---- watchdog: a detached supervisor that relaunches the GUI if it ever crashes ----
+GUI_SCRIPT = os.path.abspath(__file__)
+WATCHDOG_PID = os.path.join(cs.STATE_DIR, "watchdog.pid")
+QUIT_FLAG = os.path.join(cs.STATE_DIR, "watchdog_quit.flag")
+
+
+def _pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _read_pid(path):
+    try:
+        return int((open(path).read().strip() or "0"))
+    except (OSError, ValueError):
+        return 0
+
+
+def watchdog_running():
+    pid = _read_pid(WATCHDOG_PID)
+    return bool(pid and pid != os.getpid() and _pid_alive(pid))
+
+
+def _launch(extra=()):
+    subprocess.Popen([sys.executable, GUI_SCRIPT, *extra], cwd=REPO_DIR, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+
+
+def spawn_watchdog():
+    """Start the detached supervisor (idempotent — a no-op if one is already alive)."""
+    os.makedirs(cs.STATE_DIR, exist_ok=True)
+    try:
+        os.remove(QUIT_FLAG)                       # a fresh run cancels any pending 'quit on purpose'
+    except OSError:
+        pass
+    if not watchdog_running():
+        _launch(["--watchdog"])
+
+
+def run_watchdog():
+    """Supervisor loop (runs in its own detached process). Watches the GUI singleton lock and
+    relaunches the GUI on a crash. Exits cleanly when watchdog mode is turned off in config or the
+    GUI quit on purpose (QUIT_FLAG)."""
+    os.makedirs(cs.STATE_DIR, exist_ok=True)
+    with open(WATCHDOG_PID, "w") as fh:
+        fh.write(str(os.getpid()))
+    misses = 0
+    try:
+        while True:
+            time.sleep(4)
+            if not cs.load_config().get("watchdog"):
+                return                             # disabled at runtime
+            if os.path.exists(QUIT_FLAG):
+                return                             # GUI quit intentionally
+            if _pid_alive(_read_pid(cs.LOCK_FILE)):
+                misses = 0
+                continue
+            misses += 1
+            if misses < 3:                         # tolerate the brief lock gap during an execv restart
+                continue
+            misses = 0
+            _launch()                              # crashed → bring it back (visible)
+            time.sleep(8)                          # let the new GUI re-grab the singleton lock
+    finally:
+        if _read_pid(WATCHDOG_PID) == os.getpid():
+            try:
+                os.remove(WATCHDOG_PID)
+            except OSError:
+                pass
+
+
 def _git(*args, timeout=30):
     return subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True, timeout=timeout)
 
@@ -1760,7 +1838,7 @@ class Main(QtWidgets.QMainWindow):
         self.act_llm.toggled.connect(self._toggle_llm)
         menu.addSeparator()
         menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
-        menu.addAction("Show window", self.showNormal)
+        menu.addAction("Show window", self._show_window)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
                        lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(
@@ -1768,9 +1846,25 @@ class Main(QtWidgets.QMainWindow):
         menu.addSeparator()
         menu.addAction("Quit", self._quit)
         self.tray.setContextMenu(menu)
-        self.tray.activated.connect(lambda r: self.setVisible(not self.isVisible())
-                                    if r == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger else None)
+        self.tray.activated.connect(self._tray_activated)
         self.tray.show()
+
+    def _show_window(self):
+        # reliably surface the window even from tray/minimised/off-screen (Wayland-friendly)
+        self.setVisible(True)
+        self.setWindowState(self.windowState() & ~QtCore.Qt.WindowState.WindowMinimized
+                            | QtCore.Qt.WindowState.WindowActive)
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_activated(self, reason):
+        if reason != QtWidgets.QSystemTrayIcon.ActivationReason.Trigger:
+            return
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self._show_window()
 
     def _edit_scrub(self):
         ScrubListDialog(self).exec()
@@ -2034,6 +2128,10 @@ class Main(QtWidgets.QMainWindow):
              "own closes are left alone).", bool(w and w.reopen)),
             ("amplify", "Community 👍 amplification", "👍 other ClAudit users' open false-positive issues to "
              "boost the shared signal.", bool(w and w.amplify))])
+        grp("Reliability", [
+            ("watchdog", "Watchdog (keep-alive)", "Run a detached supervisor that relaunches ClAudit "
+             "automatically if it ever crashes. A normal Quit still quits.",
+             bool(cs.load_config().get("watchdog")))])
         grp("LLM & PII", [
             ("llm_scrub", "Claude PII scrubbing", "Use the claude CLI to catch names/hosts the regex can't, "
              "before posting.", claudit.LLM_SCRUB),
@@ -2110,6 +2208,8 @@ class Main(QtWidgets.QMainWindow):
         cfg = cs.load_config()
         cfg[key] = val
         cs.save_config(cfg)
+        if key == "watchdog" and val:              # persist first, THEN start (it reads the flag)
+            spawn_watchdog()
         self._sync_setting_ui(key, val)
         shown = (f"{int(val) // 60} min" if key == "dwell_seconds" else val)
         self._log(f"⚙ {key.replace('_', ' ')} → {shown}")
@@ -2664,6 +2764,10 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit", "Still running in the tray.")
 
     def _quit(self):
+        try:                                       # tell the watchdog this exit is intentional
+            open(QUIT_FLAG, "w").close()
+        except OSError:
+            pass
         if self.watcher:
             self.watcher.stop()
             self.watcher.wait(1500)
@@ -2685,7 +2789,13 @@ def main():
     p.add_argument("--burn-tokens", dest="burn_tokens", action="store_true",
                    help="bespoke LLM-written titles/bodies — the strongest PII defense")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
+    p.add_argument("--watchdog", action="store_true",
+                   help="(internal) run as the crash-recovery supervisor, not the GUI")
     args = p.parse_args()
+
+    if args.watchdog:                              # detached supervisor mode — no Qt, just watch + relaunch
+        run_watchdog()
+        return
 
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(STYLE)
@@ -2740,6 +2850,8 @@ def main():
              args.backfill_max)
     if not args.hidden:
         w.show()
+    if cfg.get("watchdog"):                        # keep-alive supervisor across crashes
+        spawn_watchdog()
     sys.exit(app.exec())
 
 
