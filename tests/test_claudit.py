@@ -49,25 +49,25 @@ def test_scrub_denylist_word_boundary(monkeypatch):
 
 def test_scrub_denylist_underscore_glued(monkeypatch):
     # a denylisted name glued to '_' / '-' / a digit must still be caught — \b misses it because
-    # '_' is a word char, which is how 'PYTHIA' leaked into a public issue title (PYTHIA_DRY_RUN).
-    monkeypatch.setattr(claudit, "_EXTRA", ["Pythia"])
-    out, _ = claudit.scrub("Starting PYTHIA_DRY_RUN=0 and pythia-bot and Pythia2 today")
-    assert "PYTHIA" not in out.upper().replace("REDACTED", "")   # every occurrence redacted
+    # '_' is a word char (this is how a denylisted name once leaked inside an env-var like NAME_DRY_RUN).
+    monkeypatch.setattr(claudit, "_EXTRA", ["Acme"])
+    out, _ = claudit.scrub("Starting ACME_DRY_RUN=0 and acme-bot and Acme2 today")
+    assert "ACME" not in out.upper().replace("REDACTED", "")   # every occurrence redacted
     assert "[REDACTED]_DRY_RUN" in out
-    # letter-substrings still safe: 'Pythian' (letter suffix) and 'Markdown' must be untouched
-    out2, _ = claudit.scrub("the Pythian games and Markdown")
-    assert "Pythian" in out2 and "Markdown" in out2
+    # letter-substrings still safe: 'Acmegate' (letter suffix) and 'Markdown' must be untouched
+    out2, _ = claudit.scrub("the Acmegate saga and Markdown")
+    assert "Acmegate" in out2 and "Markdown" in out2
 
 
 def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
-    # a short denylist term ('FT') can fall between digits inside a Request ID; the denylist pass
+    # a short denylist term ('NV') can fall between digits inside a Request ID; the denylist pass
     # must NOT redact it there, or the report loses the ID Anthropic needs to look up.
-    monkeypatch.setattr(claudit, "_EXTRA", ["FT"])
-    out, _ = claudit.scrub("see req_011CcPL8dVfbJY8FT6drDsEj for details")
-    assert "req_011CcPL8dVfbJY8FT6drDsEj" in out      # Request ID intact, FT preserved inside it
-    # a standalone 'FT' outside an ID is still redacted
-    out2, _ = claudit.scrub("hosted by FT corp")
-    assert "FT corp" not in out2 and "[REDACTED]" in out2
+    monkeypatch.setattr(claudit, "_EXTRA", ["NV"])
+    out, _ = claudit.scrub("see req_011CcPL8dVfbJY8NV6drDsEj for details")
+    assert "req_011CcPL8dVfbJY8NV6drDsEj" in out      # Request ID intact, NV preserved inside it
+    # a standalone 'NV' outside an ID is still redacted
+    out2, _ = claudit.scrub("hosted by NV corp")
+    assert "NV corp" not in out2 and "[REDACTED]" in out2
 
 
 # ---------------- classification ----------------

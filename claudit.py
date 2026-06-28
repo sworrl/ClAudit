@@ -109,8 +109,8 @@ def _extra_terms():
 
 def _deny_regex(term):
     """Letter-only boundaries instead of \\b: catches a denylisted term glued to '_', '-', or a
-    digit (e.g. PYTHIA in 'PYTHIA_DRY_RUN', which \\b misses because '_' is a word char), while
-    still leaving letter-substrings alone ('Mark' does not redact 'Markdown', 'FT' not 'after')."""
+    digit (e.g. ACME in 'ACME_DRY_RUN', which \\b misses because '_' is a word char), while
+    still leaving letter-substrings alone ('Acme' does not redact 'Acmegate', 'NV' not 'envoy')."""
     return r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
 
 
@@ -173,8 +173,8 @@ def scrub(text: str):
         text, n = pattern.subn(repl, text)
         if n:
             counts[label] = counts.get(label, 0) + n
-    # Mask Request IDs before the denylist pass: a short denylisted term ('FT') can sit between
-    # digits inside a req ID (req_...JY8FT6dr), and _deny_regex's letter-only boundaries would
+    # Mask Request IDs before the denylist pass: a short denylisted term ('NV') can sit between
+    # digits inside a req ID (req_...JY8NV6dr), and _deny_regex's letter-only boundaries would
     # match it and corrupt the very ID the report exists to reference. Restore them afterward.
     reqs = []
 

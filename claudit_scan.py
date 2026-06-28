@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.87"
+__version__ = "2.0.88"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1236,8 +1236,9 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
             "restate private details from the body.", ctx)
         if bc and not _is_refusal(bc) and not _is_meta_reply(bc):   # never post a refusal or 'paste it' meta
             body = scrub(bc)[0]
+    body = claudit.llm_redact(body) + "\n\n" + DEFENSE_MARKER   # tag it so we never double-defend
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
-                        "--body", claudit.llm_redact(body)], capture_output=True, text=True)
+                        "--body", body], capture_output=True, text=True)
     posted = c.returncode == 0
     if not posted:
         print(f"  ! note comment failed on #{num}: {(c.stderr or c.stdout).strip()[:200]}",
@@ -1284,6 +1285,19 @@ def _cited_issues(body, exclude=""):
 
 DEFEND_REASON = ("The classifier flagged in-scope administration of systems the reporter owns and "
                  "operates, not an attack on anyone else's.")
+DEFENSE_MARKER = "<!-- claudit:defense -->"   # invisible tag on every defense, so we never double-post
+
+
+def _is_my_defense(body):
+    """Robustly recognise a ClAudit defense comment (so the next sweep never re-posts one). The
+    LLM-composed reply varies wording — 'not duplicates', 'distinct false-positive', etc. — so the
+    old exact 'not a duplicate' match missed it and double-defended. Match the marker OR any of the
+    defense's stock phrasings."""
+    b = (body or "").lower()
+    return (DEFENSE_MARKER in (body or "")
+            or "not a duplicate" in b or "not duplicates" in b or "do not auto-close" in b
+            or "distinct false" in b or "assessed by claudit" in b
+            or ("request id" in b and any(w in b for w in ("separate", "distinct", "individual"))))
 
 
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
@@ -1308,8 +1322,7 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
         data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
         comments = data.get("comments") or []
         my_defenses = [c.get("createdAt", "") for c in comments
-                       if (c.get("author") or {}).get("login") == me
-                       and "not a duplicate" in c.get("body", "").lower()]
+                       if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
         my_last = max(my_defenses) if my_defenses else ""
         dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
         if not dup_comments:                            # label-only flag: post the note once
