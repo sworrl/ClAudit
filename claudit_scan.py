@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.85"
+__version__ = "2.0.86"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -424,6 +424,18 @@ def _is_refusal(text):
     the model second-guessing the false-positive premise is exactly what must not reach a report."""
     low = (text or "").lower()
     return any(m in low for m in _REFUSAL_MARKERS)
+
+
+def _is_meta_reply(text):
+    """True if the model is asking for / complaining about missing context instead of writing the
+    reply (e.g. 'the bot's comment appears to be missing — could you paste it?'). Posting that to a
+    GitHub issue is the 'not getting the context' garbage; reject it and keep the deterministic note."""
+    low = (text or "").lower()
+    return any(m in low for m in (
+        "appears to be missing", "is blank", "field is blank", "could you paste", "please paste",
+        "i don't have the specific", "the context you provided", "missing from the context",
+        "without the bot", "no bot comment", "can't reference", "cannot reference",
+        "wasn't provided", "was not provided", "you provided"))
 
 
 def build_issue(f, note, crossref=""):
@@ -1061,8 +1073,9 @@ def file_pending(state, repo, review_flag, delay, on_event):
             if f["sig"] in pend:
                 pend.remove(f["sig"])
             save_state(state)
-            on_event(action or "skipped", ref or f["sig"], url)
-            filed += 1
+            if action:                          # only announce real actions — a skip is a non-event
+                on_event(action, ref, url)
+                filed += 1
         except Exception as e:
             print(f"  ! failed {f['sig']}: {e}", file=sys.stderr)
         time.sleep(delay)
@@ -1187,7 +1200,10 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
     else:
         body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
                      f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
-    if compose:
+    # Only LLM-compose when there's an actual bot comment to rebut. With no flag_body the model has
+    # nothing to work from and replies with 'paste the comment' meta-text — never post that; the
+    # deterministic note above already covers the label-only / no-comment case.
+    if compose and flag_body.strip() and cited:
         ctx = (f"Duplicate-detection bot comment (quoted):\n{flag_body[:1400]}\n\n"
                f"This issue's body:\n{issue_body[:1200]}")
         bc = claudit.llm_compose(
@@ -1198,7 +1214,7 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
             "but separate incidents Anthropic must look up individually, so closing them as duplicates "
             "discards distinct Request IDs. Reference the specific issue numbers it cited. Invent nothing; "
             "do not restate private details from the body.", ctx)
-        if bc and not _is_refusal(bc):     # never post the model's refusal — keep the contextual note
+        if bc and not _is_refusal(bc) and not _is_meta_reply(bc):   # never post a refusal or 'paste it' meta
             body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,
                         "--body", claudit.llm_redact(body)], capture_output=True, text=True)
@@ -1654,7 +1670,8 @@ def main():
         try:
             action, ref, url = file_one(f, note, args.repo, state)
             save_state(state)
-            notify(action or "skipped", ref or f["sig"], url)
+            if action:                          # only toast real actions — don't spam 'skipped <sig>'
+                notify(action, ref, url)
         except Exception as e:
             print(f"  ! failed {f['sig']}: {e}", file=sys.stderr)
         time.sleep(args.delay)

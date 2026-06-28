@@ -316,3 +316,9 @@ def test_harness_block_shows_reason_only_not_command():
     assert "writing to a production host" in body
     assert "scp /tmp/x" not in body                 # never echo the quoted command
     assert "If you have other tasks" not in body
+
+
+def test_is_meta_reply_rejects_paste_the_comment():
+    assert cs._is_meta_reply("The bot's comment appears to be missing — could you paste it?")
+    assert cs._is_meta_reply("Without the bot's actual comment, I can't reference them.")
+    assert not cs._is_meta_reply("Not a duplicate. #71918 is a distinct block with its own Request ID.")
