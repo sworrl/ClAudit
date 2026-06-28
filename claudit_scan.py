@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.86"
+__version__ = "2.0.87"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -60,8 +60,8 @@ REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY b
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
                # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
-DWELL_SECONDS = 900   # dwell-auto-file: hold a new Request ID this long (repeats accrete as their own
-                      # linked issues) before the LLM judges + composes + files it. Config: dwell_seconds.
+DWELL_SECONDS = 300   # dwell-auto-file: hold a new Request ID this long (5 min; repeats accrete as
+                      # their own linked issues) before the LLM judges + composes + files. Config: dwell_seconds.
 # ClAudit's OWN `claude -p` calls (compose / scrub / gate / dup-defense). When one is blocked it lands
 # in a transcript; scan() must skip it or ClAudit reports its own prompts — a feedback loop.
 INTERNAL_PROMPTS = (
@@ -553,6 +553,7 @@ def log_issue(f, repo, url):
         "reqs": [o["req"] for o in reqs_of(f)],
         "first_ts": min((o["ts"] for o in f["occ"] if o["ts"]), default=""),
         "projects": sorted({project_label(o["proj"]) for o in f["occ"] if o.get("proj")}),
+        "chain": _chain_key(f),   # session-precise chain key (no PII: session is a local UUID)
         "leadup": [[role, scrub(txt)[0]] for role, txt in (f.get("leadup") or [])],
     }
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -807,10 +808,18 @@ def auto_cycle(state, repo, delay, on_event):
     return acted
 
 
-def _proj_of(f):
-    """The work session/project a finding belongs to (its most common occurrence project)."""
+def _chain_key(f):
+    """Which chain a finding belongs to. Keyed on the actual Claude Code SESSION (one conversation /
+    one .jsonl) — far tighter than the whole project, so a 20-block session is one chain instead of
+    every block in the repo over weeks getting lumped together. Falls back to project, then unknown."""
+    sessions = [o.get("session") for o in f["occ"] if o.get("session")]
+    if sessions:
+        return "sess:" + collections.Counter(sessions).most_common(1)[0][0]
     projs = [o.get("proj") for o in f["occ"] if o.get("proj")]
-    return collections.Counter(projs).most_common(1)[0][0] if projs else "unknown"
+    return ("proj:" + collections.Counter(projs).most_common(1)[0][0]) if projs else "unknown"
+
+
+_proj_of = _chain_key   # back-compat alias
 
 
 def _single_req_finding(f, req):
@@ -1191,15 +1200,23 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
     if cited:                              # contextual: address the exact issues the bot named
         cited_str = ", ".join(f"#{c}" for c in cited[:10])
         body = scrub(
-            f"Not a duplicate. The bot cited {cited_str}, but each of those is a **distinct** "
-            f"false-positive block with its **own Request ID**, on the reporter's own authorized "
-            f"infrastructure. They are the same *class* of over-block, not the same incident — every "
-            f"Request ID is a separate event Anthropic looks up server-side, so closing them as "
-            f"duplicates discards the distinct IDs needed to diagnose each one. {reason} See the "
-            f"Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
+            f"**Not a duplicate — please do not auto-close.** The duplicate-detector matched on similar "
+            f"*titles*, but it cited {cited_str}, and **each of those is a separate server-side incident "
+            f"with its own Request ID** (listed above), fired on the reporter's own authorized "
+            f"infrastructure. Same *class* of false positive, different events at different times. "
+            f"Auto-closing them as duplicates **discards distinct Request IDs** — which is precisely the "
+            f"data Anthropic needs to look up and correct each block — so the de-duplication erases the "
+            f"evidence these reports exist to provide. Each Request ID should be reviewed on its own; "
+            f"these are bespoke incidents, not one issue filed repeatedly. {reason} "
+            f"(Assessed by ClAudit; PII-scrubbed.)")[0]
     else:
-        body = scrub(f"Not a duplicate {('of ' + of) if of else ''} — {reason} Distinct operation; see "
-                     f"the Request IDs above. (Assessed by ClAudit; PII-scrubbed.)")[0]
+        body = scrub(
+            f"**Not a duplicate — please do not auto-close.** {('Re: ' + of + '. ') if of else ''}This is "
+            f"a distinct false-positive block carrying its own Request ID (above), on the reporter's own "
+            f"authorized infrastructure. A shared title or topic is not a shared incident: every Request "
+            f"ID is a separate server-side event Anthropic must look up individually, and closing this as "
+            f"a duplicate discards the unique identifier needed to diagnose it. {reason} "
+            f"(Assessed by ClAudit; PII-scrubbed.)")[0]
     # Only LLM-compose when there's an actual bot comment to rebut. With no flag_body the model has
     # nothing to work from and replies with 'paste the comment' meta-text — never post that; the
     # deterministic note above already covers the label-only / no-comment case.
@@ -1207,13 +1224,16 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
         ctx = (f"Duplicate-detection bot comment (quoted):\n{flag_body[:1400]}\n\n"
                f"This issue's body:\n{issue_body[:1200]}")
         bc = claudit.llm_compose(
-            "A Claude Code duplicate-detection bot (quoted below) claims this issue duplicates the ones "
-            "it cites. Write a brief, professional, factual GitHub reply (2-4 sentences) explaining why "
-            "it is NOT a duplicate: each cited issue is a distinct false-positive block with its OWN "
-            "Request ID on the reporter's own authorized infrastructure — the same class of over-block "
-            "but separate incidents Anthropic must look up individually, so closing them as duplicates "
-            "discards distinct Request IDs. Reference the specific issue numbers it cited. Invent nothing; "
-            "do not restate private details from the body.", ctx)
+            "A Claude Code duplicate-detection bot (quoted below) wants to auto-close this issue as a "
+            "duplicate of the ones it cites. Write a firm but professional GitHub reply (3-5 sentences) "
+            "that argues it must NOT be closed. Make these points concretely, referencing the SPECIFIC "
+            "issue numbers the bot cited: (1) the bot matched on similar titles/topic, not on the actual "
+            "incident; (2) each cited issue carries its OWN distinct Request ID — a separate server-side "
+            "event at a different time on the reporter's own authorized infrastructure; (3) auto-closing "
+            "them as duplicates discards those unique Request IDs, which is exactly the data Anthropic "
+            "needs to look up and fix each block, so de-duplication destroys the evidence; (4) ask that "
+            "each Request ID be reviewed individually. Be direct and persuasive. Invent nothing; do not "
+            "restate private details from the body.", ctx)
         if bc and not _is_refusal(bc) and not _is_meta_reply(bc):   # never post a refusal or 'paste it' meta
             body = scrub(bc)[0]
     c = subprocess.run(["gh", "issue", "comment", str(num), "-R", repo,

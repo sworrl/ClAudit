@@ -1899,9 +1899,10 @@ class Main(QtWidgets.QMainWindow):
                         rec = json.loads(line)
                     except ValueError:
                         continue
-                    num, projs = str(rec.get("issue") or ""), rec.get("projects") or []
-                    if num and projs:
-                        chain[num] = projs[0]
+                    num = str(rec.get("issue") or "")
+                    key = rec.get("chain") or ((rec.get("projects") or [None])[0])  # session-precise; project fallback
+                    if num and key:
+                        chain[num] = key
         except OSError:
             pass
         for proj, nums in _snap(self.state.get("__proj_chain__")).items():
