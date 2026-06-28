@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.90"
+__version__ = "2.0.91"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -733,7 +733,9 @@ def notify_action(title, body, on_report):
         _toast(title, body)
         return
     res = subprocess.run(
-        ["notify-send", "-a", "claudit", "-i", ICON, "-u", "critical",
+        # normal urgency + an explicit 20s expiry so the toast fades on its own if ignored
+        # (critical urgency made it persist forever); the GUI still queues them for later filing.
+        ["notify-send", "-a", "claudit", "-i", ICON, "-u", "normal", "-t", "20000",
          "-A", "report=Report it", "-A", "dismiss=Dismiss", title, body],
         capture_output=True, text=True)
     if res.stdout.strip() == "report":
