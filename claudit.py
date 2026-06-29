@@ -18,10 +18,75 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 DEFAULT_REPO = "anthropics/claude-code"
 LLM_SCRUB = False    # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
 BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodies/comments
+
+# ---- cumulative token meter: every `claude` CLI call's usage is tallied here, persisted forever ----
+TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
+_TOK_LOCK = threading.Lock()
+_TOK_KEYS = ("input", "output", "cache_read", "cache_creation", "calls")
+
+
+def load_tokens():
+    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost."""
+    try:
+        with open(TOKENS_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        d = {}
+    for k in _TOK_KEYS:
+        d[k] = int(d.get(k, 0) or 0)
+    d["cost"] = float(d.get("cost", 0.0) or 0.0)
+    d["total"] = d["input"] + d["output"] + d["cache_read"] + d["cache_creation"]
+    return d
+
+
+def _record_tokens(usage, cost):
+    if not usage:
+        return
+    with _TOK_LOCK:
+        d = load_tokens()
+        d["input"] += int(usage.get("input_tokens", 0) or 0)
+        d["output"] += int(usage.get("output_tokens", 0) or 0)
+        d["cache_read"] += int(usage.get("cache_read_input_tokens", 0) or 0)
+        d["cache_creation"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
+        d["cost"] += float(cost or 0.0)
+        d["calls"] += 1
+        d.pop("total", None)
+        try:
+            os.makedirs(os.path.dirname(TOKENS_FILE), exist_ok=True)
+            tmp = TOKENS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(d, fh)
+            os.replace(tmp, TOKENS_FILE)
+        except OSError:
+            pass
+
+
+def _claude(prompt, timeout):
+    """Run the `claude` CLI in JSON mode, tally token usage into the lifetime meter, and return the
+    model's text. Falls back gracefully (returns '' on error; raw stdout on an older non-JSON CLI)."""
+    try:
+        raw = subprocess.run(["claude", "-p", prompt, "--output-format", "json"],
+                             capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return raw                              # older CLI without --output-format json
+    items = data if isinstance(data, list) else [data]
+    res = next((it for it in reversed(items) if isinstance(it, dict) and it.get("type") == "result"),
+               items[-1] if items else {})
+    if isinstance(res, dict):
+        _record_tokens(res.get("usage"), res.get("total_cost_usd"))
+        return (res.get("result") or "").strip()
+    return ""
 
 
 def llm_compose(instruction, context, max_chars=3000):
@@ -33,11 +98,8 @@ def llm_compose(instruction, context, max_chars=3000):
     prompt = (instruction + "\n\nHARD RULE: do not include any names, organizations, hostnames, IPs, "
               "emails, tenant names, file paths, or other identifying details — describe the work "
               "generically. Output only the requested text, nothing else.\n\nCONTEXT:\n" + (context or "")[:max_chars])
-    try:
-        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=120).stdout.strip()
-        return out or None
-    except Exception:
-        return None
+    out = _claude(prompt, timeout=120)
+    return out or None
 
 # (label, compiled pattern, replacement). Order matters: secrets/specific first.
 SCRUBBERS = [
@@ -128,7 +190,7 @@ def llm_redact(text: str) -> str:
         "Do NOT include: Request IDs (anything starting with 'req_'), or the words Claude, Anthropic, "
         "ClAudit, GitHub — those must stay. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
     try:
-        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        out = _claude(prompt, timeout=90)
         m = re.search(r"\[.*\]", out, re.DOTALL)
         terms = json.loads(m.group(0)) if m else []
     except Exception:
@@ -159,7 +221,7 @@ def llm_is_false_positive(kind, block_text, context=""):
         'JSON: {"false_positive": true/false, "reason": "one short sentence"}.\n\n'
         f"BLOCK REASON / MESSAGE:\n{(block_text or '')[:1500]}\n\nWORK CONTEXT:\n{(context or '')[:1200]}")
     try:
-        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        out = _claude(prompt, timeout=90)
         m = re.search(r"\{.*\}", out, re.DOTALL)
         d = json.loads(m.group(0)) if m else {}
         return bool(d.get("false_positive", True)), str(d.get("reason", ""))

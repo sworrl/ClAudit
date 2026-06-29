@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.92"
+__version__ = "2.0.93"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1128,7 +1128,7 @@ def _llm_dupe_verdict(title, body, flagtext):
         '{"duplicate": true/false, "of": "#N or empty", "reason": "one factual sentence"}.\n\n'
         f"THIS ISSUE:\n{title}\n{body[:1500]}\n\nDUP-BOT FLAG (lists the claimed duplicates):\n{flagtext[:1500]}")
     try:
-        out = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90).stdout
+        out = claudit._claude(prompt, 90)        # routed through the token meter
         m = re.search(r"\{.*\}", out, re.DOTALL)
         return json.loads(m.group(0)) if m else {"duplicate": True, "reason": "no parseable verdict"}
     except Exception as e:

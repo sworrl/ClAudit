@@ -1674,6 +1674,10 @@ class Main(QtWidgets.QMainWindow):
         hl.addSpacing(8)
         hl.addWidget(sub)
         hl.addStretch(1)
+        self.tok_label = QtWidgets.QLabel("")    # lifetime burn-tokens meter (alarming when burn mode is on)
+        self.tok_label.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
+        hl.addWidget(self.tok_label)
+        hl.addSpacing(8)
         self.stats_bar = QtWidgets.QLabel("")
         self.stats_bar.setObjectName("statsbar")
         self.stats_bar.setTextFormat(QtCore.Qt.TextFormat.RichText)
@@ -1785,7 +1789,36 @@ class Main(QtWidgets.QMainWindow):
         cs._release_singleton()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+    @staticmethod
+    def _fmt_tok(n):
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.2f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.1f}K"
+        return str(int(n))
+
+    def _update_tokens(self):
+        t = claudit.load_tokens()
+        burn = bool(claudit.BURN_TOKENS)
+        self.tok_label.setText(f"🔥 {self._fmt_tok(t['total'])} tok · ${t['cost']:.2f}")
+        self.tok_label.setToolTip(
+            "Burn-tokens meter — lifetime across every session\n"
+            f"input {t['input']:,}  ·  output {t['output']:,}  ·  "
+            f"cache {t['cache_read'] + t['cache_creation']:,}\n"
+            f"{t['calls']:,} claude calls  ·  ${t['cost']:.4f}"
+            + ("\n\n🔥 BURN-TOKENS MODE IS ON — Claude writes every report." if burn
+               else "\n\nBurn-tokens mode is off (counter still tracks)."))
+        if burn:                                  # alarming red⇄orange pulse while burning
+            self._tok_pulse = not getattr(self, "_tok_pulse", False)
+            col = "#ff3b30" if self._tok_pulse else "#ff9f0a"
+            self.tok_label.setStyleSheet(
+                f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
+        else:
+            self.tok_label.setStyleSheet(
+                "color:#7d8590; background:transparent; padding:2px 10px; font-weight:600;")
+
     def _update_bf(self):
+        self._update_tokens()
         w = self.watcher
         filed = sum(1 for s, r in self.state.items() if not s.startswith("__") and r.get("issue"))
         backlog = cs.backlog_size(self.state)

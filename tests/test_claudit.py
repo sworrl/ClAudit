@@ -24,6 +24,19 @@ def _isolate(tmp_path, monkeypatch):
 
 
 # ---------------- PII scrubbing ----------------
+def test_token_meter_accumulates(tmp_path, monkeypatch):
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    assert claudit.load_tokens()["total"] == 0
+    claudit._record_tokens(
+        {"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 17000}, 0.09)
+    claudit._record_tokens(
+        {"input_tokens": 200, "output_tokens": 25, "cache_read_input_tokens": 5000}, 0.03)
+    t = claudit.load_tokens()
+    assert (t["input"], t["output"], t["cache_read"], t["calls"]) == (300, 75, 22000, 2)
+    assert abs(t["cost"] - 0.12) < 1e-9
+    assert t["total"] == 300 + 75 + 22000          # cumulative across "sessions"
+
+
 def test_scrub_core_pii():
     s = ("email a@b.com ip 10.0.0.5 key sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA "
          "path /home/bob/x req_011CcABC")
