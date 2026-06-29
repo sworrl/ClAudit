@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.94"
+__version__ = "2.0.95"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -892,7 +892,13 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         if req not in seen_set and req not in filed_set and req not in skip_set:
             hold.setdefault(req, now)
             seen.append(req)
-    ripe = [r for r, t0 in hold.items() if now - t0 >= dwell and r in current][:8]   # cap bursts
+    # A create that keeps failing must NOT re-judge+re-compose every 30s tick (that's the only path
+    # that could burn tokens "like crazy" at idle) — back a failed Request ID off for FAIL_COOLDOWN.
+    fails = state.setdefault("__dwell_fail__", {})       # req -> last failed-create epoch
+    FAIL_COOLDOWN = 1800                                  # 30 min between retries of a stuck block
+    ripe = [r for r, t0 in hold.items()
+            if now - t0 >= dwell and r in current
+            and now - fails.get(r, 0) >= FAIL_COOLDOWN][:8]   # cap bursts
     acted, gate_cache = 0, {}
     for req in ripe:
         f = current[req]
@@ -914,8 +920,9 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         try:
             url = gh_create(repo, title, body)
         except Exception as e:
+            fails[req] = now                 # back off 30 min before re-judging/re-composing this one
             print(f"  ! dwell file {req}: {e}", file=sys.stderr)
-            continue                         # leave in hold; retry next cycle
+            continue                         # leave in hold; retry after the cooldown
         num = url.rsplit("/", 1)[-1]
         if chain:                            # back-link the previous sibling -> this new report
             try:
@@ -926,6 +933,7 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         chain.append(num)
         filed[req] = num
         hold.pop(req, None)
+        fails.pop(req, None)                 # cleared on success
         log_issue(g, repo, url)
         save_state(state)
         on_event("dwell-filed", title, url)

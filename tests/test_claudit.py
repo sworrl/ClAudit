@@ -226,6 +226,29 @@ def test_dwell_skips_blocks_the_gate_rejects(monkeypatch):
     assert "A" in state["__skipped_reqs__"]
 
 
+def test_dwell_failed_create_backs_off_no_token_reburn(monkeypatch):
+    # a create that keeps failing must NOT re-judge (re-burn the LLM gate) every tick — it backs off.
+    findings = [({}, {})]
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: findings[0])
+
+    def boom(r, t, b):
+        raise RuntimeError("rate limited")
+    monkeypatch.setattr(cs, "gh_create", boom)
+    monkeypatch.setattr(cs, "log_issue", lambda *a: None)
+    gate_calls = []
+    monkeypatch.setattr(claudit, "llm_is_false_positive",
+                        lambda *a: gate_calls.append(1) or (True, ""))
+    state = {}
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)             # baseline
+    findings[0] = ({"s1": _multi("s1", "cyber", ["A"])}, {})
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)             # create fails -> backoff stamp
+    assert "A" in state["__dwell_fail__"]
+    assert gate_calls == [1]                                             # judged once
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)            # within cooldown -> skipped
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)
+    assert gate_calls == [1]                                             # NOT re-judged -> no token re-burn
+
+
 def test_build_issue_has_triage_header():
     _, body = cs.build_issue(_finding(), "")
     assert body.lstrip().startswith("**Triage:**")          # structured triage line for maintainers
