@@ -2148,7 +2148,7 @@ class Main(QtWidgets.QMainWindow):
                 g.addLayout(row)
             v.addWidget(box)
 
-        grp("Filing & detection", [
+        grp("Filing && detection", [
             ("auto", "Auto-post new blocks", "File each new block the instant it's seen.", bool(w and w.auto)),
             ("dwell_autofile", "Dwell auto-file", "Hold new blocks for the dwell, LLM-judge + compose, then "
              "file one linked bespoke issue per Request ID. No manual push.", bool(w and w.dwell)),
@@ -2167,7 +2167,7 @@ class Main(QtWidgets.QMainWindow):
             ("watchdog", "Watchdog (keep-alive)", "Run a detached supervisor that relaunches ClAudit "
              "automatically if it ever crashes. A normal Quit still quits.",
              bool(cs.load_config().get("watchdog")))])
-        grp("LLM & PII", [
+        grp("LLM && PII", [
             ("llm_scrub", "Claude PII scrubbing", "Use the claude CLI to catch names/hosts the regex can't, "
              "before posting.", claudit.LLM_SCRUB),
             ("burn_tokens", "Burn-tokens bespoke reports", "Have Claude write each report (best PII defense + "

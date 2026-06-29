@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.88-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.94-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -75,7 +75,7 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
 
-<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a countdown.</em>
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a countdown. The header carries the 🔥 lifetime token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on.</em>
 
 <br><br>
 
@@ -88,6 +88,12 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 <img src="docs/screenshot-activity.png" alt="ClAudit Activity tab — pseudo-3D chrono-line of every filed issue, one depth lane per kind, your issues ringed" width="780">
 
 <em>Activity tab: a pseudo-3D chrono-line of the real cyber/AUP false positives (the auto-mode-classifier reports are excluded). Two lanes; a stem rises to each issue with height set by age, so the timeline reads as an ascending ridge. Closure shows state: open stands at its age, a real-action close (COMPLETED) turns green and lifts above the line with a ✓, and a dismissed/ignored close greys out and sinks to the floor with a ✕. New issues grow in place with a ripple as they post; your own are ringed; the newest carries a reticle. An abstract drifting backdrop sits behind it. Drag to rotate (it eases back to a readable angle when you let go), wheel to zoom, and the Cinematic button flies the camera along each lane in turn. Pure QPainter, no OpenGL, and zero repaints when idle.</em>
+
+<br><br>
+
+<img src="docs/screenshot-settings.png" alt="ClAudit Settings tab — every setting as a live toggle, applied instantly with no save button" width="780">
+
+<em>Settings tab: every configurable knob as a live toggle — filing &amp; detection, defense, reliability (the crash-recovery <strong>watchdog</strong>), LLM &amp; PII, and timing sliders. Each control applies the moment you flip it (no save button) and persists across restarts, staying in sync with the tray menu. The header's 🔥 token meter glows its alarming red⇄orange because burn-tokens mode is on here.</em>
 
 </div>
 
@@ -323,11 +329,12 @@ title.
   are visible at a glance (the same colours used on the 3D chart). Each Request ID is its own bespoke
   issue; the lane shows which ones belong together.
 - **Dwell auto-file (opt-in).** Instead of filing immediately or waiting for a manual push, new
-  cyber/AUP blocks are held for a dwell (default 15 min) so repeats accrue as their own incidents,
+  cyber/AUP blocks are held for a dwell (default 5 min) so repeats accrue as their own incidents,
   then the LLM gate judges each is a genuine false positive, burn-tokens composes it, and it files as
   one **bespoke issue per Request ID**, cross-linked to its siblings from the same session. Held items
-  show as **⏳ DWELL** rows with a "files in ~N min" countdown and their chain. Toggle in the tray;
-  off by default (the FOSS default stays review-before-send).
+  show as **⏳ DWELL** rows with a "files in ~N min" countdown and their chain. Toggle it (and the
+  dwell length) live in the **Settings tab** or the tray; off by default (the FOSS default stays
+  review-before-send).
 - **Activity tab:** a **pseudo-3D chrono-line** of the **real cyber/AUP false positives** (the
   auto-mode-classifier reports are left out). A stem rises to each issue with **height set by age**,
   so the line reads as an ascending ridge. **Closure is encoded**: open stands at its age, a
@@ -442,6 +449,13 @@ strongest PII protection** — the report is composed generically instead of ech
 It's slower and uses tokens (hence the name); it's the recommended mode for anyone who cares about
 either report quality or PII. Set it once in your config and forget it.
 
+**Token meter.** Every `claude` call ClAudit makes — compose, scrub, gate, dedup verdict — is run in
+JSON mode and its usage tallied into a lifetime counter (`~/.claude/claudit/tokens.json`), accumulated
+across every session. The window header shows a **🔥 `<total>` tok · `$<cost>`** meter; hover for the
+input / output / cache / call breakdown. While burn-tokens mode is **on** it pulses in an alarming
+red⇄orange — so you always know when, and how hard, ClAudit is spending. With burn-tokens off it stays
+muted grey but keeps counting.
+
 ## Dedup guard
 
 GitHub's duplicate bot flags similar issues and auto-closes them. `--dedup-guard` has the `claude` CLI
@@ -473,15 +487,16 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved prefs: `llm_scrub`, `burn_tokens`, opt-in `gate`, `dwell_autofile`, `dwell_seconds` |
+| `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `amplify`, `report_harness`, `interval`, `watchdog` |
+| `tokens.json` | Lifetime token meter: cumulative input/output/cache tokens, call count, and USD cost across every session |
 | `scrub.txt` | Your local PII denylist (never committed) |
 | `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
 | `error-log.jsonl` | Every classified block, including the logged-only kinds |
 
-`dwell_autofile: true` turns on the dwell auto-filer (hold each new cyber/AUP block ~15 min, LLM-judge
-it, then file one cross-linked bespoke issue per Request ID); `dwell_seconds` overrides the 900s dwell.
-Both are off by default and also toggle from the tray.
+`dwell_autofile: true` turns on the dwell auto-filer (hold each new cyber/AUP block ~5 min, LLM-judge
+it, then file one cross-linked bespoke issue per Request ID); `dwell_seconds` overrides the 300s dwell.
+Both are off by default and toggle live from the Settings tab or the tray.
 
 ## Auto-update & self-restart
 
