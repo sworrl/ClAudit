@@ -90,11 +90,19 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     ("safety filter detected cybersecurity", "cyber"),             # PR #5
     ("API Error: Opus 4.8's safeguards flagged this message for a cybersecurity topic", "cyber"),  # reworded
     ("Sonnet's safeguards flagged this message for a cybersecurity topic", "cyber"),               # reworded
+    ("this request was blocked due to cybersecurity policy", "cyber"),       # new
+    ("message classified as a cybersecurity risk", "cyber"),                 # new
+    ("security topic classifier blocked this request", "cyber"),             # new
+    ("cybersecurity block: request cannot be completed", "cyber"),           # new
     ("appears to violate our Usage Policy", "aup"),
     ("Claude Code is unable to respond to this request", "aup"),
     ("blocked: against our usage policy", "aup"),                  # PR #5
     ("usage policy violation", "aup"),                             # PR #5
     ("content policy violation", "aup"),                           # PR #5
+    ("this violates our acceptable use policy", "aup"),                      # new
+    ("terms of service violation detected", "aup"),                          # new
+    ("this request violates our guidelines", "aup"),                         # new
+    ("action prohibited by our policies", "aup"),                            # new
     ("API Error: 529 Overloaded", "overloaded"),
     ("You've hit your limit", "limit"),
     ("just normal text", "other"),
