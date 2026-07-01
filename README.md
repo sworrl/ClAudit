@@ -44,9 +44,9 @@ pattern is to ignore. **That's** how this gets fixed.
 → It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
 
 <!-- COUNTER:START -->
-### 📊 450 open false-positive blocks reported by ClAudit right now
+### 📊 419 open false-positive blocks reported by ClAudit right now
 
-Real cyber/aup API false positives across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **0 closed by Anthropic** · _updated 2026-07-01 06:46 UTC_
+Real cyber/aup API false positives across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **31 closed by Anthropic** · _updated 2026-07-01 10:49 UTC_
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
@@ -60,12 +60,12 @@ Real cyber/aup API false positives across **all** ClAudit users, live from [`ant
 Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
-**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-07-01 06:46 UTC_
+**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _2 vote(s), updated 2026-07-01 10:49 UTC_
 
 | | | |
 |---|---:|---|
 | 👍 Anthropic will fix it | `░░░░░░░░░░` | **0%** (0) |
-| 👎 Claude Code stays broken | `██████████` | **100%** (1) |
+| 👎 Claude Code stays broken | `██████████` | **100%** (2) |
 | 👀 Too soon to tell | `░░░░░░░░░░` | **0%** (0) |
 
 🗳️ **[Cast your vote →](https://github.com/sworrl/ClAudit/issues/6)**. React 👍 / 👎 / 👀 on the pinned issue (or vote in one click from the ClAudit app).
