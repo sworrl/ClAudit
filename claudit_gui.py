@@ -1800,12 +1800,20 @@ class Main(QtWidgets.QMainWindow):
     def _update_tokens(self):
         t = claudit.load_tokens()
         burn = bool(claudit.BURN_TOKENS)
-        self.tok_label.setText(f"🔥 {self._fmt_tok(t['total'])} tok · ${t['cost']:.2f}")
+        wk, plans = claudit.plan_estimates(t)
+        pct = "  ".join(f"{n.replace('Max ', 'M')} {p:.0f}%" for n, p in plans.items())
+        self.tok_label.setText(f"🔥 ${wk:.2f}/wk · {pct}")
+        plan_lines = "\n".join(
+            f"  {n:<7} {p:5.1f}%   (est. cap ${claudit.PLAN_WEEKLY_USD[n]:.0f}/wk)"
+            for n, p in plans.items())
         self.tok_label.setToolTip(
-            "Burn-tokens meter — lifetime across every session\n"
-            f"input {t['input']:,}  ·  output {t['output']:,}  ·  "
-            f"cache {t['cache_read'] + t['cache_creation']:,}\n"
-            f"{t['calls']:,} claude calls  ·  ${t['cost']:.4f}"
+            f"Rolling 7-day spend: ${wk:.2f}  →  estimated share of each plan's weekly cap\n"
+            f"{plan_lines}\n"
+            "  (estimates — Anthropic caps are usage-window based, not $-metered)\n\n"
+            "Lifetime across every session:\n"
+            f"  {self._fmt_tok(t['total'])} tokens  ·  {t['calls']:,} claude calls  ·  ${t['cost']:.2f}\n"
+            f"  input {t['input']:,}  ·  output {t['output']:,}  ·  "
+            f"cache {t['cache_read'] + t['cache_creation']:,}"
             + ("\n\n🔥 BURN-TOKENS MODE IS ON — Claude writes every report." if burn
                else "\n\nBurn-tokens mode is off (counter still tracks)."))
         if burn:                                  # alarming red⇄orange pulse while burning

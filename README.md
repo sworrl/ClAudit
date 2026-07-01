@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.94-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.96-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -450,11 +450,19 @@ It's slower and uses tokens (hence the name); it's the recommended mode for anyo
 either report quality or PII. Set it once in your config and forget it.
 
 **Token meter.** Every `claude` call ClAudit makes — compose, scrub, gate, dedup verdict — is run in
-JSON mode and its usage tallied into a lifetime counter (`~/.claude/claudit/tokens.json`), accumulated
-across every session. The window header shows a **🔥 `<total>` tok · `$<cost>`** meter; hover for the
-input / output / cache / call breakdown. While burn-tokens mode is **on** it pulses in an alarming
-red⇄orange — so you always know when, and how hard, ClAudit is spending. With burn-tokens off it stays
-muted grey but keeps counting.
+JSON mode and its usage (input / output / cache tokens + USD cost) tallied into
+`~/.claude/claudit/tokens.json`, accumulated across every session with a rolling 7-day cost history.
+
+The window header shows a **🔥 `$<spend>`/wk · Pro N% · M5x N% · M20x N%** meter: your **rolling
+7-day** spend converted to an estimated share of each subscription plan's weekly cap (Pro, Max 5x,
+Max 20x). Hover for the per-plan breakdown plus the lifetime tokens / calls / cost. While burn-tokens
+mode is **on** it pulses in an alarming red⇄orange — so you always know how hard ClAudit is leaning on
+your plan; with burn-tokens off it stays muted grey but keeps counting.
+
+> The plan percentages are **estimates**. Anthropic's subscription limits are usage-window based, not
+> dollar-metered, so ClAudit compares your 7-day API-equivalent spend against per-plan weekly budgets
+> defined in `PLAN_WEEKLY_USD` (in `claudit.py`), anchored to the plans' own 5×/20× branding relative
+> to Pro. Edit those constants to match your own experience.
 
 ## Dedup guard
 
@@ -488,7 +496,7 @@ State and config live in `~/.claude/claudit/`:
 | File | Purpose |
 |------|---------|
 | `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `amplify`, `report_harness`, `interval`, `watchdog` |
-| `tokens.json` | Lifetime token meter: cumulative input/output/cache tokens, call count, and USD cost across every session |
+| `tokens.json` | Token meter: cumulative input/output/cache tokens, call count, and USD cost across every session, plus a rolling 7-day cost history for the per-plan weekly estimate |
 | `scrub.txt` | Your local PII denylist (never committed) |
 | `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |

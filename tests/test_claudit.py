@@ -37,6 +37,36 @@ def test_token_meter_accumulates(tmp_path, monkeypatch):
     assert t["total"] == 300 + 75 + 22000          # cumulative across "sessions"
 
 
+def test_weekly_cost_and_plan_estimates(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    monkeypatch.setattr(claudit, "PLAN_WEEKLY_USD", {"Pro": 30.0, "Max 5x": 150.0, "Max 20x": 600.0})
+    now = time.time()
+    # two calls inside the rolling week ($3 + $1.50), one 10 days ago that must be excluded
+    d = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "calls": 3, "cost": 9.5,
+         "history": [[int(now - 3600), 3.0], [int(now - 2 * 86400), 1.5], [int(now - 10 * 86400), 5.0]]}
+    (tmp_path / "tokens.json").write_text(json.dumps(d))
+    assert abs(claudit.weekly_cost() - 4.5) < 1e-9              # only the two recent ones
+    wk, plans = claudit.plan_estimates()
+    assert abs(wk - 4.5) < 1e-9
+    assert abs(plans["Pro"] - 15.0) < 1e-6                       # 4.5 / 30
+    assert abs(plans["Max 5x"] - 3.0) < 1e-6                     # 4.5 / 150
+    assert abs(plans["Max 20x"] - 0.75) < 1e-6                   # 4.5 / 600
+
+
+def test_record_tokens_prunes_history_to_week(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    old = [[int(time.time() - 9 * 86400), 2.0]]
+    (tmp_path / "tokens.json").write_text(json.dumps(
+        {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "calls": 1,
+         "cost": 2.0, "history": old}))
+    claudit._record_tokens({"input_tokens": 10, "output_tokens": 5}, 0.4)
+    hist = json.load(open(claudit.TOKENS_FILE))["history"]
+    assert hist == [hist[0]] and len(hist) == 1                  # stale entry pruned, new one kept
+    assert abs(claudit.weekly_cost() - 0.4) < 1e-9
+
+
 def test_scrub_core_pii():
     s = ("email a@b.com ip 10.0.0.5 key sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA "
          "path /home/bob/x req_011CcABC")

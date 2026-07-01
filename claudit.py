@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 DEFAULT_REPO = "anthropics/claude-code"
 LLM_SCRUB = False    # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
@@ -28,10 +29,17 @@ BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodi
 TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
 _TOK_LOCK = threading.Lock()
 _TOK_KEYS = ("input", "output", "cache_read", "cache_creation", "calls")
+_WEEK = 7 * 86400
+
+# Estimated weekly API-equivalent spend each subscription plan covers before its rolling weekly cap.
+# Anthropic does NOT publish dollar limits (the caps are usage-window based), so these are deliberate
+# ESTIMATES anchored to the plans' own 5x / 20x branding relative to Pro — tune to taste.
+PLAN_WEEKLY_USD = {"Pro": 30.0, "Max 5x": 150.0, "Max 20x": 600.0}
 
 
 def load_tokens():
-    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost."""
+    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost.
+    Also carries `history` (recent [epoch, cost] pairs) for the rolling weekly estimate."""
     try:
         with open(TOKENS_FILE, encoding="utf-8") as fh:
             d = json.load(fh)
@@ -40,8 +48,22 @@ def load_tokens():
     for k in _TOK_KEYS:
         d[k] = int(d.get(k, 0) or 0)
     d["cost"] = float(d.get("cost", 0.0) or 0.0)
+    d.setdefault("history", [])
     d["total"] = d["input"] + d["output"] + d["cache_read"] + d["cache_creation"]
     return d
+
+
+def weekly_cost(d=None):
+    """USD spent in the trailing 7 days (rolling), from the per-call history."""
+    d = d or load_tokens()
+    now = time.time()
+    return sum(float(c) for t, c in d.get("history", []) if now - float(t) <= _WEEK)
+
+
+def plan_estimates(d=None):
+    """(weekly_usd, {plan: percent-of-weekly-cap}) — a rough read on how hard you're leaning on a plan."""
+    wk = weekly_cost(d)
+    return wk, {name: (wk / cap * 100.0 if cap else 0.0) for name, cap in PLAN_WEEKLY_USD.items()}
 
 
 def _record_tokens(usage, cost):
@@ -55,6 +77,11 @@ def _record_tokens(usage, cost):
         d["cache_creation"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
         d["cost"] += float(cost or 0.0)
         d["calls"] += 1
+        now = time.time()
+        hist = d.get("history", [])
+        if cost:
+            hist.append([int(now), round(float(cost), 6)])
+        d["history"] = [e for e in hist if e and now - float(e[0]) <= _WEEK]   # prune to the rolling week
         d.pop("total", None)
         try:
             os.makedirs(os.path.dirname(TOKENS_FILE), exist_ok=True)
