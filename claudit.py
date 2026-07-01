@@ -99,7 +99,8 @@ def _claude(prompt, timeout):
     try:
         raw = subprocess.run(["claude", "-p", prompt, "--output-format", "json"],
                              capture_output=True, text=True, timeout=timeout).stdout.strip()
-    except Exception:
+    except Exception as e:                      # degrade gracefully, but never silently
+        print(f"claudit: claude CLI call failed: {type(e).__name__}: {e}", file=sys.stderr)
         return ""
     if not raw:
         return ""

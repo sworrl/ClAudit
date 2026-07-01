@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.96"
+__version__ = "2.0.97"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -327,7 +327,9 @@ def _pid_alive(pid):
 
 def _release_singleton():
     try:
-        if os.path.exists(LOCK_FILE) and open(LOCK_FILE).read().strip() == str(os.getpid()):
+        with open(LOCK_FILE) as fh:
+            mine = fh.read().strip() == str(os.getpid())
+        if mine:
             os.remove(LOCK_FILE)
     except OSError:
         pass
@@ -339,7 +341,8 @@ def acquire_singleton():
     os.makedirs(STATE_DIR, exist_ok=True)
     if os.path.exists(LOCK_FILE):
         try:
-            other = int((open(LOCK_FILE).read().strip() or "0"))
+            with open(LOCK_FILE) as fh:
+                other = int(fh.read().strip() or "0")
         except (OSError, ValueError):
             other = 0
         if other and other != os.getpid() and _pid_alive(other):
@@ -807,6 +810,8 @@ def auto_cycle(state, repo, delay, on_event):
             on_event(action, ref, url)
             acted += 1
             time.sleep(delay)
+            if acted >= 12:   # burst cap: a huge new corpus drains over cycles, not in one flood
+                break
     return acted
 
 
@@ -899,6 +904,12 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
     ripe = [r for r, t0 in hold.items()
             if now - t0 >= dwell and r in current
             and now - fails.get(r, 0) >= FAIL_COOLDOWN][:8]   # cap bursts
+    # bound the ever-growing bookkeeping lists: old entries only matter while their session file
+    # still exists, and those age out of the scan corpus long before 5000 Request IDs accrue
+    if len(seen) > 5000:
+        seen[:] = seen[-4000:]
+    if len(skipped) > 2000:
+        skipped[:] = skipped[-1500:]
     acted, gate_cache = 0, {}
     for req in ripe:
         f = current[req]
@@ -916,8 +927,8 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         proj = _proj_of(f)
         chain = chains.setdefault(proj, [])
         g = _single_req_finding(f, req)
-        title, body = build_issue(g, "", _dwell_crossref(chain))
-        try:
+        try:                                 # compose inside the try too — a scrub/compose crash
+            title, body = build_issue(g, "", _dwell_crossref(chain))   # must not kill the loop
             url = gh_create(repo, title, body)
         except Exception as e:
             fails[req] = now                 # back off 30 min before re-judging/re-composing this one
@@ -1442,13 +1453,14 @@ def load_issue_rows():
     """Every issue ClAudit has filed locally (from issues.jsonl)."""
     rows = []
     if os.path.exists(ISSUES_DB):
-        for line in open(ISSUES_DB):
-            line = line.strip()
-            if line:
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    pass
+        with open(ISSUES_DB, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        pass
     return rows
 
 

@@ -1362,10 +1362,11 @@ class ScrubListDialog(QtWidgets.QDialog):
     def _load(self):
         self.lst.clear()
         if os.path.exists(self.PATH):
-            for line in open(self.PATH):
-                t = line.strip()
-                if t and not t.startswith("#"):
-                    self.lst.addItem(t)
+            with open(self.PATH, encoding="utf-8") as fh:
+                for line in fh:
+                    t = line.strip()
+                    if t and not t.startswith("#"):
+                        self.lst.addItem(t)
         self.lst.sortItems()
         self.count.setText(f"{self.lst.count()} term(s) · {self.PATH}")
 
@@ -1633,7 +1634,11 @@ class Main(QtWidgets.QMainWindow):
         self.f_search.setClearButtonEnabled(True)
         for w in (self.f_scope, self.f_state, self.f_kind, self.f_dedup):
             w.currentIndexChanged.connect(self._repopulate)
-        self.f_search.textChanged.connect(self._repopulate)
+        self._search_debounce = QtCore.QTimer(self)          # don't re-lay 400+ rows per keystroke
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self._repopulate)
+        self.f_search.textChanged.connect(lambda _t: self._search_debounce.start())
         filt = QtWidgets.QHBoxLayout()
         filt.addWidget(QtWidgets.QLabel("Show:"))
         filt.addWidget(self.f_scope)
@@ -1754,6 +1759,8 @@ class Main(QtWidgets.QMainWindow):
         self.refresh()
 
     def _poll_notifs(self):
+        if getattr(self, "_nw", None) and self._nw.isRunning():
+            return                             # previous poll still in flight — don't stack threads
         self._nw = NotifyWatcher()
         self._nw.got.connect(self._on_notifs)
         self._nw.start()
@@ -1762,6 +1769,8 @@ class Main(QtWidgets.QMainWindow):
         new = [n for n in items if n.get("id") not in self._seen_notifs]
         for n in items:
             self._seen_notifs.add(n.get("id"))
+        if len(self._seen_notifs) > 5000:      # bound the id cache (it only needs the recent window)
+            self._seen_notifs = set(list(self._seen_notifs)[-2500:])
         if not self._notif_primed:             # first run: seed seen, don't toast old unread
             self._notif_primed = True
             return
@@ -1777,6 +1786,8 @@ class Main(QtWidgets.QMainWindow):
 
     def _check_updates(self):
         # fetch + ff-pull from GitHub off the UI thread; restart if HEAD moved
+        if getattr(self, "_uc", None) and self._uc.isRunning():
+            return                             # a slow fetch is still going — skip this tick
         self._uc = UpdateChecker(self._head)
         self._uc.updated.connect(self._restart)
         self._uc.start()
@@ -1798,8 +1809,26 @@ class Main(QtWidgets.QMainWindow):
         return str(int(n))
 
     def _update_tokens(self):
-        t = claudit.load_tokens()
+        # this runs every second off bf_timer — only re-read/re-render when tokens.json actually
+        # changed or the burn flag flipped (the idle cost is then a single stat() call)
+        try:
+            mt = os.stat(claudit.TOKENS_FILE).st_mtime
+        except OSError:
+            mt = 0.0
         burn = bool(claudit.BURN_TOKENS)
+        self._tok_tick = getattr(self, "_tok_tick", 0) + 1
+        stale = self._tok_tick % 300 == 0         # refresh every ~5 min anyway (weekly window decays)
+        if (mt, burn) == getattr(self, "_tok_seen", None) and not burn and not stale:
+            return                                # unchanged and not pulsing -> nothing to repaint
+        redraw = stale or (mt, burn) != getattr(self, "_tok_seen", None)
+        self._tok_seen = (mt, burn)
+        if not redraw:                            # burn mode: still pulse the colors each tick
+            self._tok_pulse = not getattr(self, "_tok_pulse", False)
+            col = "#ff3b30" if self._tok_pulse else "#ff9f0a"
+            self.tok_label.setStyleSheet(
+                f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
+            return
+        t = claudit.load_tokens()
         wk, plans = claudit.plan_estimates(t)
         pct = "  ".join(f"{n.replace('Max ', 'M')} {p:.0f}%" for n, p in plans.items())
         self.tok_label.setText(f"🔥 ${wk:.2f}/wk · {pct}")
@@ -1828,7 +1857,9 @@ class Main(QtWidgets.QMainWindow):
     def _update_bf(self):
         self._update_tokens()
         w = self.watcher
-        filed = sum(1 for s, r in self.state.items() if not s.startswith("__") and r.get("issue"))
+        snap = _snap(self.state)                 # copy: the watcher thread mutates state under us
+        filed = sum(1 for s, r in snap.items()
+                    if not s.startswith("__") and isinstance(r, dict) and r.get("issue"))
         backlog = cs.backlog_size(self.state)
         total = filed + backlog
         self.bf_bar.setMaximum(max(total, 1))
@@ -2205,7 +2236,12 @@ class Main(QtWidgets.QMainWindow):
         sl.setFixedWidth(230)
         val = QtWidgets.QLabel(f"{int(init)} {unit}")
         val.setFixedWidth(56)
-        sl.valueChanged.connect(lambda x: (val.setText(f"{x} {unit}"), self._apply_setting(key, mapper(x))))
+        # label tracks the drag live; the actual apply (config write) debounces to the last value
+        deb = QtCore.QTimer(sl)
+        deb.setSingleShot(True)
+        deb.setInterval(400)
+        deb.timeout.connect(lambda: self._apply_setting(key, mapper(sl.value())))
+        sl.valueChanged.connect(lambda x: (val.setText(f"{x} {unit}"), deb.start()))
         cont = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(cont)
         row.setContentsMargins(0, 0, 0, 0)
@@ -2518,7 +2554,8 @@ class Main(QtWidgets.QMainWindow):
         kindf = self.f_kind.currentText()
         dedupf = self.f_dedup.currentText()
         needle = self.f_search.text().strip().lstrip("#").lower()
-        deduped = self.state.get("__deduped__", {}) or {}
+        deduped = _snap(self.state.get("__deduped__"))
+        reopened_map = _snap(self.state.get("__reopened__"))
         chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
 
         rows = []   # (sort_ts, state, label, author, created, title, url, why, chain_key)
@@ -2590,8 +2627,8 @@ class Main(QtWidgets.QMainWindow):
             if needle and needle not in title.lower() and needle not in str(it.get("number", "")):
                 continue
             created = fmt_ts(it.get("createdAt", ""))
-            ded = (self.state.get("__deduped__", {}) or {}).get(str(it["number"]))
-            reopened = (self.state.get("__reopened__", {}) or {}).get(str(it["number"]))
+            ded = deduped.get(str(it["number"]))
+            reopened = reopened_map.get(str(it["number"]))
             label = f"#{it['number']}" + (" 👎✓" if ded == "not-duplicate" else "")
             why = ""
             if st == "closed":

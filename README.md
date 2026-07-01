@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.96-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.97-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -312,7 +312,9 @@ automatically by ClAudit" marker, so it shows all kinds, not just ones with "fal
 title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
-  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today.
+  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today —
+  plus the **🔥 token meter**: rolling 7-day LLM spend as an estimated share of each Anthropic plan's
+  weekly cap (see [Burn-tokens mode](#burn-tokens-mode)). It pulses red⇄orange while burn mode is on.
 - **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
   not-defended**, and a search that matches the title or a `#number`. The list shows only the **real
   cyber/AUP false positives** — the withdrawn auto-mode-classifier (harness) reports are never listed
@@ -356,9 +358,19 @@ title.
   comments and @mentions on the ClAudit repos, so you see community engagement (a contributor asking
   to help, a maintainer replying) as it happens. It logs each to the Activity feed.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- Tray toggles, all saved: **Auto-post**, **Dwell auto-file** (LLM-judged 15-min batch, one linked
-  issue per Request ID), **Backfill**, **Auto-defend dup-bot flags** (on by default), **Auto-reopen
-  dup-bot closes** (off by default), and **Claude PII scrubbing**.
+- **Settings tab — everything live, no save button.** Every configurable knob as an animated toggle,
+  grouped: **Filing & detection** (auto-post, dwell auto-file, backfill, harness reports),
+  **Defense** (auto-defend, auto-reopen, community 👍 amplify), **Reliability** (the watchdog),
+  **LLM & PII** (Claude scrubbing, burn-tokens, honesty gate), and **Timing** sliders (dwell minutes,
+  watch interval). Each control applies to the running watcher the moment you flip it, persists to
+  config, and stays mirrored with the tray menu. Dependencies cascade (dwell ⇒ PII scrubbing on).
+- **Watchdog (opt-in keep-alive).** A detached supervisor process watches the GUI and relaunches it
+  automatically if it ever crashes — while a normal Quit still quits (an intent flag tells the
+  watchdog to stand down). It tolerates the brief gap during a self-update restart, never stacks a
+  second supervisor, and stops within seconds of toggling it off.
+- Tray toggles mirror the Settings tab: **Auto-post**, **Dwell auto-file**, **Backfill**,
+  **Auto-defend dup-bot flags** (on by default), **Auto-reopen dup-bot closes** (off by default),
+  and **Claude PII scrubbing** — flip either surface and both stay in sync.
 
 The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
 the checkout is clean and behind, then relaunches on the new code. It only ever fast-forwards, so a
@@ -455,14 +467,27 @@ JSON mode and its usage (input / output / cache tokens + USD cost) tallied into
 
 The window header shows a **🔥 `$<spend>`/wk · Pro N% · M5x N% · M20x N%** meter: your **rolling
 7-day** spend converted to an estimated share of each subscription plan's weekly cap (Pro, Max 5x,
-Max 20x). Hover for the per-plan breakdown plus the lifetime tokens / calls / cost. While burn-tokens
-mode is **on** it pulses in an alarming red⇄orange — so you always know how hard ClAudit is leaning on
-your plan; with burn-tokens off it stays muted grey but keeps counting.
+Max 20x). Hover it for the full per-plan breakdown plus the lifetime tokens / calls / cost:
+
+```
+Rolling 7-day spend: $4.20  →  estimated share of each plan's weekly cap
+  Pro     14.0%   (est. cap $30/wk)
+  Max 5x   2.8%   (est. cap $150/wk)
+  Max 20x  0.7%   (est. cap $600/wk)
+  (estimates — Anthropic caps are usage-window based, not $-metered)
+
+Lifetime across every session:
+  5.60M tokens  ·  152 claude calls  ·  $21.52
+```
+
+While burn-tokens mode is **on** the meter pulses in an alarming red⇄orange — so you always know how
+hard ClAudit is leaning on your plan; with burn-tokens off it stays muted grey but keeps counting.
 
 > The plan percentages are **estimates**. Anthropic's subscription limits are usage-window based, not
 > dollar-metered, so ClAudit compares your 7-day API-equivalent spend against per-plan weekly budgets
-> defined in `PLAN_WEEKLY_USD` (in `claudit.py`), anchored to the plans' own 5×/20× branding relative
-> to Pro. Edit those constants to match your own experience.
+> defined in `PLAN_WEEKLY_USD` (in `claudit.py`): Pro **$30/wk**, Max 5x **$150/wk**, Max 20x
+> **$600/wk**, anchored to the plans' own 5×/20× branding relative to Pro. Edit those constants to
+> match your own experience.
 
 ## Dedup guard
 
@@ -516,6 +541,10 @@ are never force-updated, so your own work is safe. It **relaunches only when the
 the checkout silently and keep running, so the periodic stats-refresh commits don't bounce the app. A
 manual `git pull` with code changes is picked up the same way, so it's never running stale code.
 
+If the **watchdog** (Settings → Reliability) is on, it rides through self-update restarts — the
+supervisor tolerates the brief singleton-lock gap while the new version comes up, and only steps in
+when the GUI actually dies.
+
 ## Autostart
 
 - **Linux:** `./scripts/install-linux.sh` (add `--autostart` to start on login).
@@ -545,6 +574,14 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 - **Backfill looks frozen:** check the progress bar's pace — it backs off when GitHub rate-limits.
 - **PII slipped through:** add the term to `~/.claude/claudit/scrub.txt` and turn on burn-tokens; you
   can re-scrub already-posted issues with `gh issue edit`.
+- **"Another ClAudit watcher is already running":** the GUI and the headless `claudit_scan.py --watch`
+  share one singleton lock — run one or the other, not both (the GUI has its own built-in watcher).
+  If it appears with nothing running, a crash left a stale `~/.claude/claudit/watcher.lock`; it's
+  cleared automatically when the dead PID is detected, or delete it by hand.
+- **Running but no window:** click the tray icon once (it raises + focuses the window, including on
+  Wayland/GNOME) or use the tray menu's **Show window**.
+- **Worried about token spend:** watch the header's 🔥 meter — at idle ClAudit makes **zero** `claude`
+  calls; tokens are only spent filing, judging, or defending.
 
 ## Project layout
 
