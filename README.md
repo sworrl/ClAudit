@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.98-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.99-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -75,7 +75,7 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
 
-<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a countdown. The header carries the 🔥 lifetime token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on.</em>
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. Leading [Bug][cyber]/[aup] tags render as coloured pill chips, so the kind mix is scannable at a glance. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a live circular countdown that fills as the dwell elapses. The header carries a 30-day sparkline and the 🔥 token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on, and fills with your weekly plan usage when quiet.</em>
 
 <br><br>
 
@@ -325,6 +325,8 @@ title.
   (they stay a separate "harness withdrawn (false)" tally in the stats bar).
 - **Ownership colors:** your issues in purple, other ClAudit users' in teal; newest first with exact
   local timestamps.
+- **Kind chips:** the leading `[Bug][cyber]` / `[aup]` tags paint as coloured pill chips (blue cyber,
+  amber aup), so the kind mix reads at a glance without parsing bracket soup.
 - **Double-click any row** for a **detail panel**: status and close reason, kind, Request IDs, and a
   full **timeline** (filed, dup-bot flagged, defended, closed by whom and why, reopened) built from
   the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
@@ -338,7 +340,8 @@ title.
   cyber/AUP blocks are held for a dwell (default 5 min) so repeats accrue as their own incidents,
   then the LLM gate judges each is a genuine false positive, burn-tokens composes it, and it files as
   one **bespoke issue per Request ID**, cross-linked to its siblings from the same session. Held items
-  show as **⏳ DWELL** rows with a "files in ~N min" countdown and their chain. Toggle it (and the
+  show as **⏳ DWELL** rows with a **circular countdown ring** that fills as the dwell elapses, a
+  "files in ~N min" label, and their chain. Toggle it (and the
   dwell length) live in the **Settings tab** or the tray; off by default (the FOSS default stays
   review-before-send).
 - **Activity tab:** a **pseudo-3D chrono-line** of the **real cyber/AUP false positives** (the

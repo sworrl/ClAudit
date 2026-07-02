@@ -17,6 +17,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -512,6 +513,96 @@ class ChainGraphDelegate(QtWidgets.QStyledItemDelegate):
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor(g["node_color"]))
         painter.drawEllipse(QtCore.QPointF(nx, ymid), 4.0, 4.0)
+        painter.restore()
+
+
+class TitleChipDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints the Title column's leading [Bug][cyber]-style tags as coloured pill chips, then the
+    rest of the title as normal (eliding to fit). Owner colouring is preserved from the item's
+    foreground role."""
+    CHIP = {"cyber": ("#0f2b45", "#4aa3ff"), "aup": ("#3a2c0d", "#d29922"),
+            "harness": ("#33232d", "#b58a8a"), "bug": ("#262b36", "#8b94a3")}
+    TAG_RE = re.compile(r"^\s*((?:\[[A-Za-z]+\])+)\s*(.*)$", re.DOTALL)
+
+    def paint(self, painter, option, index):
+        text = index.data() or ""
+        m = self.TAG_RE.match(text)
+        if not m:
+            super().paint(painter, option, index)
+            return
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""                                            # background/selection only
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        tags = re.findall(r"\[([A-Za-z]+)\]", m.group(1))
+        rest = m.group(2)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        f = QtGui.QFont(option.font)
+        f.setPixelSize(11)
+        f.setBold(True)
+        fm = QtGui.QFontMetrics(f)
+        x = option.rect.left() + 8
+        cy = option.rect.center().y()
+        for tag in tags:
+            bg, fgc = self.CHIP.get(tag.lower(), ("#262b36", "#8b94a3"))
+            wtx = fm.horizontalAdvance(tag) + 12
+            r = QtCore.QRectF(x, cy - 8, wtx, 17)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(bg))
+            painter.drawRoundedRect(r, 8, 8)
+            painter.setFont(f)
+            painter.setPen(QtGui.QColor(fgc))
+            painter.drawText(r, QtCore.Qt.AlignmentFlag.AlignCenter, tag)
+            x += wtx + 4
+        fg = index.data(QtCore.Qt.ItemDataRole.ForegroundRole)
+        painter.setFont(option.font)
+        painter.setPen(fg.color() if isinstance(fg, QtGui.QBrush) else QtGui.QColor("#e6e8ec"))
+        avail = option.rect.right() - 8 - (x + 4)
+        painter.drawText(QtCore.QRectF(x + 4, option.rect.top(), max(avail, 10), option.rect.height()),
+                         QtCore.Qt.AlignmentFlag.AlignVCenter,
+                         QtGui.QFontMetrics(option.font).elidedText(
+                             rest, QtCore.Qt.TextElideMode.ElideRight, max(avail, 10)))
+        painter.restore()
+
+
+class DwellRingDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints a small circular countdown on ⏳ DWELL rows (Created column): a teal arc fills as the
+    dwell elapses, so 'how close to filing' is visible at a glance. Non-dwell rows paint normally."""
+    FRAC_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
+
+    def sizeHint(self, option, index):
+        s = super().sizeHint(option, index)
+        if index.data(self.FRAC_ROLE) is not None:
+            s.setWidth(s.width() + 26)                           # room for the ring
+        return s
+
+    def paint(self, painter, option, index):
+        frac = index.data(self.FRAC_ROLE)
+        if frac is None:
+            super().paint(painter, option, index)
+            return
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        cy = option.rect.center().y()
+        ring = QtCore.QRectF(option.rect.left() + 8, cy - 7, 14, 14)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#2a2e37"), 2.4))
+        painter.drawEllipse(ring)                                # track
+        painter.setPen(QtGui.QPen(QtGui.QColor("#5eead4"), 2.4,
+                                  QtCore.Qt.PenStyle.SolidLine, QtCore.Qt.PenCapStyle.RoundCap))
+        painter.drawArc(ring, 90 * 16, -int(min(max(float(frac), 0.0), 1.0) * 360 * 16))
+        fg = index.data(QtCore.Qt.ItemDataRole.ForegroundRole)
+        painter.setPen(fg.color() if isinstance(fg, QtGui.QBrush) else QtGui.QColor("#9aa0a6"))
+        painter.setFont(option.font)
+        painter.drawText(QtCore.QRectF(ring.right() + 6, option.rect.top(),
+                                       option.rect.width() - 30, option.rect.height()),
+                         QtCore.Qt.AlignmentFlag.AlignVCenter, index.data() or "")
         painter.restore()
 
 
@@ -1660,6 +1751,10 @@ class Main(QtWidgets.QMainWindow):
         self.table.setHorizontalHeaderLabels(self.COLS)
         self._chain_delegate = ChainGraphDelegate(self.table)   # column-0 chain-link gutter
         self.table.setItemDelegateForColumn(0, self._chain_delegate)
+        self._ring_delegate = DwellRingDelegate(self.table)     # countdown ring on ⏳ DWELL rows
+        self.table.setItemDelegateForColumn(3, self._ring_delegate)
+        self._chip_delegate = TitleChipDelegate(self.table)     # [cyber]/[aup] pill chips in titles
+        self.table.setItemDelegateForColumn(4, self._chip_delegate)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -2688,8 +2783,10 @@ class Main(QtWidgets.QMainWindow):
                     chain = f"🔗 new chain forming — {pending_sibs} dwelling together"
                 else:
                     chain = "first in a new chain"
+                frac = min(max((now - t0) / max(cs.DWELL_SECONDS, 1), 0.0), 1.0)
                 rows.append(("9998", "dwelling", "⏳ DWELL", "you",
-                             f"files in ~{mins}m", f"{title}  ·  {chain}", "", chain, proj))
+                             f"files in ~{mins}m\x1f{frac:.3f}",   # \x1f: ring fraction for the delegate
+                             f"{title}  ·  {chain}", "", chain, proj))
 
         for it in self.community:
             st = it.get("state", "").lower()
@@ -2742,8 +2839,17 @@ class Main(QtWidgets.QMainWindow):
                 owner = None
             tip = why or ("Click to open in browser" if url else "Not filed yet")
             for c, val in enumerate(["", num, author, created, title]):   # col 0 painted by the delegate
+                frac = None
+                if c == 3 and "\x1f" in val:              # dwell row: split off the countdown fraction
+                    val, _, fs = val.partition("\x1f")
+                    try:
+                        frac = float(fs)
+                    except ValueError:
+                        frac = None
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
+                if frac is not None:
+                    item.setData(DwellRingDelegate.FRAC_ROLE, frac)
                 item.setToolTip(tip)
                 if c != 0 and owner:
                     item.setForeground(QtGui.QColor(owner))
