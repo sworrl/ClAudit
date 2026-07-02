@@ -244,7 +244,18 @@ QLabel#subg { color: #dfe2e8; font-size: 12px; background: transparent; }
 QLabel#statsbar { color: #f2f4f7; font-size: 12px; font-weight: 600; background: transparent; }
 QProgressBar#bf { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 7px;
     text-align: center; color: #e6e8ec; font-weight: 600; }
-QProgressBar#bf::chunk { background: #8b5cf6; border-radius: 6px; }
+QProgressBar#bf::chunk { border-radius: 6px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7c3aed, stop:0.55 #8b5cf6, stop:1 #c084fc); }
+QFrame#setrow { background: transparent; border-radius: 8px; padding: 2px; }
+QFrame#setrow:hover { background: #232838; }
+QGroupBox { border: 1px solid #2a2e37; border-radius: 10px; margin-top: 12px; padding-top: 10px;
+    font-weight: 700; color: #cdd3dc; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #b794f6; }
+QSlider::groove:horizontal { height: 6px; background: #2a2e37; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+    stop:0 #7c3aed, stop:1 #c084fc); border-radius: 3px; }
+QSlider::handle:horizontal { width: 16px; height: 16px; margin: -6px 0; border-radius: 8px;
+    background: #e6e8ec; border: 2px solid #8b5cf6; }
 QComboBox, QLineEdit { background: #1b1e25; color: #e6e8ec; border: 1px solid #353b47;
     border-radius: 6px; padding: 5px 8px; }
 QComboBox::drop-down { border: 0; width: 18px; }
@@ -1011,6 +1022,51 @@ class ChronoLine(QtWidgets.QWidget):
             y += fm.height() + 2
 
 
+class Sparkline(QtWidgets.QWidget):
+    """Tiny inline trend line for the header: cumulative reports over the last 30 days, drawn as a
+    soft gradient-filled polyline. Pure QPainter; repaints only when the data actually changes."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pts = []
+        self.setFixedSize(92, 26)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_series(self, values):
+        vals = list(values)[-30:]
+        if vals != self._pts:
+            self._pts = vals
+            self.setToolTip(f"reports over the last {len(vals)} days")
+            self.update()
+
+    def paintEvent(self, _e):
+        if len(self._pts) < 2:
+            return
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h, pad = self.width(), self.height(), 3
+        lo, hi = min(self._pts), max(self._pts)
+        span = (hi - lo) or 1
+        step = (w - 2 * pad) / (len(self._pts) - 1)
+        pts = [QtCore.QPointF(pad + i * step, h - pad - (v - lo) / span * (h - 2 * pad))
+               for i, v in enumerate(self._pts)]
+        fill = QtGui.QPainterPath()
+        fill.moveTo(pts[0].x(), h - 1)
+        for pt in pts:
+            fill.lineTo(pt)
+        fill.lineTo(pts[-1].x(), h - 1)
+        grad = QtGui.QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QtGui.QColor(94, 234, 212, 90))
+        grad.setColorAt(1.0, QtGui.QColor(94, 234, 212, 0))
+        p.fillPath(fill, grad)
+        pen = QtGui.QPen(QtGui.QColor("#5eead4"), 1.6)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawPolyline(*pts)
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor("#5eead4"))
+        p.drawEllipse(pts[-1], 2.2, 2.2)         # live tip
+
+
 class ToggleSwitch(QtWidgets.QAbstractButton):
     """A graphically-pleasing iOS-style on/off switch (pure QPainter, animated). Emits toggled(bool)."""
     def __init__(self, parent=None):
@@ -1679,6 +1735,9 @@ class Main(QtWidgets.QMainWindow):
         hl.addSpacing(8)
         hl.addWidget(sub)
         hl.addStretch(1)
+        self.spark = Sparkline()                 # 30-day reports trend, right in the header
+        hl.addWidget(self.spark)
+        hl.addSpacing(8)
         self.tok_label = QtWidgets.QLabel("")    # lifetime burn-tokens meter (alarming when burn mode is on)
         self.tok_label.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
         hl.addWidget(self.tok_label)
@@ -1727,6 +1786,7 @@ class Main(QtWidgets.QMainWindow):
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         self.tabs.currentChanged.connect(
             lambda i: (self._fetch_stats(), self._fetch_poll()) if i == 1 else None)
+        self.tabs.currentChanged.connect(self._fade_tab)
 
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
@@ -1800,6 +1860,21 @@ class Main(QtWidgets.QMainWindow):
         cs._release_singleton()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+    def _fade_tab(self, i):
+        """Subtle fade-in when switching tabs (self-removing effect, fire-and-forget animation)."""
+        w = self.tabs.widget(i)
+        if w is None:
+            return
+        eff = QtWidgets.QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(eff)
+        anim = QtCore.QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(160)
+        anim.setStartValue(0.45)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
     @staticmethod
     def _fmt_tok(n):
         if n >= 1_000_000:
@@ -1851,8 +1926,15 @@ class Main(QtWidgets.QMainWindow):
             self.tok_label.setStyleSheet(
                 f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
         else:
+            # quiet mode: the pill quietly FILLS left-to-right with your Pro-plan weekly usage —
+            # green under 50%, amber under 80%, red beyond (severity at a glance, no reading needed)
+            frac = min(plans.get("Pro", 0.0) / 100.0, 1.0)
+            col = "#2f6b3f" if frac < 0.5 else ("#7a5c22" if frac < 0.8 else "#7a2e2e")
+            f1, f2 = max(frac, 0.001), min(max(frac, 0.001) + 0.001, 1.0)
             self.tok_label.setStyleSheet(
-                "color:#7d8590; background:transparent; padding:2px 10px; font-weight:600;")
+                "color:#aeb6c2; border:1px solid #2a2e37; border-radius:8px; padding:2px 10px; "
+                "font-weight:600; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, "
+                f"stop:0 {col}, stop:{f1:.3f} {col}, stop:{f2:.3f} #1b1e25, stop:1 #1b1e25);")
 
     def _update_bf(self):
         self._update_tokens()
@@ -2168,14 +2250,18 @@ class Main(QtWidgets.QMainWindow):
             box = QtWidgets.QGroupBox(title)
             g = QtWidgets.QVBoxLayout(box)
             for key, label, desc, on in rows:
-                row = QtWidgets.QHBoxLayout()
+                frame = QtWidgets.QFrame()      # hoverable row (see QFrame#setrow in STYLE)
+                frame.setObjectName("setrow")
+                row = QtWidgets.QHBoxLayout(frame)
+                row.setContentsMargins(8, 4, 8, 4)
                 txt = QtWidgets.QVBoxLayout()
                 txt.setSpacing(1)
                 nm = QtWidgets.QLabel(label)
-                nm.setStyleSheet("font-weight:600;")
+                nm.setStyleSheet("font-weight:600; background:transparent;")
                 ds = QtWidgets.QLabel(desc)
                 ds.setObjectName("subtle")
                 ds.setWordWrap(True)
+                ds.setStyleSheet("background:transparent;")
                 txt.addWidget(nm)
                 txt.addWidget(ds)
                 row.addLayout(txt, 1)
@@ -2184,7 +2270,7 @@ class Main(QtWidgets.QMainWindow):
                 sw.toggled.connect(lambda val, k=key: self._apply_setting(k, val))
                 self._toggles[key] = sw
                 row.addWidget(sw, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
-                g.addLayout(row)
+                g.addWidget(frame)
             v.addWidget(box)
 
         grp("Filing && detection", [
@@ -2727,6 +2813,44 @@ class Main(QtWidgets.QMainWindow):
                 ("harness withdrawn (false)", harness_withdrawn, "#b58a8a"),
                 ("defended", defended, "#5eead4"),
             ])
+        # header sparkline: cumulative reports/day over the last 30 days
+        if hasattr(self, "spark"):
+            per_day = {}
+            for it in c:
+                d = (it.get("createdAt", "") or "")[:10]
+                if d:
+                    per_day[d] = per_day.get(d, 0) + 1
+            base = datetime.date.today() - datetime.timedelta(days=29)
+            cum, series = sum(v for d, v in per_day.items() if d < base.isoformat()), []
+            for i in range(30):
+                cum += per_day.get((base + datetime.timedelta(days=i)).isoformat(), 0)
+                series.append(cum)
+            self.spark.set_series(series)
+        self._badge_tray(nopen)
+
+    def _badge_tray(self, count):
+        """Overlay the live open-FP count on the tray icon (cached — repaints only when it changes)."""
+        if count == getattr(self, "_badge_n", None) or not os.path.exists(cs.ICON):
+            return
+        self._badge_n = count
+        pm = QtGui.QIcon(cs.ICON).pixmap(64, 64)
+        if count > 0:
+            p = QtGui.QPainter(pm)
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            txt = str(count) if count < 1000 else "1k+"
+            f = QtGui.QFont(self.font())
+            f.setPixelSize(26)
+            f.setBold(True)
+            p.setFont(f)
+            wtx = QtGui.QFontMetrics(f).horizontalAdvance(txt) + 14
+            r = QtCore.QRectF(64 - wtx, 34, wtx, 28)
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor("#d63031"))
+            p.drawRoundedRect(r, 13, 13)
+            p.setPen(QtGui.QColor("#ffffff"))
+            p.drawText(r, QtCore.Qt.AlignmentFlag.AlignCenter, txt)
+            p.end()
+        self.tray.setIcon(QtGui.QIcon(pm))
 
     def _on_community(self, items, me):
         self.community, self.me = items, me

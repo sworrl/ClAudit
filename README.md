@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.97-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.98-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -313,8 +313,12 @@ title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
   (cyber / aup / harness), how many you have defended and reopened, and how many you filed today —
-  plus the **🔥 token meter**: rolling 7-day LLM spend as an estimated share of each Anthropic plan's
-  weekly cap (see [Burn-tokens mode](#burn-tokens-mode)). It pulses red⇄orange while burn mode is on.
+  plus a **30-day sparkline** of reports-over-time and the **🔥 token meter**: rolling 7-day LLM
+  spend as an estimated share of each Anthropic plan's weekly cap (see
+  [Burn-tokens mode](#burn-tokens-mode)). In quiet mode the meter pill **fills left-to-right** with
+  your weekly plan usage (green → amber → red); in burn mode it pulses an alarming red⇄orange.
+- **Live tray badge:** the tray icon carries the current open false-positive count, updated as
+  reports file and close — the tally is visible without opening the window.
 - **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
   not-defended**, and a search that matches the title or a `#number`. The list shows only the **real
   cyber/AUP false positives** — the withdrawn auto-mode-classifier (harness) reports are never listed
