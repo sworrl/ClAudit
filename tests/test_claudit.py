@@ -128,6 +128,17 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     ("API Error: 529 Overloaded", "overloaded"),
     ("You've hit your limit", "limit"),
     ("just normal text", "other"),
+    # 2026-07 Fable 5 rewordings — these matched NOTHING and silently dropped to 'other'
+    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+     "This sometimes happens with safe, normal conversations. Claude Code can't respond to this "
+     "request with Fable 5.", "aup"),
+    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+     "They may flag safe, normal content as well.", "aup"),
+    ("API Error: Fable 5's safeguards flagged this message for a cybersecurity topic. If your work "
+     "requires this access, you can apply for an exemption: "
+     "https://claude.com/form/cyber-use-case?token=xyz", "cyber"),
+    # future-proofing: an unseen rewording that keeps 'safeguards flagged' still files as aup
+    ("API Error: The model's safeguards flagged this message. Try rephrasing.", "aup"),
 ])
 def test_classify(text, kind):
     assert cs.classify(text) == kind

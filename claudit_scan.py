@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.99"
+__version__ = "2.0.100"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -102,11 +102,19 @@ def classify(text):
     # the old fixed strings stopped matching, silently dropping real cyber blocks to 'other'.
     # error_text() only ever feeds real API-error messages here, so this can't catch model refusals.
     if (("cybersecurity" in t and "flag" in t)
+            or "cyber-use-case" in t                   # the exemption-form link is a stable anchor
             or "safety filter detected cybersecurity" in t):
         return "cyber"
+    # aup = anything the safeguards flagged against the Usage Policy. Anchor on the legal/aup LINK
+    # (present in every wording so far) plus a generic "safeguards flagged" fallback, because the
+    # prose keeps being reworded (2026-07: "Fable 5's safeguards flagged this message (…legal/aup).
+    # This sometimes happens with safe, normal conversations…" matched NOTHING and silently dropped
+    # to 'other' — reporting stopped until this was caught).
     if ("violate our usage policy" in t or "unable to respond to this request" in t
             or "against our usage policy" in t or "usage policy violation" in t
-            or "content policy violation" in t):
+            or "content policy violation" in t
+            or "legal/aup" in t
+            or "safeguards flagged" in t):
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
