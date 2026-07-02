@@ -113,6 +113,23 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     assert "NV corp" not in out2 and "[REDACTED]" in out2
 
 
+def test_profanity_masked_in_public_text():
+    out, counts = claudit.scrub("I said FUCK YOU! and also wtf, this is bullshit-adjacent shit")
+    assert "FUCK" not in out and "F•••" in out
+    assert "wtf" not in out and "w•••" in out
+    assert out.count("•••") >= 3
+    assert counts.get("profanity", 0) >= 3
+
+
+def test_flag_model_extraction():
+    assert cs.flag_model("API Error: Fable 5's safeguards flagged this message "
+                         "(https://www.anthropic.com/legal/aup).") == "Fable 5"
+    assert cs.flag_model("API Error: Opus 4.8 (1M context)'s safeguards flagged this message "
+                         "for a cybersecurity topic.") == "Opus 4.8 (1M context)"
+    assert cs.flag_model("Sonnet 5’s safeguards flagged this message") == "Sonnet 5"
+    assert cs.flag_model("no model named here") == ""
+
+
 # ---------------- classification ----------------
 @pytest.mark.parametrize("text,kind", [
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),

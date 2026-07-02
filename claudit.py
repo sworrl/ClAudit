@@ -257,12 +257,22 @@ def llm_is_false_positive(kind, block_text, context=""):
         return True, ""
 
 
+# Frustration expletives (often aimed at the assistant) sometimes TRIGGER the safety block itself.
+# They must never appear verbatim in a public bug report or a GUI snippet — mask to first letter.
+PROFANITY = re.compile(
+    r"\b(f+u+c+k\w*|s+h+i+t\w*|bullshit\w*|c+u+n+t\w*|b+i+t+c+h\w*|a+s+s+h+o+l+e\w*|"
+    r"motherfuck\w*|goddamn\w*|dickhead\w*|wtf|stfu)\b", re.IGNORECASE)
+
+
 def scrub(text: str):
     counts = {}
     for label, pattern, repl in SCRUBBERS:
         text, n = pattern.subn(repl, text)
         if n:
             counts[label] = counts.get(label, 0) + n
+    text, n = PROFANITY.subn(lambda m: m.group(0)[0] + "•••", text)
+    if n:
+        counts["profanity"] = counts.get("profanity", 0) + n
     # Mask Request IDs before the denylist pass: a short denylisted term ('NV') can sit between
     # digits inside a req ID (req_...JY8NV6dr), and _deny_regex's letter-only boundaries would
     # match it and corrupt the very ID the report exists to reference. Restore them afterward.

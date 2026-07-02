@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.100"
+__version__ = "2.0.101"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -121,6 +121,13 @@ def classify(text):
     if "hit your limit" in t or "rate limit" in t or "429" in t or "· resets" in t:
         return "limit"
     return "other"
+
+
+def flag_model(text):
+    """Which model's safeguards flagged the block, parsed from the block message ('Fable 5's
+    safeguards flagged…'). '' when the wording doesn't name one."""
+    m = re.search(r"([A-Z][A-Za-z0-9 .()]{1,30}?)['’]s safeguards", text or "")
+    return m.group(1).strip() if m else ""
 
 
 def human_text(entry):
@@ -483,8 +490,10 @@ def build_issue(f, note, crossref=""):
         bt = claudit.llm_compose(
             f"Write ONE specific GitHub issue title (max ~95 chars) that starts EXACTLY with "
             f"'[Bug][{f['kind']}]' and describes the concrete legitimate work this Claude Code safety "
-            f"block wrongly stopped. Output ONLY that title line — no preamble, no 'here is', no quotes, "
-            f"no explanation.", ctx)
+            f"block wrongly stopped. If the triggering message was the user venting frustration "
+            f"(profanity / an exclamation aimed at the assistant), do NOT quote or echo it — describe "
+            f"the block as firing on a frustrated exclamation during otherwise legitimate work. "
+            f"Output ONLY that title line — no preamble, no 'here is', no quotes, no explanation.", ctx)
         if bt:
             # the model sometimes adds a chatty preamble line — take the line that's actually a title
             lines = [ln.strip().strip('"').strip("`") for ln in bt.splitlines() if ln.strip()]
@@ -495,7 +504,13 @@ def build_issue(f, note, crossref=""):
                 title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
         bw = claudit.llm_compose(
             "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
-            "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.", ctx)
+            "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic. "
+            "If the triggering message was the user venting frustration (profanity or an exclamation "
+            "aimed at the assistant, e.g. after repeated blocks), NEVER quote or echo it — state "
+            "neutrally that the block fired on a frustrated exclamation directed at the assistant "
+            "mid-session, that no person was addressed, and that the surrounding work was legitimate "
+            "and in-scope; a content block that halts the whole coding session over venting is still "
+            "a disruptive false positive.", ctx)
         if bw and not _is_refusal(bw):     # never post the model's refusal/editorial
             why_text = scrub(bw)[0]
         elif bw and _is_refusal(bw):       # model wouldn't vouch -> assert NOTHING, file facts only
@@ -533,8 +548,10 @@ def build_issue(f, note, crossref=""):
     # puts the categorization in the body for maintainers to sort on.
     repro = ("yes — server-side via the Request ID(s) below" if reqs
              else "local auto-mode-classifier denial (no server-side Request ID)")
+    mdl = flag_model(f.get("block_text", ""))
     triage = (f"**Triage:** kind `{f['kind']}` · domain `{categorize(f)}` · "
-              f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
+              + (f"flagging model `{mdl}` · " if mdl else "")
+              + f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
     body = f"""{triage}
 
 **Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
@@ -565,6 +582,7 @@ def log_issue(f, repo, url):
         "first_ts": min((o["ts"] for o in f["occ"] if o["ts"]), default=""),
         "projects": sorted({project_label(o["proj"]) for o in f["occ"] if o.get("proj")}),
         "chain": _chain_key(f),   # session-precise chain key (no PII: session is a local UUID)
+        "model": flag_model(f.get("block_text", "")),   # which model's safeguards flagged it
         "leadup": [[role, scrub(txt)[0]] for role, txt in (f.get("leadup") or [])],
     }
     os.makedirs(STATE_DIR, exist_ok=True)

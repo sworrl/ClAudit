@@ -522,6 +522,8 @@ class TitleChipDelegate(QtWidgets.QStyledItemDelegate):
     foreground role."""
     CHIP = {"cyber": ("#0f2b45", "#4aa3ff"), "aup": ("#3a2c0d", "#d29922"),
             "harness": ("#33232d", "#b58a8a"), "bug": ("#262b36", "#8b94a3")}
+    MODEL_CHIP = ("#2b1f45", "#b794f6")            # violet: which model's safeguards flagged it
+    MODEL_ROLE = QtCore.Qt.ItemDataRole.UserRole + 3
     TAG_RE = re.compile(r"^\s*((?:\[[A-Za-z]+\])+)\s*(.*)$", re.DOTALL)
 
     def paint(self, painter, option, index):
@@ -535,7 +537,11 @@ class TitleChipDelegate(QtWidgets.QStyledItemDelegate):
         opt.text = ""                                            # background/selection only
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-        tags = re.findall(r"\[([A-Za-z]+)\]", m.group(1))
+        tags = [(t, self.CHIP.get(t.lower(), ("#262b36", "#8b94a3")))
+                for t in re.findall(r"\[([A-Za-z]+)\]", m.group(1))]
+        mdl = index.data(self.MODEL_ROLE)
+        if mdl:
+            tags.append((str(mdl), self.MODEL_CHIP))
         rest = m.group(2)
         painter.save()
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
@@ -545,8 +551,7 @@ class TitleChipDelegate(QtWidgets.QStyledItemDelegate):
         fm = QtGui.QFontMetrics(f)
         x = option.rect.left() + 8
         cy = option.rect.center().y()
-        for tag in tags:
-            bg, fgc = self.CHIP.get(tag.lower(), ("#262b36", "#8b94a3"))
+        for tag, (bg, fgc) in tags:
             wtx = fm.horizontalAdvance(tag) + 12
             r = QtCore.QRectF(x, cy - 8, wtx, 17)
             painter.setPen(QtCore.Qt.PenStyle.NoPen)
@@ -1777,7 +1782,7 @@ class Main(QtWidgets.QMainWindow):
         self.f_state = QtWidgets.QComboBox()
         self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
         self.f_kind = QtWidgets.QComboBox()
-        self.f_kind.addItems(["All kinds", "cyber", "aup"])   # harness is excluded from the list
+        self.f_kind.addItems(["All kinds", "cyber", "aup", "Fable 5"])   # harness is excluded
         self.f_dedup = QtWidgets.QComboBox()
         self.f_dedup.addItems(["Any", "Defended", "Not defended"])
         self.f_search = QtWidgets.QLineEdit()
@@ -2738,6 +2743,8 @@ class Main(QtWidgets.QMainWindow):
         deduped = _snap(self.state.get("__deduped__"))
         reopened_map = _snap(self.state.get("__reopened__"))
         chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
+        model_of = {str(rec.get("issue")): rec.get("model", "")
+                    for rec in cs.load_issue_rows() if rec.get("issue")}   # which model flagged it
 
         rows = []   # (sort_ts, state, label, author, created, title, url, why, chain_key)
         pend = set(cs.pending_sigs(self.state))
@@ -2749,7 +2756,8 @@ class Main(QtWidgets.QMainWindow):
             snippet = (cs.scrub(f.get("prompt", ""))[0])[:80]
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
-                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", "", None))
+                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", "", None,
+                             cs.flag_model(f.get("block_text", ""))))
 
         # Dwelling: new Request IDs the dwell auto-filer is holding before it files them as their own
         # linked bespoke issues. Show the countdown + which chain (work session) each belongs to.
@@ -2786,7 +2794,8 @@ class Main(QtWidgets.QMainWindow):
                 frac = min(max((now - t0) / max(cs.DWELL_SECONDS, 1), 0.0), 1.0)
                 rows.append(("9998", "dwelling", "⏳ DWELL", "you",
                              f"files in ~{mins}m\x1f{frac:.3f}",   # \x1f: ring fraction for the delegate
-                             f"{title}  ·  {chain}", "", chain, proj))
+                             f"{title}  ·  {chain}", "", chain, proj,
+                             cs.flag_model(fnd.get("block_text", "")) if fnd else ""))
 
         for it in self.community:
             st = it.get("state", "").lower()
@@ -2800,7 +2809,12 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if statef == "Closed only" and st != "closed":
                 continue
-            if kindf != "All kinds" and f"[{kindf}]" not in title.lower():
+            mdl = model_of.get(str(it.get("number")), "") or (
+                "Fable 5" if "fable 5" in title.lower() else "")
+            if kindf == "Fable 5":
+                if "fable" not in mdl.lower():
+                    continue
+            elif kindf != "All kinds" and f"[{kindf}]" not in title.lower():
                 continue
             is_defended = deduped.get(str(it["number"])) == "not-duplicate"
             if dedupf == "Defended" and not is_defended:
@@ -2822,14 +2836,14 @@ class Main(QtWidgets.QMainWindow):
                 if reopened and not str(reopened).startswith("review"):
                     why += " · ♻ reopened by ClAudit"
             rows.append((it.get("createdAt", ""), st, label, author, created, title,
-                         it.get("url", ""), why, chain_of.get(str(it.get("number")))))
+                         it.get("url", ""), why, chain_of.get(str(it.get("number"))), mdl))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
         graph, nlanes_ = self._build_chain_graph(rows, DOT)
         self._chain_delegate.set_data(graph, nlanes_)
 
         self.table.setRowCount(len(rows))
-        for r, (_, _st, num, author, created, title, url, why, _chain) in enumerate(rows):
+        for r, (_, _st, num, author, created, title, url, why, _chain, mdl) in enumerate(rows):
             is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
             if author == "you" or (self.me and author == self.me):
                 owner = "#b794f6"          # yours = purple
@@ -2850,6 +2864,8 @@ class Main(QtWidgets.QMainWindow):
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
                 if frac is not None:
                     item.setData(DwellRingDelegate.FRAC_ROLE, frac)
+                if c == 4 and mdl:
+                    item.setData(TitleChipDelegate.MODEL_ROLE, mdl)
                 item.setToolTip(tip)
                 if c != 0 and owner:
                     item.setForeground(QtGui.QColor(owner))
