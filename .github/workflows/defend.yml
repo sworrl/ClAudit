@@ -1,0 +1,45 @@
+# Cloud dup-bot defense — runs 24/7 so flags never sit unanswered while the desktop app is off.
+# Context: anthropics/claude-code now BLOCKS issue authors from reopening bot-closed issues, so an
+# unanswered duplicate flag = a PERMANENT close. This sweep 👎s + answers every unanswered flag on
+# schedule, and posts a maintainer-reopen request on anything already closed.
+#
+# Needs a repo secret CLAUDIT_PAT: a fine-grained/classic PAT for the reporting account with
+# public_repo scope (the default GITHUB_TOKEN cannot react/comment on another org's repo).
+# Without the secret the job exits 0 as a no-op.
+name: cloud-defend
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: cloud-defend
+  cancel-in-progress: false
+
+jobs:
+  defend:
+    runs-on: ubuntu-latest
+    if: github.repository == 'sworrl/ClAudit'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Defend flags + protest unreopenable closes
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDIT_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "CLAUDIT_PAT secret not set — skipping (desktop-only defense)."
+            exit 0
+          fi
+          python3 - <<'EOF'
+          import claudit_scan as cs
+          # stateless on the runner: defend_all is idempotent via comment-timestamp comparison,
+          # and the reopen sweep's protest path checks for an existing defense comment first.
+          n = cs.defend_all("anthropics/claude-code", {}, delay=3, compose=False, since_days=4)
+          r = cs.reopen_dupe_closes("anthropics/claude-code", {}, delay=3, limit=100)
+          print(f"cloud-defend: answered {n} flags, reopened/protested {r} closes")
+          EOF

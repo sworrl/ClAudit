@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.101"
+__version__ = "2.0.102"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -469,7 +469,12 @@ def build_issue(f, note, crossref=""):
         title = f"[Bug][harness] ClAudit: auto-mode classifier denied — {reason}"
     else:
         lead = reqs[0]["req"] if reqs else f"#{f['sig']}"
-        title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
+        # Include a scrubbed fragment of the blocked prompt: near-identical fallback titles
+        # ("ClAudit false-positive in X — req_…") are exactly what the dup-bot matches on, and a
+        # bot-close is now PERMANENT (authors can't reopen). Distinct titles = fewer false matches.
+        frag = scrub(re.sub(r"\s+", " ", f.get("prompt", "") or ""))[0].strip()[:60]
+        what = f" while: “{frag}…”" if frag else f" in {proj}"
+        title = f"[Bug][{f['kind']}] ClAudit false-positive{what} ({lead})"
     req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
     note_clean, _ = scrub(note or DEFAULT_NOTE)
     # Full PII scrub on the block message (was token-only — leaked IPs/hosts/paths).
@@ -1373,6 +1378,8 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
         my_last = max(my_defenses) if my_defenses else ""
         dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
         if not dup_comments:                            # label-only flag: post the note once
+            if my_last:
+                continue                                # already defended (idempotent without state)
             if str(num) not in deduped and _push_not_dup(repo, num, None, "", DEFEND_REASON,
                                                          data.get("body", ""), compose=compose):
                 deduped[str(num)] = "not-duplicate"
@@ -1445,12 +1452,30 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
             reopened[str(num)] = f"review:human:{ci['actor']}"   # surface for manual review; don't fight
             save_state(state)
             continue
-        subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo], capture_output=True, text=True)
-        gh_comment(repo, str(num), scrub(
-            "Reopening — this is a distinct false-positive block with its own Request ID, on the "
-            "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as a "
-            "duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
-        reopened[str(num)] = ci["actor"]
+        r = subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            gh_comment(repo, str(num), scrub(
+                "Reopening — this is a distinct false-positive block with its own Request ID, on the "
+                "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as "
+                "a duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
+            reopened[str(num)] = ci["actor"]
+        else:
+            # 2026-07: the repo now BLOCKS authors from reopening bot-closed issues. Don't pretend —
+            # post a factual maintainer-reopen request instead. Idempotent against state loss: skip
+            # if a ClAudit defense comment is already on the issue.
+            me = gh_login()
+            data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "comments"]) or {}
+            already = any((c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))
+                          for c in (data.get("comments") or []))
+            if not already:
+                gh_comment(repo, str(num), scrub(
+                    "**Not a duplicate — requesting maintainer reopen.** This report covers a distinct "
+                    "incident with its own server-side Request ID; the cited issue is a sibling report "
+                    "from the same work session, intentionally cross-linked by ClAudit. Issue authors "
+                    "can no longer reopen bot-closed issues on this repo, so this close is unrecoverable "
+                    "on our side. (Assessed by ClAudit.)")[0] + "\n\n" + DEFENSE_MARKER)
+            reopened[str(num)] = f"protest:{ci['actor']}"
         save_state(state)
         done += 1
         if on_done:
