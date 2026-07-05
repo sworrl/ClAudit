@@ -394,6 +394,7 @@ class BreakdownBars(QtWidgets.QWidget):
         super().__init__(parent)
         self.setMinimumHeight(150)
         self.data = []   # [(label, value, color), ...]
+        self.fmt = str   # value formatter (e.g. lambda v: f"${v:.2f}" for the cost chart)
 
     def set_data(self, rows):
         self.data = rows
@@ -428,8 +429,9 @@ class BreakdownBars(QtWidgets.QWidget):
                 fr.addRoundedRect(QtCore.QRectF(x0, y, bw, bh), bh / 2, bh / 2)
                 p.fillPath(fr, QtGui.QColor(color))
             p.setPen(QtGui.QColor("#e6e8ec"))
-            p.drawText(int(x0 + track_w + 8), int(y), 44, int(bh),
-                       QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter, str(val))
+            p.drawText(int(x0 + track_w + 8), int(y), 52, int(bh),
+                       QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                       self.fmt(val))
         p.end()
 
 
@@ -2402,16 +2404,19 @@ class Main(QtWidgets.QMainWindow):
 
         # token-diet controls: which model + effort ClAudit's own LLM calls use (live, like the rest)
         mbox = QtWidgets.QGroupBox("LLM cost")
-        mform = QtWidgets.QFormLayout(mbox)
+        mv = QtWidgets.QVBoxLayout(mbox)
+        mform = QtWidgets.QFormLayout()
         self.cmb_model = QtWidgets.QComboBox()
-        self._model_opts = [("Haiku — cheapest (recommended)", "claude-haiku-4-5-20251001"),
-                            ("Sonnet — mid", "claude-sonnet-5"),
-                            ("Session default — most expensive", "")]
+        self._model_opts = [("Haiku 4.5 — cheapest", "claude-haiku-4-5-20251001"),
+                            ("Sonnet 5 — quality/cost balance (recommended)", "claude-sonnet-5"),
+                            ("Opus 4.8 — high", "claude-opus-4-8"),
+                            ("Fable 5 — top tier, priciest", "claude-fable-5"),
+                            ("Session default", "")]
         for label, _v in self._model_opts:
             self.cmb_model.addItem(label)
         cur = claudit.LLM_MODEL
         self.cmb_model.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._model_opts)
-                                             if v == cur), 0))
+                                             if v == cur), 1))
         self.cmb_model.currentIndexChanged.connect(
             lambda i: self._apply_setting("llm_model", self._model_opts[i][1]))
         mform.addRow("Compose/scrub/gate model:", self.cmb_model)
@@ -2421,6 +2426,17 @@ class Main(QtWidgets.QMainWindow):
         self.cmb_effort.currentTextChanged.connect(
             lambda t: self._apply_setting("llm_effort", t))
         mform.addRow("Effort:", self.cmb_effort)
+        mv.addLayout(mform)
+        # estimated weekly spend per model at YOUR current filing rate — selected model highlighted
+        self.cost_bars = BreakdownBars()
+        self.cost_bars.fmt = lambda x: f"${x:.2f}"
+        self.cost_bars.setMinimumHeight(120)
+        mv.addWidget(self.cost_bars)
+        self.cost_note = QtWidgets.QLabel("")
+        self.cost_note.setObjectName("subtle")
+        self.cost_note.setWordWrap(True)
+        mv.addWidget(self.cost_note)
+        self._refresh_llm_cost()
         v.addWidget(mbox)
 
         tbox = QtWidgets.QGroupBox("Timing")
@@ -2437,6 +2453,33 @@ class Main(QtWidgets.QMainWindow):
         v.addStretch(1)
         area.setWidget(inner)
         return area
+
+    # empirical per-call ballparks (USD) from the token meter — cache state makes exact figures
+    # noisy, so these are labeled estimates in the UI, not quotes
+    MODEL_CALL_USD = {"claude-haiku-4-5-20251001": 0.03, "claude-sonnet-5": 0.05,
+                      "claude-opus-4-8": 0.09, "claude-fable-5": 0.14, "": 0.14}
+
+    def _refresh_llm_cost(self):
+        """Estimated $/week per model at the CURRENT filing rate (reports in the last 7 days from
+        the local issues DB × ~2 LLM calls per report). Selected model highlighted."""
+        if not hasattr(self, "cost_bars"):
+            return
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        n = sum(1 for rec in cs.load_issue_rows() if (rec.get("first_ts") or "") >= cutoff)
+        calls = max(n, 1) * 2                       # gate + merged compose per report
+        rows = []
+        for label, mid in self._model_opts:
+            per = self.MODEL_CALL_USD.get(mid, 0.14)
+            name = label.split(" — ")[0]
+            sel = (mid == claudit.LLM_MODEL)
+            rows.append((name + ("  ◀" if sel else ""), round(calls * per, 2),
+                         "#b794f6" if sel else "#3d4658"))
+        self.cost_bars.set_data(rows)
+        self.cost_note.setText(
+            f"Estimated $/week at your current rate: {n} report(s) filed in the last 7 days × "
+            f"~2 LLM calls each. Ballpark per-call costs from the live token meter; cache state "
+            f"makes exact figures vary. The 🔥 header meter tracks what you actually spend.")
 
     def _slider_row(self, form, label, lo, hi, init, unit, key, mapper):
         sl = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -2493,6 +2536,7 @@ class Main(QtWidgets.QMainWindow):
             cs.DWELL_SECONDS = int(val)
         elif key == "llm_model":
             claudit.LLM_MODEL = str(val)
+            self._refresh_llm_cost()
         elif key == "llm_effort":
             claudit.LLM_EFFORT = str(val)
         elif key == "interval" and w:

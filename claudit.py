@@ -27,7 +27,7 @@ BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodi
 # Cheapest-capable defaults for ClAudit's own LLM calls (compose/scrub/gate/verdict are simple,
 # well-scoped tasks — Haiku at low effort does them fine at a fraction of the cost). Override via
 # config llm_model / llm_effort; set LLM_MODEL = "" to inherit the CLI session default.
-LLM_MODEL = "claude-haiku-4-5-20251001"
+LLM_MODEL = "claude-sonnet-5"
 LLM_EFFORT = "low"
 
 # ---- cumulative token meter: every `claude` CLI call's usage is tallied here, persisted forever ----
