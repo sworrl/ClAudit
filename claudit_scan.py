@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.102"
+__version__ = "2.0.103"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -492,30 +492,32 @@ def build_issue(f, note, crossref=""):
     neutral = False                        # when the LLM refuses, file FACTS ONLY (type + Request IDs)
     if claudit.BURN_TOKENS:   # spend tokens to craft a bespoke, specific title + explanation
         ctx = f"work domain: {categorize(f)}\nblock message: {block_clean}\nconversation leadup:\n{leadup_md}"
-        bt = claudit.llm_compose(
-            f"Write ONE specific GitHub issue title (max ~95 chars) that starts EXACTLY with "
-            f"'[Bug][{f['kind']}]' and describes the concrete legitimate work this Claude Code safety "
-            f"block wrongly stopped. If the triggering message was the user venting frustration "
-            f"(profanity / an exclamation aimed at the assistant), do NOT quote or echo it — describe "
-            f"the block as firing on a frustrated exclamation during otherwise legitimate work. "
-            f"Output ONLY that title line — no preamble, no 'here is', no quotes, no explanation.", ctx)
-        if bt:
-            # the model sometimes adds a chatty preamble line — take the line that's actually a title
-            lines = [ln.strip().strip('"').strip("`") for ln in bt.splitlines() if ln.strip()]
-            cand = next((ln for ln in lines if ln.lower().startswith("[bug]")), "")
-            if cand:                       # only trust a real title; else keep the deterministic one
-                cand = scrub(cand)[0][:110]
-                lead_req = reqs[0]["req"] if reqs else ""
-                title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
-        bw = claudit.llm_compose(
-            "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
-            "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic. "
-            "If the triggering message was the user venting frustration (profanity or an exclamation "
-            "aimed at the assistant, e.g. after repeated blocks), NEVER quote or echo it — state "
-            "neutrally that the block fired on a frustrated exclamation directed at the assistant "
-            "mid-session, that no person was addressed, and that the surrounding work was legitimate "
-            "and in-scope; a content block that halts the whole coding session over venting is still "
-            "a disruptive false positive.", ctx)
+        # ONE call composes both title and explanation (each CLI invocation carries a fixed
+        # token/system-prompt overhead, so halving invocations halves the floor cost per report).
+        both = claudit.llm_compose(
+            f"Write a GitHub bug report title and explanation for a Claude Code safety block that "
+            f"wrongly stopped legitimate work.\n"
+            f"LINE 1: ONE specific title (max ~95 chars) starting EXACTLY with '[Bug][{f['kind']}]' "
+            f"describing the concrete legitimate work that was blocked.\n"
+            f"THEN a blank line, THEN a tight, factual 2-3 sentence explanation of why this block is "
+            f"a false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.\n"
+            f"If the triggering message was the user venting frustration (profanity / an exclamation "
+            f"aimed at the assistant, e.g. after repeated blocks), NEVER quote or echo it — state "
+            f"neutrally that the block fired on a frustrated exclamation directed at the assistant "
+            f"mid-session, no person addressed, surrounding work legitimate; a block that halts the "
+            f"whole session over venting is still a disruptive false positive.\n"
+            f"Output ONLY the title line, a blank line, and the explanation — nothing else.", ctx)
+        bt, bw = "", ""
+        if both:
+            lines = [ln.strip().strip('"').strip("`") for ln in both.splitlines()]
+            nonempty = [ln for ln in lines if ln]
+            bt = next((ln for ln in nonempty if ln.lower().startswith("[bug]")), "")
+            after = nonempty[nonempty.index(bt) + 1:] if bt in nonempty else nonempty
+            bw = " ".join(after).strip()
+        if bt:                             # only trust a real title; else keep the deterministic one
+            cand = scrub(bt)[0][:110]
+            lead_req = reqs[0]["req"] if reqs else ""
+            title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
         if bw and not _is_refusal(bw):     # never post the model's refusal/editorial
             why_text = scrub(bw)[0]
         elif bw and _is_refusal(bw):       # model wouldn't vouch -> assert NOTHING, file facts only
@@ -1641,6 +1643,10 @@ def main():
         globals()["GATE"] = True
     if args.report_harness or cfg.get("report_harness"):
         globals()["REPORT_HARNESS"] = True
+    if "llm_model" in cfg:
+        claudit.LLM_MODEL = str(cfg["llm_model"])
+    if "llm_effort" in cfg:
+        claudit.LLM_EFFORT = str(cfg["llm_effort"])
     state = load_state()
 
     if args.dedup_guard:

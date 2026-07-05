@@ -24,6 +24,11 @@ import time
 DEFAULT_REPO = "anthropics/claude-code"
 LLM_SCRUB = False    # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
 BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodies/comments
+# Cheapest-capable defaults for ClAudit's own LLM calls (compose/scrub/gate/verdict are simple,
+# well-scoped tasks — Haiku at low effort does them fine at a fraction of the cost). Override via
+# config llm_model / llm_effort; set LLM_MODEL = "" to inherit the CLI session default.
+LLM_MODEL = "claude-haiku-4-5-20251001"
+LLM_EFFORT = "low"
 
 # ---- cumulative token meter: every `claude` CLI call's usage is tallied here, persisted forever ----
 TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
@@ -96,9 +101,13 @@ def _record_tokens(usage, cost):
 def _claude(prompt, timeout):
     """Run the `claude` CLI in JSON mode, tally token usage into the lifetime meter, and return the
     model's text. Falls back gracefully (returns '' on error; raw stdout on an older non-JSON CLI)."""
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    if LLM_MODEL:
+        cmd += ["--model", LLM_MODEL]
+    if LLM_EFFORT:
+        cmd += ["--effort", LLM_EFFORT]
     try:
-        raw = subprocess.run(["claude", "-p", prompt, "--output-format", "json"],
-                             capture_output=True, text=True, timeout=timeout).stdout.strip()
+        raw = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout.strip()
     except Exception as e:                      # degrade gracefully, but never silently
         print(f"claudit: claude CLI call failed: {type(e).__name__}: {e}", file=sys.stderr)
         return ""

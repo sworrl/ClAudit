@@ -2400,6 +2400,29 @@ class Main(QtWidgets.QMainWindow):
             ("gate", "Honesty gate", "LLM pre-judges 'real false positive vs correct block' and skips the "
              "latter before filing.", cs.GATE)])
 
+        # token-diet controls: which model + effort ClAudit's own LLM calls use (live, like the rest)
+        mbox = QtWidgets.QGroupBox("LLM cost")
+        mform = QtWidgets.QFormLayout(mbox)
+        self.cmb_model = QtWidgets.QComboBox()
+        self._model_opts = [("Haiku — cheapest (recommended)", "claude-haiku-4-5-20251001"),
+                            ("Sonnet — mid", "claude-sonnet-5"),
+                            ("Session default — most expensive", "")]
+        for label, _v in self._model_opts:
+            self.cmb_model.addItem(label)
+        cur = claudit.LLM_MODEL
+        self.cmb_model.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._model_opts)
+                                             if v == cur), 0))
+        self.cmb_model.currentIndexChanged.connect(
+            lambda i: self._apply_setting("llm_model", self._model_opts[i][1]))
+        mform.addRow("Compose/scrub/gate model:", self.cmb_model)
+        self.cmb_effort = QtWidgets.QComboBox()
+        self.cmb_effort.addItems(["low", "medium", "high"])
+        self.cmb_effort.setCurrentText(claudit.LLM_EFFORT or "low")
+        self.cmb_effort.currentTextChanged.connect(
+            lambda t: self._apply_setting("llm_effort", t))
+        mform.addRow("Effort:", self.cmb_effort)
+        v.addWidget(mbox)
+
         tbox = QtWidgets.QGroupBox("Timing")
         form = QtWidgets.QFormLayout(tbox)
         self._slider_row(form, "Dwell time", 1, 60, cs.DWELL_SECONDS // 60, "min", "dwell_seconds",
@@ -2468,6 +2491,10 @@ class Main(QtWidgets.QMainWindow):
             cs.REPORT_HARNESS = val
         elif key == "dwell_seconds":
             cs.DWELL_SECONDS = int(val)
+        elif key == "llm_model":
+            claudit.LLM_MODEL = str(val)
+        elif key == "llm_effort":
+            claudit.LLM_EFFORT = str(val)
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
@@ -3168,6 +3195,10 @@ def main():
         cs.GATE = bool(cfg["gate"])
     if "report_harness" in cfg:
         cs.REPORT_HARNESS = bool(cfg["report_harness"])
+    if "llm_model" in cfg:
+        claudit.LLM_MODEL = str(cfg["llm_model"])
+    if "llm_effort" in cfg:
+        claudit.LLM_EFFORT = str(cfg["llm_effort"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")
