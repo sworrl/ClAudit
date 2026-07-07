@@ -3,6 +3,12 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.110] — 2026-07-07
+**Survive GraphQL rate-limit exhaustion.** A heavy day (backfill + repeated full sweeps) spent the account's 5000/hr GraphQL budget mid-run; 29 issues became unverifiable and the cloud run failed (the gate worked, but the defense should outlast the budget, not just report it):
+- Issue fetches in the defender, verifier, and closure checks now detect exhaustion, **sleep until the budget resets, and retry** — a guarantee like "every issue checked daily" stays honest instead of quietly skipping.
+- `reopen_dupe_closes` now windows to recently-updated closes (`since_days=7` default) — the stateless cloud runner was re-walking every old close each pass (~450 wasted calls/run). `--reopen-dupes` CLI still does a full backfill.
+- The verifier logs unverifiable issues distinctly from confirmed-unanswered ones.
+
 ## [2.0.109] — 2026-07-07
 - **Fix: tray pill stuck at 600.** The open-alerts badge counted open issues in the fetched list, which is capped by GitHub search (was `--limit 600`) — with 800+ open issues the pill froze at the cap. The count now comes from the search API's exact `total_count` (open ClAudit-filed minus harness), with the sample count as fallback; the community list cap is raised to 1000.
 

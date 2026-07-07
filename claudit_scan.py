@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.109"
+__version__ = "2.0.110"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1377,6 +1377,31 @@ def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
     return sorted({it["number"] for it in (labeled or []) + (searched or []) + (by_bot or [])})
 
 
+def _graphql_reset_wait():
+    """Seconds until the GraphQL rate limit resets (+30s margin), or 0 if budget remains/unknown.
+    `gh issue view` is GraphQL; the account gets 5000 points/hr shared across desktop + cloud."""
+    d = _gh_json(["api", "rate_limit", "--jq",
+                  "{rem: .resources.graphql.remaining, reset: .resources.graphql.reset}"]) or {}
+    if d.get("rem", 1) or not d.get("reset"):
+        return 0
+    return max(0, int(d["reset"]) - int(time.time())) + 30
+
+
+def _gh_json_wait(args):
+    """_gh_json that survives GraphQL rate-limit exhaustion: on failure, if the hourly budget is
+    spent, sleep until it resets and retry once. Skipping quietly instead is how a 'every issue
+    checked daily' guarantee rots — a 2026-07-07 run burned the budget mid-pass and 29 issues
+    became unverifiable."""
+    d = _gh_json(args)
+    if d is None:
+        w = _graphql_reset_wait()
+        if w:
+            print(f"  ⏳ GraphQL rate limit exhausted — sleeping {w}s until reset", file=sys.stderr)
+            time.sleep(min(w, 3900))
+            d = _gh_json(args)
+    return d
+
+
 def _is_bot_login(login):
     """The auto-close bot. gh's GraphQL view reports it as 'github-actions'; REST as
     'github-actions[bot]'. Other [bot] accounts count too — automation, not a human response."""
@@ -1397,7 +1422,7 @@ def _defend_issue(repo, num, me, state, compose=False):
     Only bot auto-close attempts are defended — human comments, human labels, and settled flags
     (defense already newer than the flag) are left alone. Returns 'defended', 'ok' (nothing to do),
     or 'error' (view failed; caller should retry next pass rather than guess)."""
-    data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"])
+    data = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "body,comments"])
     if data is None:                                    # transient API failure: never guess from an
         print(f"  ! #{num}: issue view failed — skipping, will retry next pass", file=sys.stderr)
         return "error"                                  # empty view (that double-posted before)
@@ -1494,8 +1519,9 @@ def undefended_flags(repo, since_days=4, limit=1000):
     flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit) or []
     bad = []
     for num in flagged:
-        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "comments"])
+        data = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "comments"])
         if data is None:
+            print(f"  ! #{num}: unverifiable (view failed after rate-limit wait)", file=sys.stderr)
             bad.append(num)                             # couldn't verify -> treat as at-risk
             continue
         comments = data.get("comments") or []
@@ -1514,7 +1540,7 @@ def undefended_flags(repo, since_days=4, limit=1000):
 def closure_info(repo, num):
     """For a CLOSED issue: {'num','actor','reason','self'}. None if it's open. `actor` is who closed
     it; `reason` is GitHub's state reason (completed / not_planned / duplicate / …)."""
-    j = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
+    j = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
     if not isinstance(j, dict) or j.get("state") != "CLOSED":
         return None
     d = _gh_json(["api", f"repos/{repo}/issues/{num}/events",
@@ -1536,13 +1562,18 @@ def reopen_one(repo, num):
     return True
 
 
-def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0):
+def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0, since_days=7):
     """Reopen ClAudit issues CLOSED AS DUPLICATES by someone other than you — they aren't duplicates
     (each is a distinct Request ID on your own authorized infra). Idempotent: each issue is reopened
     at most once (state['__reopened__']) so it can't loop forever if the bot re-closes. by_bot_only
-    skips human-maintainer closes (recorded for review, not auto-fought). Returns count reopened."""
+    skips human-maintainer closes (recorded for review, not auto-fought). `since_days` windows the
+    sweep to recently-updated closes — a stateless caller (the cloud runner) re-walking EVERY old
+    close each pass is what exhausted the hourly GraphQL budget on 2026-07-07; pass since_days=None
+    for a deliberate full backfill. Returns count reopened."""
     reopened = state.setdefault("__reopened__", {})
-    issues = _dup_flagged_numbers(repo, "closed", limit=limit or 500) or []
+    cutoff = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+              if since_days else None)
+    issues = _dup_flagged_numbers(repo, "closed", cutoff=cutoff, limit=limit or 500) or []
     done = 0
     for num in issues:
         if str(num) in reopened:
@@ -1767,7 +1798,7 @@ def main():
         return
 
     if args.reopen_dupes:
-        n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans,
+        n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans, since_days=None,
                                on_done=lambda num, ci: print(f"  reopened #{num} (closed by {ci['actor']})",
                                                              file=sys.stderr))
         print(f"Reopened {n} dup-closed issue(s).", file=sys.stderr)
