@@ -3,6 +3,12 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.107] — 2026-07-07
+**Daily per-issue recheck + bot-only targeting + Haiku default.**
+- **Every open issue rechecked daily** — `daily_recheck` verifies each open ClAudit issue once a day at its own pseudo-random minute (hash of the issue number; static, so consecutive checks are exactly ≤24h apart). The cloud sweep windows by the previous successful run, so throttled/missed cron fires are caught up, never skipped.
+- **Only bot auto-close attempts are defended** — dup-flag comments must be authored by the actions bot (or another `[bot]`); a human maintainer writing "possible duplicate" is a legitimate response and never triggers a defense. The label-only defense path is gone for the same reason (a human-applied label isn't an auto-close attempt). Applies to the sweep, the daily recheck, the verifier, and the GUI's manual 👎.
+- **Haiku 4.5 at medium effort is the default LLM** for compose/scrub/gate calls — verified fast and solid in real use, at a fraction of Sonnet's cost. (Config `llm_model`/`llm_effort` still override.)
+
 ## [2.0.106] — 2026-07-07
 **Bulletproof defense mode.** No single point of failure between a dup-bot flag and its answer:
 - **Third, wording-independent listing** — flagged issues are found via the `duplicate` label ∪ the bot's comment text ∪ `commenter:app/github-actions`, so a bot rewording (or another label change) can't hide flags again.

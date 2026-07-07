@@ -39,14 +39,27 @@ jobs:
           # not quietly answer zero flags while issues auto-close.
           gh api user --jq .login || { echo "::error::CLAUDIT_PAT is invalid or expired"; exit 1; }
           python3 - <<'EOF'
-          import sys
+          import calendar, os, sys, time
           import claudit_scan as cs
           # stateless on the runner: defend_all is idempotent via comment-timestamp comparison,
           # and the reopen sweep's protest path checks for an existing defense comment first.
           n = cs.defend_all("anthropics/claude-code", {}, delay=3, compose=False, since_days=4,
                             limit=1000)
+          # daily recheck: every open issue is re-verified once a day at its own pseudo-random
+          # minute (≤24h between checks). Window = since the previous successful run, read from
+          # the Actions API — so throttled/skipped cron fires are caught up, never lost.
+          prev = cs._gh_json(["api", f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/workflows/"
+                              "defend.yml/runs?status=success&per_page=1",
+                              "--jq", '{t: .workflow_runs[0].run_started_at}']) or {}
+          try:
+              start = calendar.timegm(time.strptime(prev.get("t", ""), "%Y-%m-%dT%H:%M:%SZ"))
+          except (ValueError, TypeError):
+              start = time.time() - 25 * 3600           # no prior success -> full catch-up sweep
+          d = cs.daily_recheck("anthropics/claude-code", {}, window_start=start, delay=3,
+                               compose=False)
           r = cs.reopen_dupe_closes("anthropics/claude-code", {}, delay=3, limit=1000)
-          print(f"cloud-defend: answered {n} flags, reopened/protested {r} closes")
+          print(f"cloud-defend: answered {n} flags, rechecked-and-answered {d}, "
+                f"reopened/protested {r} closes")
           # verification: the run only succeeds if NOTHING in the auto-close window is unanswered.
           bad = cs.undefended_flags("anthropics/claude-code")
           if bad:

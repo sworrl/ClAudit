@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.106"
+__version__ = "2.0.107"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1306,9 +1306,8 @@ def mark_not_duplicate(state, repo, num):
     cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "body,comments"],
                         capture_output=True, text=True).stdout
     data = json.loads(cj or "{}")
-    flag = next((c for c in (data.get("comments") or [])
-                 if "possible duplicate" in c.get("body", "").lower()
-                 or "closed as a duplicate" in c.get("body", "").lower()), None)
+    flags = _bot_dup_flags(data.get("comments"))
+    flag = flags[-1] if flags else None
     of, flag_body, cited = "", (flag.get("body", "") if flag else ""), []
     if flag:
         cited = _cited_issues(flag_body, num)
@@ -1378,14 +1377,56 @@ def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
     return sorted({it["number"] for it in (labeled or []) + (searched or []) + (by_bot or [])})
 
 
+def _is_bot_login(login):
+    """The auto-close bot. gh's GraphQL view reports it as 'github-actions'; REST as
+    'github-actions[bot]'. Other [bot] accounts count too — automation, not a human response."""
+    return login in ("github-actions", "github-actions[bot]") or (login or "").endswith("[bot]")
+
+
+def _bot_dup_flags(comments):
+    """The BOT's dup-flag comments, oldest→newest. Author matters: a human writing 'possible
+    duplicate' is a legitimate response to engage with, not an auto-close attempt to defend
+    against — ClAudit only ever answers the bot."""
+    return [c for c in (comments or [])
+            if _is_dup_flag_body(c.get("body", ""))
+            and _is_bot_login((c.get("author") or {}).get("login", ""))]
+
+
+def _defend_issue(repo, num, me, state, compose=False):
+    """Check ONE open issue and answer its latest unanswered bot dup-flag (👎 + contextual note).
+    Only bot auto-close attempts are defended — human comments, human labels, and settled flags
+    (defense already newer than the flag) are left alone. Returns 'defended', 'ok' (nothing to do),
+    or 'error' (view failed; caller should retry next pass rather than guess)."""
+    data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"])
+    if data is None:                                    # transient API failure: never guess from an
+        print(f"  ! #{num}: issue view failed — skipping, will retry next pass", file=sys.stderr)
+        return "error"                                  # empty view (that double-posted before)
+    comments = data.get("comments") or []
+    my_defenses = [c.get("createdAt", "") for c in comments
+                   if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
+    my_last = max(my_defenses) if my_defenses else ""
+    dup_comments = _bot_dup_flags(comments)
+    if not dup_comments:                                # no bot flag = no auto-close attempt;
+        return "ok"                                     # whatever else happened here is legit
+    latest = dup_comments[-1]
+    # only act if the bot's latest flag is newer than our last defense (i.e. an unanswered re-flag)
+    if my_last and latest.get("createdAt", "") <= my_last:
+        return "ok"
+    cited_now = _cited_issues(latest.get("body", ""), num)
+    posted = _push_not_dup(repo, num, latest.get("id"), f"#{cited_now[0]}" if cited_now else "",
+                           DEFEND_REASON, data.get("body", ""), compose=compose,
+                           flag_body=latest.get("body", ""), cited=cited_now)
+    if posted:                                          # only record on SUCCESS -> failures retry
+        state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
+        save_state(state)
+        return "defended"
+    return "error"
+
+
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
-    """Dedup-defender that answers RE-FLAGS. The dup-bot re-posts a 'possible duplicate' comment each
-    time it re-evaluates; ClAudit responds (👎 + a contextual 'not a duplicate' note naming the cited
-    issues) whenever the bot's latest flag is NEWER than ClAudit's last defense on that issue — so a
-    re-flag gets a fresh contextual reply, while a settled issue (defense already after the bot) is
-    left alone. Scans flagged issues updated within `since_days` (the auto-close window). Returns count
-    acted on this pass."""
-    deduped = state.setdefault("__deduped__", {})
+    """Rapid-response dedup-defender: answers unanswered/re-posted bot dup-flags on issues updated
+    within `since_days` (the auto-close window). A re-flag gets a fresh contextual reply; a settled
+    issue (defense already after the bot) is left alone. Returns count acted on this pass."""
     me = gh_login()
     cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
     flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit or 200)
@@ -1394,41 +1435,52 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
         return 0
     done = 0
     for num in flagged:
-        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments,labels"])
-        if data is None:                                # transient API failure: never guess from an
-            print(f"  ! #{num}: issue view failed — skipping, will retry next pass", file=sys.stderr)
-            continue                                    # empty view (that double-posted before)
-        comments = data.get("comments") or []
-        my_defenses = [c.get("createdAt", "") for c in comments
-                       if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
-        my_last = max(my_defenses) if my_defenses else ""
-        dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
-        if not dup_comments:                            # no flag comment: only defend a real
-            labels = {(l.get("name") or "").lower() for l in (data.get("labels") or [])}
-            if "duplicate" not in labels or my_last:    # label-only flag, and only once — the bot
-                continue                                # comments here can be unrelated (counter runs)
-            if str(num) not in deduped and _push_not_dup(repo, num, None, "", DEFEND_REASON,
-                                                         data.get("body", ""), compose=compose):
-                deduped[str(num)] = "not-duplicate"
-                save_state(state)
-                done += 1
-            continue
-        latest = dup_comments[-1]
-        # only act if the bot's latest flag is newer than our last defense (i.e. an unanswered re-flag)
-        if my_last and latest.get("createdAt", "") <= my_last:
-            continue
-        cited_now = _cited_issues(latest.get("body", ""), num)
-        posted = _push_not_dup(repo, num, latest.get("id"), f"#{cited_now[0]}" if cited_now else "",
-                               DEFEND_REASON, data.get("body", ""), compose=compose,
-                               flag_body=latest.get("body", ""), cited=cited_now)
-        if posted:                                      # only record on SUCCESS -> failures retry
-            deduped[str(num)] = "not-duplicate"
-            save_state(state)
+        r = _defend_issue(repo, num, me, state, compose=compose)
+        if r == "defended":
             done += 1
             if on_done:
-                on_done(num, posted)
+                on_done(num, True)
             time.sleep(delay)
     print(f"defend_all: {len(flagged)} active flagged, answered {done} this pass.", file=sys.stderr)
+    return done
+
+
+def _issue_check_minute(num):
+    """Deterministic pseudo-random minute-of-day for an issue's daily recheck. Static per issue
+    (NOT date-salted) so consecutive checks are exactly 24h apart — a per-day reshuffle could put
+    day one's check at 00:05 and day two's at 23:55, a 47h gap that breaks the ≤24h guarantee."""
+    return int(hashlib.sha256(str(num).encode()).hexdigest(), 16) % 1440
+
+
+def daily_recheck(repo, state, window_start, window_end=None, on_done=None, delay=3,
+                  compose=False, limit=1000):
+    """Guaranteed-coverage sweep: EVERY open ClAudit issue gets rechecked once a day at its own
+    pseudo-random minute (hash of the issue number), never more than 24h between checks. Each pass
+    covers the issues whose scheduled minute falls in (window_start, window_end] — callers pass the
+    previous successful sweep's start time, so throttled/missed runs are caught up, not skipped.
+    A window longer than 24h simply checks everything. Only bot auto-close attempts are answered
+    (via _defend_issue); legit human activity is never defended against. Returns count defended."""
+    me = gh_login()
+    window_end = window_end or time.time()
+    issues = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
+                       "--limit", str(limit), "--json", "number"])
+    if issues is None:
+        print("daily_recheck: cannot list open issues", file=sys.stderr)
+        return 0
+    s_min, e_min = int(window_start // 60), int(window_end // 60)
+    due = [it["number"] for it in issues
+           if (e_min - _issue_check_minute(it["number"])) // 1440
+           > (s_min - _issue_check_minute(it["number"])) // 1440]
+    done = 0
+    for num in sorted(due):
+        r = _defend_issue(repo, num, me, state, compose=compose)
+        if r == "defended":
+            done += 1
+            if on_done:
+                on_done(num, True)
+            time.sleep(delay)
+    print(f"daily_recheck: {len(due)} of {len(issues)} open issues due this window, "
+          f"answered {done}.", file=sys.stderr)
     return done
 
 
@@ -1447,7 +1499,7 @@ def undefended_flags(repo, since_days=4, limit=1000):
             bad.append(num)                             # couldn't verify -> treat as at-risk
             continue
         comments = data.get("comments") or []
-        dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
+        dup_comments = _bot_dup_flags(comments)
         if not dup_comments:
             continue                                    # nothing threatening auto-close
         my_defenses = [c.get("createdAt", "") for c in comments

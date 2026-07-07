@@ -416,3 +416,39 @@ def test_is_meta_reply_rejects_paste_the_comment():
     assert cs._is_meta_reply("The bot's comment appears to be missing — could you paste it?")
     assert cs._is_meta_reply("Without the bot's actual comment, I can't reference them.")
     assert not cs._is_meta_reply("Not a duplicate. #71918 is a distinct block with its own Request ID.")
+
+
+def test_bot_dup_flags_ignore_human_comments():
+    # a HUMAN saying "possible duplicate" is a legit response, never an auto-close attempt —
+    # only bot-authored flags may trigger a defense.
+    comments = [
+        {"author": {"login": "some-maintainer"}, "body": "possible duplicate of #1?", "createdAt": "A"},
+        {"author": {"login": "github-actions"}, "body": "Found 3 possible duplicate issues", "createdAt": "B"},
+        {"author": {"login": "dependabot[bot]"}, "body": "closed as a duplicate", "createdAt": "C"},
+    ]
+    flags = cs._bot_dup_flags(comments)
+    assert [c["createdAt"] for c in flags] == ["B", "C"]
+
+
+def test_issue_check_minute_stable_and_spread():
+    # static per issue (exactly-24h cadence) and inside a day
+    for n in (1, 75160, 999999):
+        m = cs._issue_check_minute(n)
+        assert m == cs._issue_check_minute(n) and 0 <= m < 1440
+
+
+def test_daily_recheck_window_selection(monkeypatch):
+    # an issue is due exactly when its scheduled minute falls in (start, end]; a >24h window
+    # selects everything (catch-up after throttled runs)
+    nums = [11, 22, 33]
+    monkeypatch.setattr(cs, "_gh_json", lambda a: [{"number": n} for n in nums])
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    checked = []
+    monkeypatch.setattr(cs, "_defend_issue",
+                        lambda repo, num, me, state, compose=False: checked.append(num) or "ok")
+    m = cs._issue_check_minute(nums[0]) * 60        # schedule epoch second of issue 11 (day 0)
+    cs.daily_recheck("o/r", {}, window_start=m - 120, window_end=m + 60)
+    assert checked == [nums[0]]                     # only the issue whose minute is in-window
+    checked.clear()
+    cs.daily_recheck("o/r", {}, window_start=0, window_end=25 * 3600)
+    assert checked == sorted(nums)                  # >24h window -> full sweep

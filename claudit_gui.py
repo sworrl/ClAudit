@@ -2407,8 +2407,8 @@ class Main(QtWidgets.QMainWindow):
         mv = QtWidgets.QVBoxLayout(mbox)
         mform = QtWidgets.QFormLayout()
         self.cmb_model = QtWidgets.QComboBox()
-        self._model_opts = [("Haiku 4.5 — cheapest", "claude-haiku-4-5-20251001"),
-                            ("Sonnet 5 — quality/cost balance (recommended)", "claude-sonnet-5"),
+        self._model_opts = [("Haiku 4.5 — fast + cheapest (recommended)", "claude-haiku-4-5-20251001"),
+                            ("Sonnet 5 — quality/cost balance", "claude-sonnet-5"),
                             ("Opus 4.8 — high", "claude-opus-4-8"),
                             ("Fable 5 — top tier, priciest", "claude-fable-5"),
                             ("Session default", "")]
@@ -2416,7 +2416,7 @@ class Main(QtWidgets.QMainWindow):
             self.cmb_model.addItem(label)
         cur = claudit.LLM_MODEL
         self.cmb_model.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._model_opts)
-                                             if v == cur), 1))
+                                             if v == cur), 0))
         self.cmb_model.currentIndexChanged.connect(
             lambda i: self._apply_setting("llm_model", self._model_opts[i][1]))
         mform.addRow("Compose/scrub/gate model:", self.cmb_model)
