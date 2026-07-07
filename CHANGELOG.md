@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.105] — 2026-07-07
+- **Fix: dup-defense missed unlabeled flags.** The dup-bot now posts its "possible duplicate" comment without applying the `duplicate` label, so the label-only listing in `defend_all` / `reopen_dupe_closes` silently skipped those issues and they auto-closed undefended. Both sweeps now union the label listing with a comment-text search (`possible duplicate issues in:comments`), so every flagged issue is answered regardless of labeling.
+
 ## [2.1.0] (2.0.1 – 2.0.32) — 2026-06-25
 Big feature batch (patch versions auto-bumped per commit; summarized here).
 

@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.104"
+__version__ = "2.0.105"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1354,6 +1354,24 @@ def _is_my_defense(body):
             or ("request id" in b and any(w in b for w in ("separate", "distinct", "individual"))))
 
 
+def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
+    """Numbers of my issues the dup-bot has touched: the UNION of the `duplicate` label listing and
+    a comment-text search — since 2026-07 the bot often posts its flag comment WITHOUT applying the
+    label, so a label-only listing silently skips those issues and they auto-close undefended.
+    Returns None only if BOTH listings fail."""
+    labeled = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", state,
+                        "--label", "duplicate",
+                        *(["--search", f"updated:>={cutoff}"] if cutoff else []),
+                        "--limit", str(limit), "--json", "number"])
+    searched = _gh_json(["search", "issues", "possible duplicate issues in:comments",
+                         "--repo", repo, "--author", "@me", "--state", state,
+                         *(["--updated", f">={cutoff}"] if cutoff else []),
+                         "--limit", str(min(limit, 1000)), "--json", "number"])
+    if labeled is None and searched is None:
+        return None
+    return sorted({it["number"] for it in (labeled or []) + (searched or [])})
+
+
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
     """Dedup-defender that answers RE-FLAGS. The dup-bot re-posts a 'possible duplicate' comment each
     time it re-evaluates; ClAudit responds (👎 + a contextual 'not a duplicate' note naming the cited
@@ -1364,15 +1382,12 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
     deduped = state.setdefault("__deduped__", {})
     me = gh_login()
     cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
-    flagged = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-                        "--label", "duplicate", "--search", f"updated:>={cutoff}",
-                        "--limit", str(limit or 200), "--json", "number"])
+    flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit or 200)
     if flagged is None:
         print("defend_all: cannot list flagged issues", file=sys.stderr)
         return 0
     done = 0
-    for it in flagged:
-        num = it["number"]
+    for num in flagged:
         data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
         comments = data.get("comments") or []
         my_defenses = [c.get("createdAt", "") for c in comments
@@ -1439,11 +1454,9 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
     at most once (state['__reopened__']) so it can't loop forever if the bot re-closes. by_bot_only
     skips human-maintainer closes (recorded for review, not auto-fought). Returns count reopened."""
     reopened = state.setdefault("__reopened__", {})
-    issues = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "closed",
-                       "--label", "duplicate", "--limit", str(limit or 500), "--json", "number"]) or []
+    issues = _dup_flagged_numbers(repo, "closed", limit=limit or 500) or []
     done = 0
-    for it in issues:
-        num = it["number"]
+    for num in issues:
         if str(num) in reopened:
             continue
         ci = closure_info(repo, num)
