@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.109] — 2026-07-07
+- **Fix: tray pill stuck at 600.** The open-alerts badge counted open issues in the fetched list, which is capped by GitHub search (was `--limit 600`) — with 800+ open issues the pill froze at the cap. The count now comes from the search API's exact `total_count` (open ClAudit-filed minus harness), with the sample count as fallback; the community list cap is raised to 1000.
+
 ## [2.0.107] — 2026-07-07
 **Daily per-issue recheck + bot-only targeting + Haiku default.**
 - **Every open issue rechecked daily** — `daily_recheck` verifies each open ClAudit issue once a day at its own pseudo-random minute (hash of the issue number; static, so consecutive checks are exactly ≤24h apart). The cloud sweep windows by the previous successful run, so throttled/missed cron fires are caught up, never skipped.

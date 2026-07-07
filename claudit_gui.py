@@ -1371,7 +1371,7 @@ class CommunityFetcher(QtCore.QThread):
     """Fetch EVERY ClAudit-filed issue on the repo (all authors, open + closed) + your login.
     Keyed on the 'Filed automatically by ClAudit' body marker — so it shows ALL kinds (cyber, aup,
     harness) and bespoke titles, not just ones with 'false positive' in the title."""
-    fetched = QtCore.pyqtSignal(list, str)
+    fetched = QtCore.pyqtSignal(list, str, int)
 
     def __init__(self, repo):
         super().__init__()
@@ -1386,14 +1386,28 @@ class CommunityFetcher(QtCore.QThread):
             pass
         try:
             out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "600",
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "1000",
                  "--search", '"Filed automatically by ClAudit"',
                  "--json", "number,state,stateReason,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
-        self.fetched.emit(items, me)
+        # the list above is a capped SAMPLE (search returns at most 1000); the tray pill needs the
+        # exact open count, which only search total_count gives. -1 = unknown (fall back to sample).
+        nopen = -1
+        try:
+            def _count(q):
+                return int(subprocess.run(
+                    ["gh", "api", "-X", "GET", "search/issues", "-f", f"q={q}",
+                     "-f", "per_page=1", "--jq", ".total_count"],
+                    capture_output=True, text=True, check=True).stdout.strip())
+            total = _count(f'repo:{self.repo} is:issue is:open "Filed automatically by ClAudit"')
+            harness = _count(f'repo:{self.repo} is:issue is:open "[bug][harness]" in:title')
+            nopen = max(0, total - harness)
+        except Exception as e:
+            print("open-count fetch failed:", e, file=sys.stderr)
+        self.fetched.emit(items, me, nopen)
 
 
 class NotifyWatcher(QtCore.QThread):
@@ -2950,6 +2964,9 @@ class Main(QtWidgets.QMainWindow):
         self.empty.setVisible(len(rows) == 0)
         real = [it for it in self.community if "[harness]" not in (it.get("title", "") or "").lower()]
         nopen = sum(1 for it in real if it.get("state", "").lower() == "open")
+        if getattr(self, "total_open", -1) >= 0:
+            nopen = self.total_open       # exact search count — the fetched list is capped at 1000,
+                                          # which froze the tray pill at the cap (was stuck at 600)
         mine = sum(1 for it in real if (it.get("author") or {}).get("login") == self.me)
         self.status.setText(
             f"{len(real)} real false positives · {nopen} open · showing {len(rows)} &nbsp;|&nbsp; "
@@ -3045,8 +3062,9 @@ class Main(QtWidgets.QMainWindow):
             p.end()
         self.tray.setIcon(QtGui.QIcon(pm))
 
-    def _on_community(self, items, me):
+    def _on_community(self, items, me, nopen_total=-1):
         self.community, self.me = items, me
+        self.total_open = nopen_total
         self._repopulate()
 
     def _show_detail(self, idx):
