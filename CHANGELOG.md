@@ -3,6 +3,14 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.106] — 2026-07-07
+**Bulletproof defense mode.** No single point of failure between a dup-bot flag and its answer:
+- **Third, wording-independent listing** — flagged issues are found via the `duplicate` label ∪ the bot's comment text ∪ `commenter:app/github-actions`, so a bot rewording (or another label change) can't hide flags again.
+- **Verification gate in the cloud sweep** — after each pass the workflow re-scans read-only (`undefended_flags`) and **fails the run** if any flag in the auto-close window is still unanswered, so GitHub emails on breakage instead of issues silently closing. An expired `CLAUDIT_PAT` also fails the run instead of no-opping.
+- **Never guess on API failure** — a failed `gh issue view` now skips the issue for retry next pass (it previously fell through as "label-only" and could double-post); the verifier counts unverifiable issues as at-risk, not safe.
+- **Real limits** — sweep caps raised to 1000 (the label-only cap of 100/200 was below the live issue counts); `gh` call timeout 30s → 90s for large searches.
+- Label-only defense now requires the `duplicate` label to actually be present (the commenter listing surfaces issues with unrelated bot comments; those are skipped, not "defended").
+
 ## [2.0.105] — 2026-07-07
 - **Fix: dup-defense missed unlabeled flags.** The dup-bot now posts its "possible duplicate" comment without applying the `duplicate` label, so the label-only listing in `defend_all` / `reopen_dupe_closes` silently skipped those issues and they auto-closed undefended. Both sweeps now union the label listing with a comment-text search (`possible duplicate issues in:comments`), so every flagged issue is answered regardless of labeling.
 

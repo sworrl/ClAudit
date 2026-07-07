@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.105"
+__version__ = "2.0.106"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -620,7 +620,7 @@ POLL_OPTS = [("plus", "+1", "👍", "Anthropic will fix it"),
 def _gh_json(args):
     """Run `gh <args>` and parse stdout as JSON; return None on any failure."""
     try:
-        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=90)
         return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
     except Exception:
         return None
@@ -1358,7 +1358,9 @@ def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
     """Numbers of my issues the dup-bot has touched: the UNION of the `duplicate` label listing and
     a comment-text search — since 2026-07 the bot often posts its flag comment WITHOUT applying the
     label, so a label-only listing silently skips those issues and they auto-close undefended.
-    Returns None only if BOTH listings fail."""
+    Returns None only if ALL listings fail. Three independent listings so no single point of
+    failure: the label, the bot's current comment wording, and — wording-independent — any of my
+    issues the actions bot has commented on at all (the per-issue logic filters non-dup comments)."""
     labeled = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", state,
                         "--label", "duplicate",
                         *(["--search", f"updated:>={cutoff}"] if cutoff else []),
@@ -1367,9 +1369,13 @@ def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
                          "--repo", repo, "--author", "@me", "--state", state,
                          *(["--updated", f">={cutoff}"] if cutoff else []),
                          "--limit", str(min(limit, 1000)), "--json", "number"])
-    if labeled is None and searched is None:
+    by_bot = _gh_json(["search", "issues", "commenter:app/github-actions",
+                       "--repo", repo, "--author", "@me", "--state", state,
+                       *(["--updated", f">={cutoff}"] if cutoff else []),
+                       "--limit", str(min(limit, 1000)), "--json", "number"])
+    if labeled is None and searched is None and by_bot is None:
         return None
-    return sorted({it["number"] for it in (labeled or []) + (searched or [])})
+    return sorted({it["number"] for it in (labeled or []) + (searched or []) + (by_bot or [])})
 
 
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
@@ -1388,15 +1394,19 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
         return 0
     done = 0
     for num in flagged:
-        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
+        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments,labels"])
+        if data is None:                                # transient API failure: never guess from an
+            print(f"  ! #{num}: issue view failed — skipping, will retry next pass", file=sys.stderr)
+            continue                                    # empty view (that double-posted before)
         comments = data.get("comments") or []
         my_defenses = [c.get("createdAt", "") for c in comments
                        if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
         my_last = max(my_defenses) if my_defenses else ""
         dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
-        if not dup_comments:                            # label-only flag: post the note once
-            if my_last:
-                continue                                # already defended (idempotent without state)
+        if not dup_comments:                            # no flag comment: only defend a real
+            labels = {(l.get("name") or "").lower() for l in (data.get("labels") or [])}
+            if "duplicate" not in labels or my_last:    # label-only flag, and only once — the bot
+                continue                                # comments here can be unrelated (counter runs)
             if str(num) not in deduped and _push_not_dup(repo, num, None, "", DEFEND_REASON,
                                                          data.get("body", ""), compose=compose):
                 deduped[str(num)] = "not-duplicate"
@@ -1420,6 +1430,32 @@ def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since
             time.sleep(delay)
     print(f"defend_all: {len(flagged)} active flagged, answered {done} this pass.", file=sys.stderr)
     return done
+
+
+def undefended_flags(repo, since_days=4, limit=1000):
+    """VERIFICATION pass (read-only): open issues whose latest dup-bot flag is still unanswered —
+    no ClAudit defense comment newer than it. The cloud workflow fails LOUDLY when this is
+    non-empty after a defend pass, so a broken sweep can never silently let issues auto-close.
+    Issues whose view fails are INCLUDED (unverifiable is not the same as safe)."""
+    me = gh_login()
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+    flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit) or []
+    bad = []
+    for num in flagged:
+        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "comments"])
+        if data is None:
+            bad.append(num)                             # couldn't verify -> treat as at-risk
+            continue
+        comments = data.get("comments") or []
+        dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
+        if not dup_comments:
+            continue                                    # nothing threatening auto-close
+        my_defenses = [c.get("createdAt", "") for c in comments
+                       if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
+        if not my_defenses or max(my_defenses) < dup_comments[-1].get("createdAt", ""):
+            bad.append(num)
+    print(f"undefended_flags: {len(bad)} of {len(flagged)} flagged remain unanswered.", file=sys.stderr)
+    return bad
 
 
 # ---------------- closure monitoring + reopen dup-closes ----------------

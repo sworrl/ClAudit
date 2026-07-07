@@ -35,11 +35,21 @@ jobs:
             echo "CLAUDIT_PAT secret not set — skipping (desktop-only defense)."
             exit 0
           fi
+          # An expired/revoked PAT must FAIL the run (GitHub emails on scheduled-workflow failure),
+          # not quietly answer zero flags while issues auto-close.
+          gh api user --jq .login || { echo "::error::CLAUDIT_PAT is invalid or expired"; exit 1; }
           python3 - <<'EOF'
+          import sys
           import claudit_scan as cs
           # stateless on the runner: defend_all is idempotent via comment-timestamp comparison,
           # and the reopen sweep's protest path checks for an existing defense comment first.
-          n = cs.defend_all("anthropics/claude-code", {}, delay=3, compose=False, since_days=4)
-          r = cs.reopen_dupe_closes("anthropics/claude-code", {}, delay=3, limit=100)
+          n = cs.defend_all("anthropics/claude-code", {}, delay=3, compose=False, since_days=4,
+                            limit=1000)
+          r = cs.reopen_dupe_closes("anthropics/claude-code", {}, delay=3, limit=1000)
           print(f"cloud-defend: answered {n} flags, reopened/protested {r} closes")
+          # verification: the run only succeeds if NOTHING in the auto-close window is unanswered.
+          bad = cs.undefended_flags("anthropics/claude-code")
+          if bad:
+              print(f"::error::{len(bad)} flags still unanswered after the pass: {bad}")
+              sys.exit(1)
           EOF
