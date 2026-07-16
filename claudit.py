@@ -19,19 +19,33 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 DEFAULT_REPO = "anthropics/claude-code"
 LLM_SCRUB = False    # opt-in: use the `claude` CLI to catch PII regex can't (names/orgs/hosts)
 BURN_TOKENS = False  # opt-in: use the `claude` CLI to write bespoke titles/bodies/comments
+# Defaults for ClAudit's own LLM calls (compose/scrub/gate/verdict are simple, well-scoped tasks).
+# Haiku 4.5 at medium effort handles them fine, FAST, at a fraction of Sonnet's cost — verified in
+# real use 2026-07. Override via config llm_model / llm_effort; set LLM_MODEL = "" to inherit the
+# CLI session default.
+LLM_MODEL = "claude-haiku-4-5-20251001"
+LLM_EFFORT = "medium"
 
 # ---- cumulative token meter: every `claude` CLI call's usage is tallied here, persisted forever ----
 TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
 _TOK_LOCK = threading.Lock()
 _TOK_KEYS = ("input", "output", "cache_read", "cache_creation", "calls")
+_WEEK = 7 * 86400
+
+# Estimated weekly API-equivalent spend each subscription plan covers before its rolling weekly cap.
+# Anthropic does NOT publish dollar limits (the caps are usage-window based), so these are deliberate
+# ESTIMATES anchored to the plans' own 5x / 20x branding relative to Pro — tune to taste.
+PLAN_WEEKLY_USD = {"Pro": 30.0, "Max 5x": 150.0, "Max 20x": 600.0}
 
 
 def load_tokens():
-    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost."""
+    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost.
+    Also carries `history` (recent [epoch, cost] pairs) for the rolling weekly estimate."""
     try:
         with open(TOKENS_FILE, encoding="utf-8") as fh:
             d = json.load(fh)
@@ -40,8 +54,22 @@ def load_tokens():
     for k in _TOK_KEYS:
         d[k] = int(d.get(k, 0) or 0)
     d["cost"] = float(d.get("cost", 0.0) or 0.0)
+    d.setdefault("history", [])
     d["total"] = d["input"] + d["output"] + d["cache_read"] + d["cache_creation"]
     return d
+
+
+def weekly_cost(d=None):
+    """USD spent in the trailing 7 days (rolling), from the per-call history."""
+    d = d or load_tokens()
+    now = time.time()
+    return sum(float(c) for t, c in d.get("history", []) if now - float(t) <= _WEEK)
+
+
+def plan_estimates(d=None):
+    """(weekly_usd, {plan: percent-of-weekly-cap}) — a rough read on how hard you're leaning on a plan."""
+    wk = weekly_cost(d)
+    return wk, {name: (wk / cap * 100.0 if cap else 0.0) for name, cap in PLAN_WEEKLY_USD.items()}
 
 
 def _record_tokens(usage, cost):
@@ -55,6 +83,11 @@ def _record_tokens(usage, cost):
         d["cache_creation"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
         d["cost"] += float(cost or 0.0)
         d["calls"] += 1
+        now = time.time()
+        hist = d.get("history", [])
+        if cost:
+            hist.append([int(now), round(float(cost), 6)])
+        d["history"] = [e for e in hist if e and now - float(e[0]) <= _WEEK]   # prune to the rolling week
         d.pop("total", None)
         try:
             os.makedirs(os.path.dirname(TOKENS_FILE), exist_ok=True)
@@ -69,10 +102,15 @@ def _record_tokens(usage, cost):
 def _claude(prompt, timeout):
     """Run the `claude` CLI in JSON mode, tally token usage into the lifetime meter, and return the
     model's text. Falls back gracefully (returns '' on error; raw stdout on an older non-JSON CLI)."""
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    if LLM_MODEL:
+        cmd += ["--model", LLM_MODEL]
+    if LLM_EFFORT:
+        cmd += ["--effort", LLM_EFFORT]
     try:
-        raw = subprocess.run(["claude", "-p", prompt, "--output-format", "json"],
-                             capture_output=True, text=True, timeout=timeout).stdout.strip()
-    except Exception:
+        raw = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except Exception as e:                      # degrade gracefully, but never silently
+        print(f"claudit: claude CLI call failed: {type(e).__name__}: {e}", file=sys.stderr)
         return ""
     if not raw:
         return ""
@@ -229,12 +267,22 @@ def llm_is_false_positive(kind, block_text, context=""):
         return True, ""
 
 
+# Frustration expletives (often aimed at the assistant) sometimes TRIGGER the safety block itself.
+# They must never appear verbatim in a public bug report or a GUI snippet — mask to first letter.
+PROFANITY = re.compile(
+    r"\b(f+u+c+k\w*|s+h+i+t\w*|bullshit\w*|c+u+n+t\w*|b+i+t+c+h\w*|a+s+s+h+o+l+e\w*|"
+    r"motherfuck\w*|goddamn\w*|dickhead\w*|wtf|stfu)\b", re.IGNORECASE)
+
+
 def scrub(text: str):
     counts = {}
     for label, pattern, repl in SCRUBBERS:
         text, n = pattern.subn(repl, text)
         if n:
             counts[label] = counts.get(label, 0) + n
+    text, n = PROFANITY.subn(lambda m: m.group(0)[0] + "•••", text)
+    if n:
+        counts["profanity"] = counts.get("profanity", 0) + n
     # Mask Request IDs before the denylist pass: a short denylisted term ('NV') can sit between
     # digits inside a req ID (req_...JY8NV6dr), and _deny_regex's letter-only boundaries would
     # match it and corrupt the very ID the report exists to reference. Restore them afterward.

@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.94-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.110-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -44,13 +44,13 @@ pattern is to ignore. **That's** how this gets fixed.
 → It's free, GPL-3.0, runs on Linux/macOS/Windows, and takes about two minutes to set up. Keep reading.
 
 <!-- COUNTER:START -->
-### 📊 450 open false-positive blocks reported by ClAudit right now
+### 📊 800 open false-positive blocks reported by ClAudit right now
 
-Real cyber/aup API false positives across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **0 closed by Anthropic** · _updated 2026-06-30 10:40 UTC_
+Real cyber/aup API false positives across **all** ClAudit users, live from [`anthropics/claude-code`](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). **0 closed by Anthropic** · _updated 2026-07-16 18:33 UTC_
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
-<sub>Three lines: open cyber/aup false positives (cyan), closed by Anthropic (green), and the 261 auto-mode-classifier (harness) reports ClAudit withdrew (muted), tracked separately and not counted as closed tickets.</sub>
+<sub>Three lines: open cyber/aup false positives (cyan), closed by Anthropic (green), and the 0 auto-mode-classifier (harness) reports ClAudit withdrew (muted), tracked separately and not counted as closed tickets.</sub>
 <!-- COUNTER:END -->
 
 ---
@@ -60,12 +60,12 @@ Real cyber/aup API false positives across **all** ClAudit users, live from [`ant
 Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
-**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _1 vote(s), updated 2026-06-30 10:40 UTC_
+**Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _4 vote(s), updated 2026-07-16 18:33 UTC_
 
 | | | |
 |---|---:|---|
 | 👍 Anthropic will fix it | `░░░░░░░░░░` | **0%** (0) |
-| 👎 Claude Code stays broken | `██████████` | **100%** (1) |
+| 👎 Claude Code stays broken | `██████████` | **100%** (4) |
 | 👀 Too soon to tell | `░░░░░░░░░░` | **0%** (0) |
 
 🗳️ **[Cast your vote →](https://github.com/sworrl/ClAudit/issues/6)**. React 👍 / 👎 / 👀 on the pinned issue (or vote in one click from the ClAudit app).
@@ -75,7 +75,7 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
 
-<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a countdown. The header carries the 🔥 lifetime token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on.</em>
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. Leading [Bug][cyber]/[aup] tags render as coloured pill chips, so the kind mix is scannable at a glance. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a live circular countdown that fills as the dwell elapses. The header carries a 30-day sparkline and the 🔥 token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on, and fills with your weekly plan usage when quiet.</em>
 
 <br><br>
 
@@ -312,13 +312,21 @@ automatically by ClAudit" marker, so it shows all kinds, not just ones with "fal
 title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
-  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today.
+  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today —
+  plus a **30-day sparkline** of reports-over-time and the **🔥 token meter**: rolling 7-day LLM
+  spend as an estimated share of each Anthropic plan's weekly cap (see
+  [Burn-tokens mode](#burn-tokens-mode)). In quiet mode the meter pill **fills left-to-right** with
+  your weekly plan usage (green → amber → red); in burn mode it pulses an alarming red⇄orange.
+- **Live tray badge:** the tray icon carries the current open false-positive count, updated as
+  reports file and close — the tally is visible without opening the window.
 - **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
   not-defended**, and a search that matches the title or a `#number`. The list shows only the **real
   cyber/AUP false positives** — the withdrawn auto-mode-classifier (harness) reports are never listed
   (they stay a separate "harness withdrawn (false)" tally in the stats bar).
 - **Ownership colors:** your issues in purple, other ClAudit users' in teal; newest first with exact
   local timestamps.
+- **Kind chips:** the leading `[Bug][cyber]` / `[aup]` tags paint as coloured pill chips (blue cyber,
+  amber aup), so the kind mix reads at a glance without parsing bracket soup.
 - **Double-click any row** for a **detail panel**: status and close reason, kind, Request IDs, and a
   full **timeline** (filed, dup-bot flagged, defended, closed by whom and why, reopened) built from
   the live GitHub timeline, plus an **Open on GitHub** button and a **Defend** button for any issue
@@ -332,7 +340,8 @@ title.
   cyber/AUP blocks are held for a dwell (default 5 min) so repeats accrue as their own incidents,
   then the LLM gate judges each is a genuine false positive, burn-tokens composes it, and it files as
   one **bespoke issue per Request ID**, cross-linked to its siblings from the same session. Held items
-  show as **⏳ DWELL** rows with a "files in ~N min" countdown and their chain. Toggle it (and the
+  show as **⏳ DWELL** rows with a **circular countdown ring** that fills as the dwell elapses, a
+  "files in ~N min" label, and their chain. Toggle it (and the
   dwell length) live in the **Settings tab** or the tray; off by default (the FOSS default stays
   review-before-send).
 - **Activity tab:** a **pseudo-3D chrono-line** of the **real cyber/AUP false positives** (the
@@ -356,9 +365,19 @@ title.
   comments and @mentions on the ClAudit repos, so you see community engagement (a contributor asking
   to help, a maintainer replying) as it happens. It logs each to the Activity feed.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- Tray toggles, all saved: **Auto-post**, **Dwell auto-file** (LLM-judged 15-min batch, one linked
-  issue per Request ID), **Backfill**, **Auto-defend dup-bot flags** (on by default), **Auto-reopen
-  dup-bot closes** (off by default), and **Claude PII scrubbing**.
+- **Settings tab — everything live, no save button.** Every configurable knob as an animated toggle,
+  grouped: **Filing & detection** (auto-post, dwell auto-file, backfill, harness reports),
+  **Defense** (auto-defend, auto-reopen, community 👍 amplify), **Reliability** (the watchdog),
+  **LLM & PII** (Claude scrubbing, burn-tokens, honesty gate), and **Timing** sliders (dwell minutes,
+  watch interval). Each control applies to the running watcher the moment you flip it, persists to
+  config, and stays mirrored with the tray menu. Dependencies cascade (dwell ⇒ PII scrubbing on).
+- **Watchdog (opt-in keep-alive).** A detached supervisor process watches the GUI and relaunches it
+  automatically if it ever crashes — while a normal Quit still quits (an intent flag tells the
+  watchdog to stand down). It tolerates the brief gap during a self-update restart, never stacks a
+  second supervisor, and stops within seconds of toggling it off.
+- Tray toggles mirror the Settings tab: **Auto-post**, **Dwell auto-file**, **Backfill**,
+  **Auto-defend dup-bot flags** (on by default), **Auto-reopen dup-bot closes** (off by default),
+  and **Claude PII scrubbing** — flip either surface and both stay in sync.
 
 The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
 the checkout is clean and behind, then relaunches on the new code. It only ever fast-forwards, so a
@@ -450,11 +469,32 @@ It's slower and uses tokens (hence the name); it's the recommended mode for anyo
 either report quality or PII. Set it once in your config and forget it.
 
 **Token meter.** Every `claude` call ClAudit makes — compose, scrub, gate, dedup verdict — is run in
-JSON mode and its usage tallied into a lifetime counter (`~/.claude/claudit/tokens.json`), accumulated
-across every session. The window header shows a **🔥 `<total>` tok · `$<cost>`** meter; hover for the
-input / output / cache / call breakdown. While burn-tokens mode is **on** it pulses in an alarming
-red⇄orange — so you always know when, and how hard, ClAudit is spending. With burn-tokens off it stays
-muted grey but keeps counting.
+JSON mode and its usage (input / output / cache tokens + USD cost) tallied into
+`~/.claude/claudit/tokens.json`, accumulated across every session with a rolling 7-day cost history.
+
+The window header shows a **🔥 `$<spend>`/wk · Pro N% · M5x N% · M20x N%** meter: your **rolling
+7-day** spend converted to an estimated share of each subscription plan's weekly cap (Pro, Max 5x,
+Max 20x). Hover it for the full per-plan breakdown plus the lifetime tokens / calls / cost:
+
+```
+Rolling 7-day spend: $4.20  →  estimated share of each plan's weekly cap
+  Pro     14.0%   (est. cap $30/wk)
+  Max 5x   2.8%   (est. cap $150/wk)
+  Max 20x  0.7%   (est. cap $600/wk)
+  (estimates — Anthropic caps are usage-window based, not $-metered)
+
+Lifetime across every session:
+  5.60M tokens  ·  152 claude calls  ·  $21.52
+```
+
+While burn-tokens mode is **on** the meter pulses in an alarming red⇄orange — so you always know how
+hard ClAudit is leaning on your plan; with burn-tokens off it stays muted grey but keeps counting.
+
+> The plan percentages are **estimates**. Anthropic's subscription limits are usage-window based, not
+> dollar-metered, so ClAudit compares your 7-day API-equivalent spend against per-plan weekly budgets
+> defined in `PLAN_WEEKLY_USD` (in `claudit.py`): Pro **$30/wk**, Max 5x **$150/wk**, Max 20x
+> **$600/wk**, anchored to the plans' own 5×/20× branding relative to Pro. Edit those constants to
+> match your own experience.
 
 ## Dedup guard
 
@@ -488,7 +528,7 @@ State and config live in `~/.claude/claudit/`:
 | File | Purpose |
 |------|---------|
 | `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `amplify`, `report_harness`, `interval`, `watchdog` |
-| `tokens.json` | Lifetime token meter: cumulative input/output/cache tokens, call count, and USD cost across every session |
+| `tokens.json` | Token meter: cumulative input/output/cache tokens, call count, and USD cost across every session, plus a rolling 7-day cost history for the per-plan weekly estimate |
 | `scrub.txt` | Your local PII denylist (never committed) |
 | `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
@@ -507,6 +547,10 @@ are never force-updated, so your own work is safe. It **relaunches only when the
 (a `.py` file or a dependency manifest). Pulls that just refresh the counter/poll/trend/README update
 the checkout silently and keep running, so the periodic stats-refresh commits don't bounce the app. A
 manual `git pull` with code changes is picked up the same way, so it's never running stale code.
+
+If the **watchdog** (Settings → Reliability) is on, it rides through self-update restarts — the
+supervisor tolerates the brief singleton-lock gap while the new version comes up, and only steps in
+when the GUI actually dies.
 
 ## Autostart
 
@@ -537,6 +581,14 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 - **Backfill looks frozen:** check the progress bar's pace — it backs off when GitHub rate-limits.
 - **PII slipped through:** add the term to `~/.claude/claudit/scrub.txt` and turn on burn-tokens; you
   can re-scrub already-posted issues with `gh issue edit`.
+- **"Another ClAudit watcher is already running":** the GUI and the headless `claudit_scan.py --watch`
+  share one singleton lock — run one or the other, not both (the GUI has its own built-in watcher).
+  If it appears with nothing running, a crash left a stale `~/.claude/claudit/watcher.lock`; it's
+  cleared automatically when the dead PID is detected, or delete it by hand.
+- **Running but no window:** click the tray icon once (it raises + focuses the window, including on
+  Wayland/GNOME) or use the tray menu's **Show window**.
+- **Worried about token spend:** watch the header's 🔥 meter — at idle ClAudit makes **zero** `claude`
+  calls; tokens are only spent filing, judging, or defending.
 
 ## Project layout
 

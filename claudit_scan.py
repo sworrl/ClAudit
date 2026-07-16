@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.95"
+__version__ = "2.0.110"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -108,6 +108,11 @@ def classify(text):
             or "security topic classifier" in t
             or "classified as a cybersecurity" in t):
         return "cyber"
+    # aup = anything the safeguards flagged against the Usage Policy. Anchor on the legal/aup LINK
+    # (present in every wording so far) plus a generic "safeguards flagged" fallback, because the
+    # prose keeps being reworded (2026-07: "Fable 5's safeguards flagged this message (…legal/aup).
+    # This sometimes happens with safe, normal conversations…" matched NOTHING and silently dropped
+    # to 'other' — reporting stopped until this was caught).
     if ("violate our usage policy" in t or "unable to respond to this request" in t
             or "against our usage policy" in t or "usage policy violation" in t
             or "content policy violation" in t
@@ -122,6 +127,13 @@ def classify(text):
     if "hit your limit" in t or "rate limit" in t or "429" in t or "· resets" in t:
         return "limit"
     return "other"
+
+
+def flag_model(text):
+    """Which model's safeguards flagged the block, parsed from the block message ('Fable 5's
+    safeguards flagged…'). '' when the wording doesn't name one."""
+    m = re.search(r"([A-Z][A-Za-z0-9 .()]{1,30}?)['’]s safeguards", text or "")
+    return m.group(1).strip() if m else ""
 
 
 def human_text(entry):
@@ -336,7 +348,9 @@ def _pid_alive(pid):
 
 def _release_singleton():
     try:
-        if os.path.exists(LOCK_FILE) and open(LOCK_FILE).read().strip() == str(os.getpid()):
+        with open(LOCK_FILE) as fh:
+            mine = fh.read().strip() == str(os.getpid())
+        if mine:
             os.remove(LOCK_FILE)
     except OSError:
         pass
@@ -348,7 +362,8 @@ def acquire_singleton():
     os.makedirs(STATE_DIR, exist_ok=True)
     if os.path.exists(LOCK_FILE):
         try:
-            other = int((open(LOCK_FILE).read().strip() or "0"))
+            with open(LOCK_FILE) as fh:
+                other = int(fh.read().strip() or "0")
         except (OSError, ValueError):
             other = 0
         if other and other != os.getpid() and _pid_alive(other):
@@ -460,7 +475,12 @@ def build_issue(f, note, crossref=""):
         title = f"[Bug][harness] ClAudit: auto-mode classifier denied — {reason}"
     else:
         lead = reqs[0]["req"] if reqs else f"#{f['sig']}"
-        title = f"[Bug][{f['kind']}] ClAudit false-positive in {proj} — {lead}"
+        # Include a scrubbed fragment of the blocked prompt: near-identical fallback titles
+        # ("ClAudit false-positive in X — req_…") are exactly what the dup-bot matches on, and a
+        # bot-close is now PERMANENT (authors can't reopen). Distinct titles = fewer false matches.
+        frag = scrub(re.sub(r"\s+", " ", f.get("prompt", "") or ""))[0].strip()[:60]
+        what = f" while: “{frag}…”" if frag else f" in {proj}"
+        title = f"[Bug][{f['kind']}] ClAudit false-positive{what} ({lead})"
     req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
     note_clean, _ = scrub(note or DEFAULT_NOTE)
     # Full PII scrub on the block message (was token-only — leaked IPs/hosts/paths).
@@ -478,22 +498,32 @@ def build_issue(f, note, crossref=""):
     neutral = False                        # when the LLM refuses, file FACTS ONLY (type + Request IDs)
     if claudit.BURN_TOKENS:   # spend tokens to craft a bespoke, specific title + explanation
         ctx = f"work domain: {categorize(f)}\nblock message: {block_clean}\nconversation leadup:\n{leadup_md}"
-        bt = claudit.llm_compose(
-            f"Write ONE specific GitHub issue title (max ~95 chars) that starts EXACTLY with "
-            f"'[Bug][{f['kind']}]' and describes the concrete legitimate work this Claude Code safety "
-            f"block wrongly stopped. Output ONLY that title line — no preamble, no 'here is', no quotes, "
-            f"no explanation.", ctx)
-        if bt:
-            # the model sometimes adds a chatty preamble line — take the line that's actually a title
-            lines = [ln.strip().strip('"').strip("`") for ln in bt.splitlines() if ln.strip()]
-            cand = next((ln for ln in lines if ln.lower().startswith("[bug]")), "")
-            if cand:                       # only trust a real title; else keep the deterministic one
-                cand = scrub(cand)[0][:110]
-                lead_req = reqs[0]["req"] if reqs else ""
-                title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
-        bw = claudit.llm_compose(
-            "Write a tight, factual 2-3 sentence explanation of why this Claude Code safety block is a "
-            "false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.", ctx)
+        # ONE call composes both title and explanation (each CLI invocation carries a fixed
+        # token/system-prompt overhead, so halving invocations halves the floor cost per report).
+        both = claudit.llm_compose(
+            f"Write a GitHub bug report title and explanation for a Claude Code safety block that "
+            f"wrongly stopped legitimate work.\n"
+            f"LINE 1: ONE specific title (max ~95 chars) starting EXACTLY with '[Bug][{f['kind']}]' "
+            f"describing the concrete legitimate work that was blocked.\n"
+            f"THEN a blank line, THEN a tight, factual 2-3 sentence explanation of why this block is "
+            f"a false positive on legitimate, in-scope work — suitable for a bug report to Anthropic.\n"
+            f"If the triggering message was the user venting frustration (profanity / an exclamation "
+            f"aimed at the assistant, e.g. after repeated blocks), NEVER quote or echo it — state "
+            f"neutrally that the block fired on a frustrated exclamation directed at the assistant "
+            f"mid-session, no person addressed, surrounding work legitimate; a block that halts the "
+            f"whole session over venting is still a disruptive false positive.\n"
+            f"Output ONLY the title line, a blank line, and the explanation — nothing else.", ctx)
+        bt, bw = "", ""
+        if both:
+            lines = [ln.strip().strip('"').strip("`") for ln in both.splitlines()]
+            nonempty = [ln for ln in lines if ln]
+            bt = next((ln for ln in nonempty if ln.lower().startswith("[bug]")), "")
+            after = nonempty[nonempty.index(bt) + 1:] if bt in nonempty else nonempty
+            bw = " ".join(after).strip()
+        if bt:                             # only trust a real title; else keep the deterministic one
+            cand = scrub(bt)[0][:110]
+            lead_req = reqs[0]["req"] if reqs else ""
+            title = cand if (not lead_req or lead_req in cand) else f"{cand} ({lead_req})"
         if bw and not _is_refusal(bw):     # never post the model's refusal/editorial
             why_text = scrub(bw)[0]
         elif bw and _is_refusal(bw):       # model wouldn't vouch -> assert NOTHING, file facts only
@@ -531,8 +561,10 @@ def build_issue(f, note, crossref=""):
     # puts the categorization in the body for maintainers to sort on.
     repro = ("yes — server-side via the Request ID(s) below" if reqs
              else "local auto-mode-classifier denial (no server-side Request ID)")
+    mdl = flag_model(f.get("block_text", ""))
     triage = (f"**Triage:** kind `{f['kind']}` · domain `{categorize(f)}` · "
-              f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
+              + (f"flagging model `{mdl}` · " if mdl else "")
+              + f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
     body = f"""{triage}
 
 **Type:** {FILE_KINDS[f['kind']]}  ·  **Work domain (heuristic):** `{categorize(f)}`
@@ -563,6 +595,7 @@ def log_issue(f, repo, url):
         "first_ts": min((o["ts"] for o in f["occ"] if o["ts"]), default=""),
         "projects": sorted({project_label(o["proj"]) for o in f["occ"] if o.get("proj")}),
         "chain": _chain_key(f),   # session-precise chain key (no PII: session is a local UUID)
+        "model": flag_model(f.get("block_text", "")),   # which model's safeguards flagged it
         "leadup": [[role, scrub(txt)[0]] for role, txt in (f.get("leadup") or [])],
     }
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -593,7 +626,7 @@ POLL_OPTS = [("plus", "+1", "👍", "Anthropic will fix it"),
 def _gh_json(args):
     """Run `gh <args>` and parse stdout as JSON; return None on any failure."""
     try:
-        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=90)
         return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
     except Exception:
         return None
@@ -816,6 +849,8 @@ def auto_cycle(state, repo, delay, on_event):
             on_event(action, ref, url)
             acted += 1
             time.sleep(delay)
+            if acted >= 12:   # burst cap: a huge new corpus drains over cycles, not in one flood
+                break
     return acted
 
 
@@ -908,6 +943,12 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
     ripe = [r for r, t0 in hold.items()
             if now - t0 >= dwell and r in current
             and now - fails.get(r, 0) >= FAIL_COOLDOWN][:8]   # cap bursts
+    # bound the ever-growing bookkeeping lists: old entries only matter while their session file
+    # still exists, and those age out of the scan corpus long before 5000 Request IDs accrue
+    if len(seen) > 5000:
+        seen[:] = seen[-4000:]
+    if len(skipped) > 2000:
+        skipped[:] = skipped[-1500:]
     acted, gate_cache = 0, {}
     for req in ripe:
         f = current[req]
@@ -925,8 +966,8 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
         proj = _proj_of(f)
         chain = chains.setdefault(proj, [])
         g = _single_req_finding(f, req)
-        title, body = build_issue(g, "", _dwell_crossref(chain))
-        try:
+        try:                                 # compose inside the try too — a scrub/compose crash
+            title, body = build_issue(g, "", _dwell_crossref(chain))   # must not kill the loop
             url = gh_create(repo, title, body)
         except Exception as e:
             fails[req] = now                 # back off 30 min before re-judging/re-composing this one
@@ -1271,9 +1312,8 @@ def mark_not_duplicate(state, repo, num):
     cj = subprocess.run(["gh", "issue", "view", str(num), "-R", repo, "--json", "body,comments"],
                         capture_output=True, text=True).stdout
     data = json.loads(cj or "{}")
-    flag = next((c for c in (data.get("comments") or [])
-                 if "possible duplicate" in c.get("body", "").lower()
-                 or "closed as a duplicate" in c.get("body", "").lower()), None)
+    flags = _bot_dup_flags(data.get("comments"))
+    flag = flags[-1] if flags else None
     of, flag_body, cited = "", (flag.get("body", "") if flag else ""), []
     if flag:
         cited = _cited_issues(flag_body, num)
@@ -1319,62 +1359,194 @@ def _is_my_defense(body):
             or ("request id" in b and any(w in b for w in ("separate", "distinct", "individual"))))
 
 
+def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
+    """Numbers of my issues the dup-bot has touched: the UNION of the `duplicate` label listing and
+    a comment-text search — since 2026-07 the bot often posts its flag comment WITHOUT applying the
+    label, so a label-only listing silently skips those issues and they auto-close undefended.
+    Returns None only if ALL listings fail. Three independent listings so no single point of
+    failure: the label, the bot's current comment wording, and — wording-independent — any of my
+    issues the actions bot has commented on at all (the per-issue logic filters non-dup comments)."""
+    labeled = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", state,
+                        "--label", "duplicate",
+                        *(["--search", f"updated:>={cutoff}"] if cutoff else []),
+                        "--limit", str(limit), "--json", "number"])
+    searched = _gh_json(["search", "issues", "possible duplicate issues in:comments",
+                         "--repo", repo, "--author", "@me", "--state", state,
+                         *(["--updated", f">={cutoff}"] if cutoff else []),
+                         "--limit", str(min(limit, 1000)), "--json", "number"])
+    by_bot = _gh_json(["search", "issues", "commenter:app/github-actions",
+                       "--repo", repo, "--author", "@me", "--state", state,
+                       *(["--updated", f">={cutoff}"] if cutoff else []),
+                       "--limit", str(min(limit, 1000)), "--json", "number"])
+    if labeled is None and searched is None and by_bot is None:
+        return None
+    return sorted({it["number"] for it in (labeled or []) + (searched or []) + (by_bot or [])})
+
+
+def _graphql_reset_wait():
+    """Seconds until the GraphQL rate limit resets (+30s margin), or 0 if budget remains/unknown.
+    `gh issue view` is GraphQL; the account gets 5000 points/hr shared across desktop + cloud."""
+    d = _gh_json(["api", "rate_limit", "--jq",
+                  "{rem: .resources.graphql.remaining, reset: .resources.graphql.reset}"]) or {}
+    if d.get("rem", 1) or not d.get("reset"):
+        return 0
+    return max(0, int(d["reset"]) - int(time.time())) + 30
+
+
+def _gh_json_wait(args):
+    """_gh_json that survives GraphQL rate-limit exhaustion: on failure, if the hourly budget is
+    spent, sleep until it resets and retry once. Skipping quietly instead is how a 'every issue
+    checked daily' guarantee rots — a 2026-07-07 run burned the budget mid-pass and 29 issues
+    became unverifiable."""
+    d = _gh_json(args)
+    if d is None:
+        w = _graphql_reset_wait()
+        if w:
+            print(f"  ⏳ GraphQL rate limit exhausted — sleeping {w}s until reset", file=sys.stderr)
+            time.sleep(min(w, 3900))
+            d = _gh_json(args)
+    return d
+
+
+def _is_bot_login(login):
+    """The auto-close bot. gh's GraphQL view reports it as 'github-actions'; REST as
+    'github-actions[bot]'. Other [bot] accounts count too — automation, not a human response."""
+    return login in ("github-actions", "github-actions[bot]") or (login or "").endswith("[bot]")
+
+
+def _bot_dup_flags(comments):
+    """The BOT's dup-flag comments, oldest→newest. Author matters: a human writing 'possible
+    duplicate' is a legitimate response to engage with, not an auto-close attempt to defend
+    against — ClAudit only ever answers the bot."""
+    return [c for c in (comments or [])
+            if _is_dup_flag_body(c.get("body", ""))
+            and _is_bot_login((c.get("author") or {}).get("login", ""))]
+
+
+def _defend_issue(repo, num, me, state, compose=False):
+    """Check ONE open issue and answer its latest unanswered bot dup-flag (👎 + contextual note).
+    Only bot auto-close attempts are defended — human comments, human labels, and settled flags
+    (defense already newer than the flag) are left alone. Returns 'defended', 'ok' (nothing to do),
+    or 'error' (view failed; caller should retry next pass rather than guess)."""
+    data = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "body,comments"])
+    if data is None:                                    # transient API failure: never guess from an
+        print(f"  ! #{num}: issue view failed — skipping, will retry next pass", file=sys.stderr)
+        return "error"                                  # empty view (that double-posted before)
+    comments = data.get("comments") or []
+    my_defenses = [c.get("createdAt", "") for c in comments
+                   if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
+    my_last = max(my_defenses) if my_defenses else ""
+    dup_comments = _bot_dup_flags(comments)
+    if not dup_comments:                                # no bot flag = no auto-close attempt;
+        return "ok"                                     # whatever else happened here is legit
+    latest = dup_comments[-1]
+    # only act if the bot's latest flag is newer than our last defense (i.e. an unanswered re-flag)
+    if my_last and latest.get("createdAt", "") <= my_last:
+        return "ok"
+    cited_now = _cited_issues(latest.get("body", ""), num)
+    posted = _push_not_dup(repo, num, latest.get("id"), f"#{cited_now[0]}" if cited_now else "",
+                           DEFEND_REASON, data.get("body", ""), compose=compose,
+                           flag_body=latest.get("body", ""), cited=cited_now)
+    if posted:                                          # only record on SUCCESS -> failures retry
+        state.setdefault("__deduped__", {})[str(num)] = "not-duplicate"
+        save_state(state)
+        return "defended"
+    return "error"
+
+
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
-    """Dedup-defender that answers RE-FLAGS. The dup-bot re-posts a 'possible duplicate' comment each
-    time it re-evaluates; ClAudit responds (👎 + a contextual 'not a duplicate' note naming the cited
-    issues) whenever the bot's latest flag is NEWER than ClAudit's last defense on that issue — so a
-    re-flag gets a fresh contextual reply, while a settled issue (defense already after the bot) is
-    left alone. Scans flagged issues updated within `since_days` (the auto-close window). Returns count
-    acted on this pass."""
-    deduped = state.setdefault("__deduped__", {})
+    """Rapid-response dedup-defender: answers unanswered/re-posted bot dup-flags on issues updated
+    within `since_days` (the auto-close window). A re-flag gets a fresh contextual reply; a settled
+    issue (defense already after the bot) is left alone. Returns count acted on this pass."""
     me = gh_login()
     cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
-    flagged = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
-                        "--label", "duplicate", "--search", f"updated:>={cutoff}",
-                        "--limit", str(limit or 200), "--json", "number"])
+    flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit or 200)
     if flagged is None:
         print("defend_all: cannot list flagged issues", file=sys.stderr)
         return 0
     done = 0
-    for it in flagged:
-        num = it["number"]
-        data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "body,comments"]) or {}
-        comments = data.get("comments") or []
-        my_defenses = [c.get("createdAt", "") for c in comments
-                       if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
-        my_last = max(my_defenses) if my_defenses else ""
-        dup_comments = [c for c in comments if _is_dup_flag_body(c.get("body", ""))]
-        if not dup_comments:                            # label-only flag: post the note once
-            if str(num) not in deduped and _push_not_dup(repo, num, None, "", DEFEND_REASON,
-                                                         data.get("body", ""), compose=compose):
-                deduped[str(num)] = "not-duplicate"
-                save_state(state)
-                done += 1
-            continue
-        latest = dup_comments[-1]
-        # only act if the bot's latest flag is newer than our last defense (i.e. an unanswered re-flag)
-        if my_last and latest.get("createdAt", "") <= my_last:
-            continue
-        cited_now = _cited_issues(latest.get("body", ""), num)
-        posted = _push_not_dup(repo, num, latest.get("id"), f"#{cited_now[0]}" if cited_now else "",
-                               DEFEND_REASON, data.get("body", ""), compose=compose,
-                               flag_body=latest.get("body", ""), cited=cited_now)
-        if posted:                                      # only record on SUCCESS -> failures retry
-            deduped[str(num)] = "not-duplicate"
-            save_state(state)
+    for num in flagged:
+        r = _defend_issue(repo, num, me, state, compose=compose)
+        if r == "defended":
             done += 1
             if on_done:
-                on_done(num, posted)
+                on_done(num, True)
             time.sleep(delay)
     print(f"defend_all: {len(flagged)} active flagged, answered {done} this pass.", file=sys.stderr)
     return done
+
+
+def _issue_check_minute(num):
+    """Deterministic pseudo-random minute-of-day for an issue's daily recheck. Static per issue
+    (NOT date-salted) so consecutive checks are exactly 24h apart — a per-day reshuffle could put
+    day one's check at 00:05 and day two's at 23:55, a 47h gap that breaks the ≤24h guarantee."""
+    return int(hashlib.sha256(str(num).encode()).hexdigest(), 16) % 1440
+
+
+def daily_recheck(repo, state, window_start, window_end=None, on_done=None, delay=3,
+                  compose=False, limit=1000):
+    """Guaranteed-coverage sweep: EVERY open ClAudit issue gets rechecked once a day at its own
+    pseudo-random minute (hash of the issue number), never more than 24h between checks. Each pass
+    covers the issues whose scheduled minute falls in (window_start, window_end] — callers pass the
+    previous successful sweep's start time, so throttled/missed runs are caught up, not skipped.
+    A window longer than 24h simply checks everything. Only bot auto-close attempts are answered
+    (via _defend_issue); legit human activity is never defended against. Returns count defended."""
+    me = gh_login()
+    window_end = window_end or time.time()
+    issues = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "open",
+                       "--limit", str(limit), "--json", "number"])
+    if issues is None:
+        print("daily_recheck: cannot list open issues", file=sys.stderr)
+        return 0
+    s_min, e_min = int(window_start // 60), int(window_end // 60)
+    due = [it["number"] for it in issues
+           if (e_min - _issue_check_minute(it["number"])) // 1440
+           > (s_min - _issue_check_minute(it["number"])) // 1440]
+    done = 0
+    for num in sorted(due):
+        r = _defend_issue(repo, num, me, state, compose=compose)
+        if r == "defended":
+            done += 1
+            if on_done:
+                on_done(num, True)
+            time.sleep(delay)
+    print(f"daily_recheck: {len(due)} of {len(issues)} open issues due this window, "
+          f"answered {done}.", file=sys.stderr)
+    return done
+
+
+def undefended_flags(repo, since_days=4, limit=1000):
+    """VERIFICATION pass (read-only): open issues whose latest dup-bot flag is still unanswered —
+    no ClAudit defense comment newer than it. The cloud workflow fails LOUDLY when this is
+    non-empty after a defend pass, so a broken sweep can never silently let issues auto-close.
+    Issues whose view fails are INCLUDED (unverifiable is not the same as safe)."""
+    me = gh_login()
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+    flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit) or []
+    bad = []
+    for num in flagged:
+        data = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "comments"])
+        if data is None:
+            print(f"  ! #{num}: unverifiable (view failed after rate-limit wait)", file=sys.stderr)
+            bad.append(num)                             # couldn't verify -> treat as at-risk
+            continue
+        comments = data.get("comments") or []
+        dup_comments = _bot_dup_flags(comments)
+        if not dup_comments:
+            continue                                    # nothing threatening auto-close
+        my_defenses = [c.get("createdAt", "") for c in comments
+                       if (c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))]
+        if not my_defenses or max(my_defenses) < dup_comments[-1].get("createdAt", ""):
+            bad.append(num)
+    print(f"undefended_flags: {len(bad)} of {len(flagged)} flagged remain unanswered.", file=sys.stderr)
+    return bad
 
 
 # ---------------- closure monitoring + reopen dup-closes ----------------
 def closure_info(repo, num):
     """For a CLOSED issue: {'num','actor','reason','self'}. None if it's open. `actor` is who closed
     it; `reason` is GitHub's state reason (completed / not_planned / duplicate / …)."""
-    j = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
+    j = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
     if not isinstance(j, dict) or j.get("state") != "CLOSED":
         return None
     d = _gh_json(["api", f"repos/{repo}/issues/{num}/events",
@@ -1396,17 +1568,20 @@ def reopen_one(repo, num):
     return True
 
 
-def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0):
+def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0, since_days=7):
     """Reopen ClAudit issues CLOSED AS DUPLICATES by someone other than you — they aren't duplicates
     (each is a distinct Request ID on your own authorized infra). Idempotent: each issue is reopened
     at most once (state['__reopened__']) so it can't loop forever if the bot re-closes. by_bot_only
-    skips human-maintainer closes (recorded for review, not auto-fought). Returns count reopened."""
+    skips human-maintainer closes (recorded for review, not auto-fought). `since_days` windows the
+    sweep to recently-updated closes — a stateless caller (the cloud runner) re-walking EVERY old
+    close each pass is what exhausted the hourly GraphQL budget on 2026-07-07; pass since_days=None
+    for a deliberate full backfill. Returns count reopened."""
     reopened = state.setdefault("__reopened__", {})
-    issues = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "closed",
-                       "--label", "duplicate", "--limit", str(limit or 500), "--json", "number"]) or []
+    cutoff = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+              if since_days else None)
+    issues = _dup_flagged_numbers(repo, "closed", cutoff=cutoff, limit=limit or 500) or []
     done = 0
-    for it in issues:
-        num = it["number"]
+    for num in issues:
         if str(num) in reopened:
             continue
         ci = closure_info(repo, num)
@@ -1417,12 +1592,30 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
             reopened[str(num)] = f"review:human:{ci['actor']}"   # surface for manual review; don't fight
             save_state(state)
             continue
-        subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo], capture_output=True, text=True)
-        gh_comment(repo, str(num), scrub(
-            "Reopening — this is a distinct false-positive block with its own Request ID, on the "
-            "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as a "
-            "duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
-        reopened[str(num)] = ci["actor"]
+        r = subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            gh_comment(repo, str(num), scrub(
+                "Reopening — this is a distinct false-positive block with its own Request ID, on the "
+                "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as "
+                "a duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
+            reopened[str(num)] = ci["actor"]
+        else:
+            # 2026-07: the repo now BLOCKS authors from reopening bot-closed issues. Don't pretend —
+            # post a factual maintainer-reopen request instead. Idempotent against state loss: skip
+            # if a ClAudit defense comment is already on the issue.
+            me = gh_login()
+            data = _gh_json(["issue", "view", str(num), "-R", repo, "--json", "comments"]) or {}
+            already = any((c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))
+                          for c in (data.get("comments") or []))
+            if not already:
+                gh_comment(repo, str(num), scrub(
+                    "**Not a duplicate — requesting maintainer reopen.** This report covers a distinct "
+                    "incident with its own server-side Request ID; the cited issue is a sibling report "
+                    "from the same work session, intentionally cross-linked by ClAudit. Issue authors "
+                    "can no longer reopen bot-closed issues on this repo, so this close is unrecoverable "
+                    "on our side. (Assessed by ClAudit.)")[0] + "\n\n" + DEFENSE_MARKER)
+            reopened[str(num)] = f"protest:{ci['actor']}"
         save_state(state)
         done += 1
         if on_done:
@@ -1451,13 +1644,14 @@ def load_issue_rows():
     """Every issue ClAudit has filed locally (from issues.jsonl)."""
     rows = []
     if os.path.exists(ISSUES_DB):
-        for line in open(ISSUES_DB):
-            line = line.strip()
-            if line:
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    pass
+        with open(ISSUES_DB, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        pass
     return rows
 
 
@@ -1587,6 +1781,10 @@ def main():
         globals()["GATE"] = True
     if args.report_harness or cfg.get("report_harness"):
         globals()["REPORT_HARNESS"] = True
+    if "llm_model" in cfg:
+        claudit.LLM_MODEL = str(cfg["llm_model"])
+    if "llm_effort" in cfg:
+        claudit.LLM_EFFORT = str(cfg["llm_effort"])
     state = load_state()
 
     if args.dedup_guard:
@@ -1606,7 +1804,7 @@ def main():
         return
 
     if args.reopen_dupes:
-        n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans,
+        n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans, since_days=None,
                                on_done=lambda num, ci: print(f"  reopened #{num} (closed by {ci['actor']})",
                                                              file=sys.stderr))
         print(f"Reopened {n} dup-closed issue(s).", file=sys.stderr)

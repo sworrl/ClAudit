@@ -3,6 +3,32 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.0.110] — 2026-07-07
+**Survive GraphQL rate-limit exhaustion.** A heavy day (backfill + repeated full sweeps) spent the account's 5000/hr GraphQL budget mid-run; 29 issues became unverifiable and the cloud run failed (the gate worked, but the defense should outlast the budget, not just report it):
+- Issue fetches in the defender, verifier, and closure checks now detect exhaustion, **sleep until the budget resets, and retry** — a guarantee like "every issue checked daily" stays honest instead of quietly skipping.
+- `reopen_dupe_closes` now windows to recently-updated closes (`since_days=7` default) — the stateless cloud runner was re-walking every old close each pass (~450 wasted calls/run). `--reopen-dupes` CLI still does a full backfill.
+- The verifier logs unverifiable issues distinctly from confirmed-unanswered ones.
+
+## [2.0.109] — 2026-07-07
+- **Fix: tray pill stuck at 600.** The open-alerts badge counted open issues in the fetched list, which is capped by GitHub search (was `--limit 600`) — with 800+ open issues the pill froze at the cap. The count now comes from the search API's exact `total_count` (open ClAudit-filed minus harness), with the sample count as fallback; the community list cap is raised to 1000.
+
+## [2.0.107] — 2026-07-07
+**Daily per-issue recheck + bot-only targeting + Haiku default.**
+- **Every open issue rechecked daily** — `daily_recheck` verifies each open ClAudit issue once a day at its own pseudo-random minute (hash of the issue number; static, so consecutive checks are exactly ≤24h apart). The cloud sweep windows by the previous successful run, so throttled/missed cron fires are caught up, never skipped.
+- **Only bot auto-close attempts are defended** — dup-flag comments must be authored by the actions bot (or another `[bot]`); a human maintainer writing "possible duplicate" is a legitimate response and never triggers a defense. The label-only defense path is gone for the same reason (a human-applied label isn't an auto-close attempt). Applies to the sweep, the daily recheck, the verifier, and the GUI's manual 👎.
+- **Haiku 4.5 at medium effort is the default LLM** for compose/scrub/gate calls — verified fast and solid in real use, at a fraction of Sonnet's cost. (Config `llm_model`/`llm_effort` still override.)
+
+## [2.0.106] — 2026-07-07
+**Bulletproof defense mode.** No single point of failure between a dup-bot flag and its answer:
+- **Third, wording-independent listing** — flagged issues are found via the `duplicate` label ∪ the bot's comment text ∪ `commenter:app/github-actions`, so a bot rewording (or another label change) can't hide flags again.
+- **Verification gate in the cloud sweep** — after each pass the workflow re-scans read-only (`undefended_flags`) and **fails the run** if any flag in the auto-close window is still unanswered, so GitHub emails on breakage instead of issues silently closing. An expired `CLAUDIT_PAT` also fails the run instead of no-opping.
+- **Never guess on API failure** — a failed `gh issue view` now skips the issue for retry next pass (it previously fell through as "label-only" and could double-post); the verifier counts unverifiable issues as at-risk, not safe.
+- **Real limits** — sweep caps raised to 1000 (the label-only cap of 100/200 was below the live issue counts); `gh` call timeout 30s → 90s for large searches.
+- Label-only defense now requires the `duplicate` label to actually be present (the commenter listing surfaces issues with unrelated bot comments; those are skipped, not "defended").
+
+## [2.0.105] — 2026-07-07
+- **Fix: dup-defense missed unlabeled flags.** The dup-bot now posts its "possible duplicate" comment without applying the `duplicate` label, so the label-only listing in `defend_all` / `reopen_dupe_closes` silently skipped those issues and they auto-closed undefended. Both sweeps now union the label listing with a comment-text search (`possible duplicate issues in:comments`), so every flagged issue is answered regardless of labeling.
+
 ## [2.1.0] (2.0.1 – 2.0.32) — 2026-06-25
 Big feature batch (patch versions auto-bumped per commit; summarized here).
 

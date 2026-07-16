@@ -17,6 +17,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -244,7 +245,18 @@ QLabel#subg { color: #dfe2e8; font-size: 12px; background: transparent; }
 QLabel#statsbar { color: #f2f4f7; font-size: 12px; font-weight: 600; background: transparent; }
 QProgressBar#bf { background: #1b1e25; border: 1px solid #2a2e37; border-radius: 7px;
     text-align: center; color: #e6e8ec; font-weight: 600; }
-QProgressBar#bf::chunk { background: #8b5cf6; border-radius: 6px; }
+QProgressBar#bf::chunk { border-radius: 6px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7c3aed, stop:0.55 #8b5cf6, stop:1 #c084fc); }
+QFrame#setrow { background: transparent; border-radius: 8px; padding: 2px; }
+QFrame#setrow:hover { background: #232838; }
+QGroupBox { border: 1px solid #2a2e37; border-radius: 10px; margin-top: 12px; padding-top: 10px;
+    font-weight: 700; color: #cdd3dc; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #b794f6; }
+QSlider::groove:horizontal { height: 6px; background: #2a2e37; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+    stop:0 #7c3aed, stop:1 #c084fc); border-radius: 3px; }
+QSlider::handle:horizontal { width: 16px; height: 16px; margin: -6px 0; border-radius: 8px;
+    background: #e6e8ec; border: 2px solid #8b5cf6; }
 QComboBox, QLineEdit { background: #1b1e25; color: #e6e8ec; border: 1px solid #353b47;
     border-radius: 6px; padding: 5px 8px; }
 QComboBox::drop-down { border: 0; width: 18px; }
@@ -382,6 +394,7 @@ class BreakdownBars(QtWidgets.QWidget):
         super().__init__(parent)
         self.setMinimumHeight(150)
         self.data = []   # [(label, value, color), ...]
+        self.fmt = str   # value formatter (e.g. lambda v: f"${v:.2f}" for the cost chart)
 
     def set_data(self, rows):
         self.data = rows
@@ -416,8 +429,9 @@ class BreakdownBars(QtWidgets.QWidget):
                 fr.addRoundedRect(QtCore.QRectF(x0, y, bw, bh), bh / 2, bh / 2)
                 p.fillPath(fr, QtGui.QColor(color))
             p.setPen(QtGui.QColor("#e6e8ec"))
-            p.drawText(int(x0 + track_w + 8), int(y), 44, int(bh),
-                       QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter, str(val))
+            p.drawText(int(x0 + track_w + 8), int(y), 52, int(bh),
+                       QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                       self.fmt(val))
         p.end()
 
 
@@ -501,6 +515,101 @@ class ChainGraphDelegate(QtWidgets.QStyledItemDelegate):
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor(g["node_color"]))
         painter.drawEllipse(QtCore.QPointF(nx, ymid), 4.0, 4.0)
+        painter.restore()
+
+
+class TitleChipDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints the Title column's leading [Bug][cyber]-style tags as coloured pill chips, then the
+    rest of the title as normal (eliding to fit). Owner colouring is preserved from the item's
+    foreground role."""
+    CHIP = {"cyber": ("#0f2b45", "#4aa3ff"), "aup": ("#3a2c0d", "#d29922"),
+            "harness": ("#33232d", "#b58a8a"), "bug": ("#262b36", "#8b94a3")}
+    MODEL_CHIP = ("#2b1f45", "#b794f6")            # violet: which model's safeguards flagged it
+    MODEL_ROLE = QtCore.Qt.ItemDataRole.UserRole + 3
+    TAG_RE = re.compile(r"^\s*((?:\[[A-Za-z]+\])+)\s*(.*)$", re.DOTALL)
+
+    def paint(self, painter, option, index):
+        text = index.data() or ""
+        m = self.TAG_RE.match(text)
+        if not m:
+            super().paint(painter, option, index)
+            return
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""                                            # background/selection only
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        tags = [(t, self.CHIP.get(t.lower(), ("#262b36", "#8b94a3")))
+                for t in re.findall(r"\[([A-Za-z]+)\]", m.group(1))]
+        mdl = index.data(self.MODEL_ROLE)
+        if mdl:
+            tags.append((str(mdl), self.MODEL_CHIP))
+        rest = m.group(2)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        f = QtGui.QFont(option.font)
+        f.setPixelSize(11)
+        f.setBold(True)
+        fm = QtGui.QFontMetrics(f)
+        x = option.rect.left() + 8
+        cy = option.rect.center().y()
+        for tag, (bg, fgc) in tags:
+            wtx = fm.horizontalAdvance(tag) + 12
+            r = QtCore.QRectF(x, cy - 8, wtx, 17)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(bg))
+            painter.drawRoundedRect(r, 8, 8)
+            painter.setFont(f)
+            painter.setPen(QtGui.QColor(fgc))
+            painter.drawText(r, QtCore.Qt.AlignmentFlag.AlignCenter, tag)
+            x += wtx + 4
+        fg = index.data(QtCore.Qt.ItemDataRole.ForegroundRole)
+        painter.setFont(option.font)
+        painter.setPen(fg.color() if isinstance(fg, QtGui.QBrush) else QtGui.QColor("#e6e8ec"))
+        avail = option.rect.right() - 8 - (x + 4)
+        painter.drawText(QtCore.QRectF(x + 4, option.rect.top(), max(avail, 10), option.rect.height()),
+                         QtCore.Qt.AlignmentFlag.AlignVCenter,
+                         QtGui.QFontMetrics(option.font).elidedText(
+                             rest, QtCore.Qt.TextElideMode.ElideRight, max(avail, 10)))
+        painter.restore()
+
+
+class DwellRingDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints a small circular countdown on ⏳ DWELL rows (Created column): a teal arc fills as the
+    dwell elapses, so 'how close to filing' is visible at a glance. Non-dwell rows paint normally."""
+    FRAC_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
+
+    def sizeHint(self, option, index):
+        s = super().sizeHint(option, index)
+        if index.data(self.FRAC_ROLE) is not None:
+            s.setWidth(s.width() + 26)                           # room for the ring
+        return s
+
+    def paint(self, painter, option, index):
+        frac = index.data(self.FRAC_ROLE)
+        if frac is None:
+            super().paint(painter, option, index)
+            return
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        cy = option.rect.center().y()
+        ring = QtCore.QRectF(option.rect.left() + 8, cy - 7, 14, 14)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#2a2e37"), 2.4))
+        painter.drawEllipse(ring)                                # track
+        painter.setPen(QtGui.QPen(QtGui.QColor("#5eead4"), 2.4,
+                                  QtCore.Qt.PenStyle.SolidLine, QtCore.Qt.PenCapStyle.RoundCap))
+        painter.drawArc(ring, 90 * 16, -int(min(max(float(frac), 0.0), 1.0) * 360 * 16))
+        fg = index.data(QtCore.Qt.ItemDataRole.ForegroundRole)
+        painter.setPen(fg.color() if isinstance(fg, QtGui.QBrush) else QtGui.QColor("#9aa0a6"))
+        painter.setFont(option.font)
+        painter.drawText(QtCore.QRectF(ring.right() + 6, option.rect.top(),
+                                       option.rect.width() - 30, option.rect.height()),
+                         QtCore.Qt.AlignmentFlag.AlignVCenter, index.data() or "")
         painter.restore()
 
 
@@ -1011,6 +1120,51 @@ class ChronoLine(QtWidgets.QWidget):
             y += fm.height() + 2
 
 
+class Sparkline(QtWidgets.QWidget):
+    """Tiny inline trend line for the header: cumulative reports over the last 30 days, drawn as a
+    soft gradient-filled polyline. Pure QPainter; repaints only when the data actually changes."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pts = []
+        self.setFixedSize(92, 26)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_series(self, values):
+        vals = list(values)[-30:]
+        if vals != self._pts:
+            self._pts = vals
+            self.setToolTip(f"reports over the last {len(vals)} days")
+            self.update()
+
+    def paintEvent(self, _e):
+        if len(self._pts) < 2:
+            return
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h, pad = self.width(), self.height(), 3
+        lo, hi = min(self._pts), max(self._pts)
+        span = (hi - lo) or 1
+        step = (w - 2 * pad) / (len(self._pts) - 1)
+        pts = [QtCore.QPointF(pad + i * step, h - pad - (v - lo) / span * (h - 2 * pad))
+               for i, v in enumerate(self._pts)]
+        fill = QtGui.QPainterPath()
+        fill.moveTo(pts[0].x(), h - 1)
+        for pt in pts:
+            fill.lineTo(pt)
+        fill.lineTo(pts[-1].x(), h - 1)
+        grad = QtGui.QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QtGui.QColor(94, 234, 212, 90))
+        grad.setColorAt(1.0, QtGui.QColor(94, 234, 212, 0))
+        p.fillPath(fill, grad)
+        pen = QtGui.QPen(QtGui.QColor("#5eead4"), 1.6)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawPolyline(*pts)
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor("#5eead4"))
+        p.drawEllipse(pts[-1], 2.2, 2.2)         # live tip
+
+
 class ToggleSwitch(QtWidgets.QAbstractButton):
     """A graphically-pleasing iOS-style on/off switch (pure QPainter, animated). Emits toggled(bool)."""
     def __init__(self, parent=None):
@@ -1217,7 +1371,7 @@ class CommunityFetcher(QtCore.QThread):
     """Fetch EVERY ClAudit-filed issue on the repo (all authors, open + closed) + your login.
     Keyed on the 'Filed automatically by ClAudit' body marker — so it shows ALL kinds (cyber, aup,
     harness) and bespoke titles, not just ones with 'false positive' in the title."""
-    fetched = QtCore.pyqtSignal(list, str)
+    fetched = QtCore.pyqtSignal(list, str, int)
 
     def __init__(self, repo):
         super().__init__()
@@ -1232,14 +1386,28 @@ class CommunityFetcher(QtCore.QThread):
             pass
         try:
             out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "600",
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "1000",
                  "--search", '"Filed automatically by ClAudit"',
                  "--json", "number,state,stateReason,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
             items = json.loads(out)
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
-        self.fetched.emit(items, me)
+        # the list above is a capped SAMPLE (search returns at most 1000); the tray pill needs the
+        # exact open count, which only search total_count gives. -1 = unknown (fall back to sample).
+        nopen = -1
+        try:
+            def _count(q):
+                return int(subprocess.run(
+                    ["gh", "api", "-X", "GET", "search/issues", "-f", f"q={q}",
+                     "-f", "per_page=1", "--jq", ".total_count"],
+                    capture_output=True, text=True, check=True).stdout.strip())
+            total = _count(f'repo:{self.repo} is:issue is:open "Filed automatically by ClAudit"')
+            harness = _count(f'repo:{self.repo} is:issue is:open "[bug][harness]" in:title')
+            nopen = max(0, total - harness)
+        except Exception as e:
+            print("open-count fetch failed:", e, file=sys.stderr)
+        self.fetched.emit(items, me, nopen)
 
 
 class NotifyWatcher(QtCore.QThread):
@@ -1362,10 +1530,11 @@ class ScrubListDialog(QtWidgets.QDialog):
     def _load(self):
         self.lst.clear()
         if os.path.exists(self.PATH):
-            for line in open(self.PATH):
-                t = line.strip()
-                if t and not t.startswith("#"):
-                    self.lst.addItem(t)
+            with open(self.PATH, encoding="utf-8") as fh:
+                for line in fh:
+                    t = line.strip()
+                    if t and not t.startswith("#"):
+                        self.lst.addItem(t)
         self.lst.sortItems()
         self.count.setText(f"{self.lst.count()} term(s) · {self.PATH}")
 
@@ -1603,6 +1772,10 @@ class Main(QtWidgets.QMainWindow):
         self.table.setHorizontalHeaderLabels(self.COLS)
         self._chain_delegate = ChainGraphDelegate(self.table)   # column-0 chain-link gutter
         self.table.setItemDelegateForColumn(0, self._chain_delegate)
+        self._ring_delegate = DwellRingDelegate(self.table)     # countdown ring on ⏳ DWELL rows
+        self.table.setItemDelegateForColumn(3, self._ring_delegate)
+        self._chip_delegate = TitleChipDelegate(self.table)     # [cyber]/[aup] pill chips in titles
+        self.table.setItemDelegateForColumn(4, self._chip_delegate)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1625,7 +1798,7 @@ class Main(QtWidgets.QMainWindow):
         self.f_state = QtWidgets.QComboBox()
         self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
         self.f_kind = QtWidgets.QComboBox()
-        self.f_kind.addItems(["All kinds", "cyber", "aup"])   # harness is excluded from the list
+        self.f_kind.addItems(["All kinds", "cyber", "aup", "Fable 5"])   # harness is excluded
         self.f_dedup = QtWidgets.QComboBox()
         self.f_dedup.addItems(["Any", "Defended", "Not defended"])
         self.f_search = QtWidgets.QLineEdit()
@@ -1633,7 +1806,11 @@ class Main(QtWidgets.QMainWindow):
         self.f_search.setClearButtonEnabled(True)
         for w in (self.f_scope, self.f_state, self.f_kind, self.f_dedup):
             w.currentIndexChanged.connect(self._repopulate)
-        self.f_search.textChanged.connect(self._repopulate)
+        self._search_debounce = QtCore.QTimer(self)          # don't re-lay 400+ rows per keystroke
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self._repopulate)
+        self.f_search.textChanged.connect(lambda _t: self._search_debounce.start())
         filt = QtWidgets.QHBoxLayout()
         filt.addWidget(QtWidgets.QLabel("Show:"))
         filt.addWidget(self.f_scope)
@@ -1674,6 +1851,9 @@ class Main(QtWidgets.QMainWindow):
         hl.addSpacing(8)
         hl.addWidget(sub)
         hl.addStretch(1)
+        self.spark = Sparkline()                 # 30-day reports trend, right in the header
+        hl.addWidget(self.spark)
+        hl.addSpacing(8)
         self.tok_label = QtWidgets.QLabel("")    # lifetime burn-tokens meter (alarming when burn mode is on)
         self.tok_label.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
         hl.addWidget(self.tok_label)
@@ -1722,6 +1902,7 @@ class Main(QtWidgets.QMainWindow):
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         self.tabs.currentChanged.connect(
             lambda i: (self._fetch_stats(), self._fetch_poll()) if i == 1 else None)
+        self.tabs.currentChanged.connect(self._fade_tab)
 
         root = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(root)
@@ -1754,6 +1935,8 @@ class Main(QtWidgets.QMainWindow):
         self.refresh()
 
     def _poll_notifs(self):
+        if getattr(self, "_nw", None) and self._nw.isRunning():
+            return                             # previous poll still in flight — don't stack threads
         self._nw = NotifyWatcher()
         self._nw.got.connect(self._on_notifs)
         self._nw.start()
@@ -1762,6 +1945,8 @@ class Main(QtWidgets.QMainWindow):
         new = [n for n in items if n.get("id") not in self._seen_notifs]
         for n in items:
             self._seen_notifs.add(n.get("id"))
+        if len(self._seen_notifs) > 5000:      # bound the id cache (it only needs the recent window)
+            self._seen_notifs = set(list(self._seen_notifs)[-2500:])
         if not self._notif_primed:             # first run: seed seen, don't toast old unread
             self._notif_primed = True
             return
@@ -1777,6 +1962,8 @@ class Main(QtWidgets.QMainWindow):
 
     def _check_updates(self):
         # fetch + ff-pull from GitHub off the UI thread; restart if HEAD moved
+        if getattr(self, "_uc", None) and self._uc.isRunning():
+            return                             # a slow fetch is still going — skip this tick
         self._uc = UpdateChecker(self._head)
         self._uc.updated.connect(self._restart)
         self._uc.start()
@@ -1789,6 +1976,21 @@ class Main(QtWidgets.QMainWindow):
         cs._release_singleton()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+    def _fade_tab(self, i):
+        """Subtle fade-in when switching tabs (self-removing effect, fire-and-forget animation)."""
+        w = self.tabs.widget(i)
+        if w is None:
+            return
+        eff = QtWidgets.QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(eff)
+        anim = QtCore.QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(160)
+        anim.setStartValue(0.45)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
     @staticmethod
     def _fmt_tok(n):
         if n >= 1_000_000:
@@ -1798,14 +2000,40 @@ class Main(QtWidgets.QMainWindow):
         return str(int(n))
 
     def _update_tokens(self):
-        t = claudit.load_tokens()
+        # this runs every second off bf_timer — only re-read/re-render when tokens.json actually
+        # changed or the burn flag flipped (the idle cost is then a single stat() call)
+        try:
+            mt = os.stat(claudit.TOKENS_FILE).st_mtime
+        except OSError:
+            mt = 0.0
         burn = bool(claudit.BURN_TOKENS)
-        self.tok_label.setText(f"🔥 {self._fmt_tok(t['total'])} tok · ${t['cost']:.2f}")
+        self._tok_tick = getattr(self, "_tok_tick", 0) + 1
+        stale = self._tok_tick % 300 == 0         # refresh every ~5 min anyway (weekly window decays)
+        if (mt, burn) == getattr(self, "_tok_seen", None) and not burn and not stale:
+            return                                # unchanged and not pulsing -> nothing to repaint
+        redraw = stale or (mt, burn) != getattr(self, "_tok_seen", None)
+        self._tok_seen = (mt, burn)
+        if not redraw:                            # burn mode: still pulse the colors each tick
+            self._tok_pulse = not getattr(self, "_tok_pulse", False)
+            col = "#ff3b30" if self._tok_pulse else "#ff9f0a"
+            self.tok_label.setStyleSheet(
+                f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
+            return
+        t = claudit.load_tokens()
+        wk, plans = claudit.plan_estimates(t)
+        pct = "  ".join(f"{n.replace('Max ', 'M')} {p:.0f}%" for n, p in plans.items())
+        self.tok_label.setText(f"🔥 ${wk:.2f}/wk · {pct}")
+        plan_lines = "\n".join(
+            f"  {n:<7} {p:5.1f}%   (est. cap ${claudit.PLAN_WEEKLY_USD[n]:.0f}/wk)"
+            for n, p in plans.items())
         self.tok_label.setToolTip(
-            "Burn-tokens meter — lifetime across every session\n"
-            f"input {t['input']:,}  ·  output {t['output']:,}  ·  "
-            f"cache {t['cache_read'] + t['cache_creation']:,}\n"
-            f"{t['calls']:,} claude calls  ·  ${t['cost']:.4f}"
+            f"Rolling 7-day spend: ${wk:.2f}  →  estimated share of each plan's weekly cap\n"
+            f"{plan_lines}\n"
+            "  (estimates — Anthropic caps are usage-window based, not $-metered)\n\n"
+            "Lifetime across every session:\n"
+            f"  {self._fmt_tok(t['total'])} tokens  ·  {t['calls']:,} claude calls  ·  ${t['cost']:.2f}\n"
+            f"  input {t['input']:,}  ·  output {t['output']:,}  ·  "
+            f"cache {t['cache_read'] + t['cache_creation']:,}"
             + ("\n\n🔥 BURN-TOKENS MODE IS ON — Claude writes every report." if burn
                else "\n\nBurn-tokens mode is off (counter still tracks)."))
         if burn:                                  # alarming red⇄orange pulse while burning
@@ -1814,13 +2042,22 @@ class Main(QtWidgets.QMainWindow):
             self.tok_label.setStyleSheet(
                 f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
         else:
+            # quiet mode: the pill quietly FILLS left-to-right with your Pro-plan weekly usage —
+            # green under 50%, amber under 80%, red beyond (severity at a glance, no reading needed)
+            frac = min(plans.get("Pro", 0.0) / 100.0, 1.0)
+            col = "#2f6b3f" if frac < 0.5 else ("#7a5c22" if frac < 0.8 else "#7a2e2e")
+            f1, f2 = max(frac, 0.001), min(max(frac, 0.001) + 0.001, 1.0)
             self.tok_label.setStyleSheet(
-                "color:#7d8590; background:transparent; padding:2px 10px; font-weight:600;")
+                "color:#aeb6c2; border:1px solid #2a2e37; border-radius:8px; padding:2px 10px; "
+                "font-weight:600; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, "
+                f"stop:0 {col}, stop:{f1:.3f} {col}, stop:{f2:.3f} #1b1e25, stop:1 #1b1e25);")
 
     def _update_bf(self):
         self._update_tokens()
         w = self.watcher
-        filed = sum(1 for s, r in self.state.items() if not s.startswith("__") and r.get("issue"))
+        snap = _snap(self.state)                 # copy: the watcher thread mutates state under us
+        filed = sum(1 for s, r in snap.items()
+                    if not s.startswith("__") and isinstance(r, dict) and r.get("issue"))
         backlog = cs.backlog_size(self.state)
         total = filed + backlog
         self.bf_bar.setMaximum(max(total, 1))
@@ -2129,14 +2366,18 @@ class Main(QtWidgets.QMainWindow):
             box = QtWidgets.QGroupBox(title)
             g = QtWidgets.QVBoxLayout(box)
             for key, label, desc, on in rows:
-                row = QtWidgets.QHBoxLayout()
+                frame = QtWidgets.QFrame()      # hoverable row (see QFrame#setrow in STYLE)
+                frame.setObjectName("setrow")
+                row = QtWidgets.QHBoxLayout(frame)
+                row.setContentsMargins(8, 4, 8, 4)
                 txt = QtWidgets.QVBoxLayout()
                 txt.setSpacing(1)
                 nm = QtWidgets.QLabel(label)
-                nm.setStyleSheet("font-weight:600;")
+                nm.setStyleSheet("font-weight:600; background:transparent;")
                 ds = QtWidgets.QLabel(desc)
                 ds.setObjectName("subtle")
                 ds.setWordWrap(True)
+                ds.setStyleSheet("background:transparent;")
                 txt.addWidget(nm)
                 txt.addWidget(ds)
                 row.addLayout(txt, 1)
@@ -2145,7 +2386,7 @@ class Main(QtWidgets.QMainWindow):
                 sw.toggled.connect(lambda val, k=key: self._apply_setting(k, val))
                 self._toggles[key] = sw
                 row.addWidget(sw, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
-                g.addLayout(row)
+                g.addWidget(frame)
             v.addWidget(box)
 
         grp("Filing && detection", [
@@ -2175,6 +2416,43 @@ class Main(QtWidgets.QMainWindow):
             ("gate", "Honesty gate", "LLM pre-judges 'real false positive vs correct block' and skips the "
              "latter before filing.", cs.GATE)])
 
+        # token-diet controls: which model + effort ClAudit's own LLM calls use (live, like the rest)
+        mbox = QtWidgets.QGroupBox("LLM cost")
+        mv = QtWidgets.QVBoxLayout(mbox)
+        mform = QtWidgets.QFormLayout()
+        self.cmb_model = QtWidgets.QComboBox()
+        self._model_opts = [("Haiku 4.5 — fast + cheapest (recommended)", "claude-haiku-4-5-20251001"),
+                            ("Sonnet 5 — quality/cost balance", "claude-sonnet-5"),
+                            ("Opus 4.8 — high", "claude-opus-4-8"),
+                            ("Fable 5 — top tier, priciest", "claude-fable-5"),
+                            ("Session default", "")]
+        for label, _v in self._model_opts:
+            self.cmb_model.addItem(label)
+        cur = claudit.LLM_MODEL
+        self.cmb_model.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._model_opts)
+                                             if v == cur), 0))
+        self.cmb_model.currentIndexChanged.connect(
+            lambda i: self._apply_setting("llm_model", self._model_opts[i][1]))
+        mform.addRow("Compose/scrub/gate model:", self.cmb_model)
+        self.cmb_effort = QtWidgets.QComboBox()
+        self.cmb_effort.addItems(["low", "medium", "high"])
+        self.cmb_effort.setCurrentText(claudit.LLM_EFFORT or "low")
+        self.cmb_effort.currentTextChanged.connect(
+            lambda t: self._apply_setting("llm_effort", t))
+        mform.addRow("Effort:", self.cmb_effort)
+        mv.addLayout(mform)
+        # estimated weekly spend per model at YOUR current filing rate — selected model highlighted
+        self.cost_bars = BreakdownBars()
+        self.cost_bars.fmt = lambda x: f"${x:.2f}"
+        self.cost_bars.setMinimumHeight(120)
+        mv.addWidget(self.cost_bars)
+        self.cost_note = QtWidgets.QLabel("")
+        self.cost_note.setObjectName("subtle")
+        self.cost_note.setWordWrap(True)
+        mv.addWidget(self.cost_note)
+        self._refresh_llm_cost()
+        v.addWidget(mbox)
+
         tbox = QtWidgets.QGroupBox("Timing")
         form = QtWidgets.QFormLayout(tbox)
         self._slider_row(form, "Dwell time", 1, 60, cs.DWELL_SECONDS // 60, "min", "dwell_seconds",
@@ -2190,6 +2468,33 @@ class Main(QtWidgets.QMainWindow):
         area.setWidget(inner)
         return area
 
+    # empirical per-call ballparks (USD) from the token meter — cache state makes exact figures
+    # noisy, so these are labeled estimates in the UI, not quotes
+    MODEL_CALL_USD = {"claude-haiku-4-5-20251001": 0.03, "claude-sonnet-5": 0.05,
+                      "claude-opus-4-8": 0.09, "claude-fable-5": 0.14, "": 0.14}
+
+    def _refresh_llm_cost(self):
+        """Estimated $/week per model at the CURRENT filing rate (reports in the last 7 days from
+        the local issues DB × ~2 LLM calls per report). Selected model highlighted."""
+        if not hasattr(self, "cost_bars"):
+            return
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        n = sum(1 for rec in cs.load_issue_rows() if (rec.get("first_ts") or "") >= cutoff)
+        calls = max(n, 1) * 2                       # gate + merged compose per report
+        rows = []
+        for label, mid in self._model_opts:
+            per = self.MODEL_CALL_USD.get(mid, 0.14)
+            name = label.split(" — ")[0]
+            sel = (mid == claudit.LLM_MODEL)
+            rows.append((name + ("  ◀" if sel else ""), round(calls * per, 2),
+                         "#b794f6" if sel else "#3d4658"))
+        self.cost_bars.set_data(rows)
+        self.cost_note.setText(
+            f"Estimated $/week at your current rate: {n} report(s) filed in the last 7 days × "
+            f"~2 LLM calls each. Ballpark per-call costs from the live token meter; cache state "
+            f"makes exact figures vary. The 🔥 header meter tracks what you actually spend.")
+
     def _slider_row(self, form, label, lo, hi, init, unit, key, mapper):
         sl = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         sl.setRange(lo, hi)
@@ -2197,7 +2502,12 @@ class Main(QtWidgets.QMainWindow):
         sl.setFixedWidth(230)
         val = QtWidgets.QLabel(f"{int(init)} {unit}")
         val.setFixedWidth(56)
-        sl.valueChanged.connect(lambda x: (val.setText(f"{x} {unit}"), self._apply_setting(key, mapper(x))))
+        # label tracks the drag live; the actual apply (config write) debounces to the last value
+        deb = QtCore.QTimer(sl)
+        deb.setSingleShot(True)
+        deb.setInterval(400)
+        deb.timeout.connect(lambda: self._apply_setting(key, mapper(sl.value())))
+        sl.valueChanged.connect(lambda x: (val.setText(f"{x} {unit}"), deb.start()))
         cont = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(cont)
         row.setContentsMargins(0, 0, 0, 0)
@@ -2238,6 +2548,11 @@ class Main(QtWidgets.QMainWindow):
             cs.REPORT_HARNESS = val
         elif key == "dwell_seconds":
             cs.DWELL_SECONDS = int(val)
+        elif key == "llm_model":
+            claudit.LLM_MODEL = str(val)
+            self._refresh_llm_cost()
+        elif key == "llm_effort":
+            claudit.LLM_EFFORT = str(val)
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
@@ -2510,8 +2825,11 @@ class Main(QtWidgets.QMainWindow):
         kindf = self.f_kind.currentText()
         dedupf = self.f_dedup.currentText()
         needle = self.f_search.text().strip().lstrip("#").lower()
-        deduped = self.state.get("__deduped__", {}) or {}
+        deduped = _snap(self.state.get("__deduped__"))
+        reopened_map = _snap(self.state.get("__reopened__"))
         chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
+        model_of = {str(rec.get("issue")): rec.get("model", "")
+                    for rec in cs.load_issue_rows() if rec.get("issue")}   # which model flagged it
 
         rows = []   # (sort_ts, state, label, author, created, title, url, why, chain_key)
         pend = set(cs.pending_sigs(self.state))
@@ -2523,7 +2841,8 @@ class Main(QtWidgets.QMainWindow):
             snippet = (cs.scrub(f.get("prompt", ""))[0])[:80]
             title = f"[{kind}] {snippet}"
             if statef != "Closed only" and (not needle or needle in title.lower()):
-                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", "", None))
+                rows.append(("9999", "queued", "QUEUED", "you", "—", title, "", "", None,
+                             cs.flag_model(f.get("block_text", ""))))
 
         # Dwelling: new Request IDs the dwell auto-filer is holding before it files them as their own
         # linked bespoke issues. Show the countdown + which chain (work session) each belongs to.
@@ -2557,8 +2876,11 @@ class Main(QtWidgets.QMainWindow):
                     chain = f"🔗 new chain forming — {pending_sibs} dwelling together"
                 else:
                     chain = "first in a new chain"
+                frac = min(max((now - t0) / max(cs.DWELL_SECONDS, 1), 0.0), 1.0)
                 rows.append(("9998", "dwelling", "⏳ DWELL", "you",
-                             f"files in ~{mins}m", f"{title}  ·  {chain}", "", chain, proj))
+                             f"files in ~{mins}m\x1f{frac:.3f}",   # \x1f: ring fraction for the delegate
+                             f"{title}  ·  {chain}", "", chain, proj,
+                             cs.flag_model(fnd.get("block_text", "")) if fnd else ""))
 
         for it in self.community:
             st = it.get("state", "").lower()
@@ -2572,7 +2894,12 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if statef == "Closed only" and st != "closed":
                 continue
-            if kindf != "All kinds" and f"[{kindf}]" not in title.lower():
+            mdl = model_of.get(str(it.get("number")), "") or (
+                "Fable 5" if "fable 5" in title.lower() else "")
+            if kindf == "Fable 5":
+                if "fable" not in mdl.lower():
+                    continue
+            elif kindf != "All kinds" and f"[{kindf}]" not in title.lower():
                 continue
             is_defended = deduped.get(str(it["number"])) == "not-duplicate"
             if dedupf == "Defended" and not is_defended:
@@ -2582,8 +2909,8 @@ class Main(QtWidgets.QMainWindow):
             if needle and needle not in title.lower() and needle not in str(it.get("number", "")):
                 continue
             created = fmt_ts(it.get("createdAt", ""))
-            ded = (self.state.get("__deduped__", {}) or {}).get(str(it["number"]))
-            reopened = (self.state.get("__reopened__", {}) or {}).get(str(it["number"]))
+            ded = deduped.get(str(it["number"]))
+            reopened = reopened_map.get(str(it["number"]))
             label = f"#{it['number']}" + (" 👎✓" if ded == "not-duplicate" else "")
             why = ""
             if st == "closed":
@@ -2594,14 +2921,14 @@ class Main(QtWidgets.QMainWindow):
                 if reopened and not str(reopened).startswith("review"):
                     why += " · ♻ reopened by ClAudit"
             rows.append((it.get("createdAt", ""), st, label, author, created, title,
-                         it.get("url", ""), why, chain_of.get(str(it.get("number")))))
+                         it.get("url", ""), why, chain_of.get(str(it.get("number"))), mdl))
 
         rows.sort(key=lambda r: r[0], reverse=True)   # newest first
         graph, nlanes_ = self._build_chain_graph(rows, DOT)
         self._chain_delegate.set_data(graph, nlanes_)
 
         self.table.setRowCount(len(rows))
-        for r, (_, _st, num, author, created, title, url, why, _chain) in enumerate(rows):
+        for r, (_, _st, num, author, created, title, url, why, _chain, mdl) in enumerate(rows):
             is_claudit = "claudit" in title.lower() or title.lower().startswith(("[cyber]", "[aup]", "[bug]"))
             if author == "you" or (self.me and author == self.me):
                 owner = "#b794f6"          # yours = purple
@@ -2611,8 +2938,19 @@ class Main(QtWidgets.QMainWindow):
                 owner = None
             tip = why or ("Click to open in browser" if url else "Not filed yet")
             for c, val in enumerate(["", num, author, created, title]):   # col 0 painted by the delegate
+                frac = None
+                if c == 3 and "\x1f" in val:              # dwell row: split off the countdown fraction
+                    val, _, fs = val.partition("\x1f")
+                    try:
+                        frac = float(fs)
+                    except ValueError:
+                        frac = None
                 item = QtWidgets.QTableWidgetItem(val)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, url)
+                if frac is not None:
+                    item.setData(DwellRingDelegate.FRAC_ROLE, frac)
+                if c == 4 and mdl:
+                    item.setData(TitleChipDelegate.MODEL_ROLE, mdl)
                 item.setToolTip(tip)
                 if c != 0 and owner:
                     item.setForeground(QtGui.QColor(owner))
@@ -2626,6 +2964,9 @@ class Main(QtWidgets.QMainWindow):
         self.empty.setVisible(len(rows) == 0)
         real = [it for it in self.community if "[harness]" not in (it.get("title", "") or "").lower()]
         nopen = sum(1 for it in real if it.get("state", "").lower() == "open")
+        if getattr(self, "total_open", -1) >= 0:
+            nopen = self.total_open       # exact search count — the fetched list is capped at 1000,
+                                          # which froze the tray pill at the cap (was stuck at 600)
         mine = sum(1 for it in real if (it.get("author") or {}).get("login") == self.me)
         self.status.setText(
             f"{len(real)} real false positives · {nopen} open · showing {len(rows)} &nbsp;|&nbsp; "
@@ -2682,9 +3023,48 @@ class Main(QtWidgets.QMainWindow):
                 ("harness withdrawn (false)", harness_withdrawn, "#b58a8a"),
                 ("defended", defended, "#5eead4"),
             ])
+        # header sparkline: cumulative reports/day over the last 30 days
+        if hasattr(self, "spark"):
+            per_day = {}
+            for it in c:
+                d = (it.get("createdAt", "") or "")[:10]
+                if d:
+                    per_day[d] = per_day.get(d, 0) + 1
+            base = datetime.date.today() - datetime.timedelta(days=29)
+            cum, series = sum(v for d, v in per_day.items() if d < base.isoformat()), []
+            for i in range(30):
+                cum += per_day.get((base + datetime.timedelta(days=i)).isoformat(), 0)
+                series.append(cum)
+            self.spark.set_series(series)
+        self._badge_tray(nopen)
 
-    def _on_community(self, items, me):
+    def _badge_tray(self, count):
+        """Overlay the live open-FP count on the tray icon (cached — repaints only when it changes)."""
+        if count == getattr(self, "_badge_n", None) or not os.path.exists(cs.ICON):
+            return
+        self._badge_n = count
+        pm = QtGui.QIcon(cs.ICON).pixmap(64, 64)
+        if count > 0:
+            p = QtGui.QPainter(pm)
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            txt = str(count) if count < 1000 else "1k+"
+            f = QtGui.QFont(self.font())
+            f.setPixelSize(26)
+            f.setBold(True)
+            p.setFont(f)
+            wtx = QtGui.QFontMetrics(f).horizontalAdvance(txt) + 14
+            r = QtCore.QRectF(64 - wtx, 34, wtx, 28)
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor("#d63031"))
+            p.drawRoundedRect(r, 13, 13)
+            p.setPen(QtGui.QColor("#ffffff"))
+            p.drawText(r, QtCore.Qt.AlignmentFlag.AlignCenter, txt)
+            p.end()
+        self.tray.setIcon(QtGui.QIcon(pm))
+
+    def _on_community(self, items, me, nopen_total=-1):
         self.community, self.me = items, me
+        self.total_open = nopen_total
         self._repopulate()
 
     def _show_detail(self, idx):
@@ -2877,6 +3257,10 @@ def main():
         cs.GATE = bool(cfg["gate"])
     if "report_harness" in cfg:
         cs.REPORT_HARNESS = bool(cfg["report_harness"])
+    if "llm_model" in cfg:
+        claudit.LLM_MODEL = str(cfg["llm_model"])
+    if "llm_effort" in cfg:
+        claudit.LLM_EFFORT = str(cfg["llm_effort"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

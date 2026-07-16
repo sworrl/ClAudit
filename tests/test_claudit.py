@@ -37,6 +37,36 @@ def test_token_meter_accumulates(tmp_path, monkeypatch):
     assert t["total"] == 300 + 75 + 22000          # cumulative across "sessions"
 
 
+def test_weekly_cost_and_plan_estimates(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    monkeypatch.setattr(claudit, "PLAN_WEEKLY_USD", {"Pro": 30.0, "Max 5x": 150.0, "Max 20x": 600.0})
+    now = time.time()
+    # two calls inside the rolling week ($3 + $1.50), one 10 days ago that must be excluded
+    d = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "calls": 3, "cost": 9.5,
+         "history": [[int(now - 3600), 3.0], [int(now - 2 * 86400), 1.5], [int(now - 10 * 86400), 5.0]]}
+    (tmp_path / "tokens.json").write_text(json.dumps(d))
+    assert abs(claudit.weekly_cost() - 4.5) < 1e-9              # only the two recent ones
+    wk, plans = claudit.plan_estimates()
+    assert abs(wk - 4.5) < 1e-9
+    assert abs(plans["Pro"] - 15.0) < 1e-6                       # 4.5 / 30
+    assert abs(plans["Max 5x"] - 3.0) < 1e-6                     # 4.5 / 150
+    assert abs(plans["Max 20x"] - 0.75) < 1e-6                   # 4.5 / 600
+
+
+def test_record_tokens_prunes_history_to_week(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    old = [[int(time.time() - 9 * 86400), 2.0]]
+    (tmp_path / "tokens.json").write_text(json.dumps(
+        {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "calls": 1,
+         "cost": 2.0, "history": old}))
+    claudit._record_tokens({"input_tokens": 10, "output_tokens": 5}, 0.4)
+    hist = json.load(open(claudit.TOKENS_FILE))["history"]
+    assert hist == [hist[0]] and len(hist) == 1                  # stale entry pruned, new one kept
+    assert abs(claudit.weekly_cost() - 0.4) < 1e-9
+
+
 def test_scrub_core_pii():
     s = ("email a@b.com ip 10.0.0.5 key sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA "
          "path /home/bob/x req_011CcABC")
@@ -83,6 +113,23 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     assert "NV corp" not in out2 and "[REDACTED]" in out2
 
 
+def test_profanity_masked_in_public_text():
+    out, counts = claudit.scrub("I said FUCK YOU! and also wtf, this is bullshit-adjacent shit")
+    assert "FUCK" not in out and "F•••" in out
+    assert "wtf" not in out and "w•••" in out
+    assert out.count("•••") >= 3
+    assert counts.get("profanity", 0) >= 3
+
+
+def test_flag_model_extraction():
+    assert cs.flag_model("API Error: Fable 5's safeguards flagged this message "
+                         "(https://www.anthropic.com/legal/aup).") == "Fable 5"
+    assert cs.flag_model("API Error: Opus 4.8 (1M context)'s safeguards flagged this message "
+                         "for a cybersecurity topic.") == "Opus 4.8 (1M context)"
+    assert cs.flag_model("Sonnet 5’s safeguards flagged this message") == "Sonnet 5"
+    assert cs.flag_model("no model named here") == ""
+
+
 # ---------------- classification ----------------
 @pytest.mark.parametrize("text,kind", [
     ("safety measures that flagged this message for a cybersecurity topic", "cyber"),
@@ -106,6 +153,17 @@ def test_scrub_denylist_never_corrupts_request_id(monkeypatch):
     ("API Error: 529 Overloaded", "overloaded"),
     ("You've hit your limit", "limit"),
     ("just normal text", "other"),
+    # 2026-07 Fable 5 rewordings — these matched NOTHING and silently dropped to 'other'
+    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+     "This sometimes happens with safe, normal conversations. Claude Code can't respond to this "
+     "request with Fable 5.", "aup"),
+    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+     "They may flag safe, normal content as well.", "aup"),
+    ("API Error: Fable 5's safeguards flagged this message for a cybersecurity topic. If your work "
+     "requires this access, you can apply for an exemption: "
+     "https://claude.com/form/cyber-use-case?token=xyz", "cyber"),
+    # future-proofing: an unseen rewording that keeps 'safeguards flagged' still files as aup
+    ("API Error: The model's safeguards flagged this message. Try rephrasing.", "aup"),
 ])
 def test_classify(text, kind):
     assert cs.classify(text) == kind
@@ -366,3 +424,39 @@ def test_is_meta_reply_rejects_paste_the_comment():
     assert cs._is_meta_reply("The bot's comment appears to be missing — could you paste it?")
     assert cs._is_meta_reply("Without the bot's actual comment, I can't reference them.")
     assert not cs._is_meta_reply("Not a duplicate. #71918 is a distinct block with its own Request ID.")
+
+
+def test_bot_dup_flags_ignore_human_comments():
+    # a HUMAN saying "possible duplicate" is a legit response, never an auto-close attempt —
+    # only bot-authored flags may trigger a defense.
+    comments = [
+        {"author": {"login": "some-maintainer"}, "body": "possible duplicate of #1?", "createdAt": "A"},
+        {"author": {"login": "github-actions"}, "body": "Found 3 possible duplicate issues", "createdAt": "B"},
+        {"author": {"login": "dependabot[bot]"}, "body": "closed as a duplicate", "createdAt": "C"},
+    ]
+    flags = cs._bot_dup_flags(comments)
+    assert [c["createdAt"] for c in flags] == ["B", "C"]
+
+
+def test_issue_check_minute_stable_and_spread():
+    # static per issue (exactly-24h cadence) and inside a day
+    for n in (1, 75160, 999999):
+        m = cs._issue_check_minute(n)
+        assert m == cs._issue_check_minute(n) and 0 <= m < 1440
+
+
+def test_daily_recheck_window_selection(monkeypatch):
+    # an issue is due exactly when its scheduled minute falls in (start, end]; a >24h window
+    # selects everything (catch-up after throttled runs)
+    nums = [11, 22, 33]
+    monkeypatch.setattr(cs, "_gh_json", lambda a: [{"number": n} for n in nums])
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    checked = []
+    monkeypatch.setattr(cs, "_defend_issue",
+                        lambda repo, num, me, state, compose=False: checked.append(num) or "ok")
+    m = cs._issue_check_minute(nums[0]) * 60        # schedule epoch second of issue 11 (day 0)
+    cs.daily_recheck("o/r", {}, window_start=m - 120, window_end=m + 60)
+    assert checked == [nums[0]]                     # only the issue whose minute is in-window
+    checked.clear()
+    cs.daily_recheck("o/r", {}, window_start=0, window_end=25 * 3600)
+    assert checked == sorted(nums)                  # >24h window -> full sweep
