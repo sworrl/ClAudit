@@ -102,8 +102,11 @@ def classify(text):
     # the old fixed strings stopped matching, silently dropping real cyber blocks to 'other'.
     # error_text() only ever feeds real API-error messages here, so this can't catch model refusals.
     if (("cybersecurity" in t and "flag" in t)
-            or "cyber-use-case" in t                   # the exemption-form link is a stable anchor
-            or "safety filter detected cybersecurity" in t):
+            or "safety filter detected cybersecurity" in t
+            or "cybersecurity policy" in t
+            or ("cybersecurity" in t and "block" in t)
+            or "security topic classifier" in t
+            or "classified as a cybersecurity" in t):
         return "cyber"
     # aup = anything the safeguards flagged against the Usage Policy. Anchor on the legal/aup LINK
     # (present in every wording so far) plus a generic "safeguards flagged" fallback, because the
@@ -113,8 +116,11 @@ def classify(text):
     if ("violate our usage policy" in t or "unable to respond to this request" in t
             or "against our usage policy" in t or "usage policy violation" in t
             or "content policy violation" in t
-            or "legal/aup" in t
-            or "safeguards flagged" in t):
+            or "acceptable use policy" in t
+            or "terms of service violation" in t
+            or "policy compliance" in t and "block" in t
+            or "request violates" in t
+            or "prohibited by our policies" in t):
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
