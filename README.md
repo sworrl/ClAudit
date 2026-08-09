@@ -4,11 +4,11 @@
 
 # ClAudit
 
-**Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues — automatically, continuously, and safely.**
+**Catch false-positive Claude Code safety / policy blocks across every session on your machine, scrub the PII out, and file clean, well-written GitHub issues, automatically, continuously, and safely.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.110-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.111-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -20,23 +20,23 @@
 ### Claude Code just refused your perfectly legitimate work. Again.
 
 Securing your own servers. Reviewing your own code. Hardening your own tenant. Debugging your own
-binary. And a safety classifier slammed the door — on the exact thing it's supposed to help you do.
+binary. And a safety classifier slammed the door, on the exact thing it's supposed to help you do.
 Double-press esc. Rephrase. Start a new session. Lose your context, lose your flow. **Every. Single.
 Day.**
 
 <div align="center">
 
 <img src="docs/phrasing.gif" alt="Phrasing." width="100%"><br>
-<sub><i>Rephrase it. Reword it. Tiptoe around the words. <b>Phrasing.</b> — every dev dodging the classifier</i></sub>
+<sub><i>Rephrase it. Reword it. Tiptoe around the words. <b>Phrasing.</b>, every dev dodging the classifier</i></sub>
 
 </div>
 
 **Want it fixed? Then help prove it's broken.**
 
-Every one of those blocks carries a **Request ID** Anthropic can look up — which means every block is
+Every one of those blocks carries a **Request ID** Anthropic can look up, which means every block is
 a fixable bug report waiting to happen. The problem is nobody hand-files dozens of them. So ClAudit
 does it *for* you: it watches your sessions, catches the false positives, **scrubs every trace of your
-PII**, and files clean, specific, deduplicated GitHub issues — automatically, while you keep working.
+PII**, and files clean, specific, deduplicated GitHub issues, automatically, while you keep working.
 
 You don't change how you work. ClAudit quietly builds the case. The more devs run it, the harder the
 pattern is to ignore. **That's** how this gets fixed.
@@ -57,7 +57,7 @@ Real cyber/aup API false positives across **all** ClAudit users, live from [`ant
 
 ### 🔮 Will Anthropic fix it?
 
-Community vote — does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
+Community vote, does Anthropic actually fix the over-blocking, or does Claude Code stay broken? Live tally, refreshed automatically:
 
 <!-- POLL:START -->
 **Will Anthropic fix Claude Code's false-positive blocking, or will it stay broken?**  ·  _4 vote(s), updated 2026-08-09 20:52 UTC_
@@ -73,27 +73,27 @@ Community vote — does Anthropic actually fix the over-blocking, or does Claude
 
 <div align="center">
 
-<img src="docs/screenshot.png" alt="ClAudit Issues tab — every false-positive issue, newest first, yours highlighted" width="780">
+<img src="docs/screenshot.png" alt="ClAudit Issues tab, every false-positive issue, newest first, yours highlighted" width="780">
 
-<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. Leading [Bug][cyber]/[aup] tags render as coloured pill chips, so the kind mix is scannable at a glance. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a coloured lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a live circular countdown that fills as the dwell elapses. The header carries a 30-day sparkline and the 🔥 token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>) — it pulses red⇄orange while burn mode is on, and fills with your weekly plan usage when quiet.</em>
+<em>Issues tab: every cyber/AUP false-positive report across anthropics/claude-code and sworrl/ClAudit, yours highlighted, filterable by scope, state, kind, and defended status. Leading [Bug][cyber]/[aup] tags render as colored pill chips, so the kind mix is scannable at a glance. The left gutter is a git-graph of the cross-linked chains: reports from the same work session share a colored lane, so you can see at a glance which issues belong together. Items the dwell auto-filer is holding show as ⏳ DWELL rows with a live circular countdown that fills as the dwell elapses. The header carries a 30-day sparkline and the 🔥 token meter (see <a href="#burn-tokens-mode">burn-tokens mode</a>), it pulses red⇄orange while burn mode is on, and fills with your weekly plan usage when quiet.</em>
 
 <br><br>
 
-<img src="docs/screenshot-project.png" alt="ClAudit Project tab — community vote, reports-over-time trend, kind breakdown, stargazers" width="780">
+<img src="docs/screenshot-project.png" alt="ClAudit Project tab, community vote, reports-over-time trend, kind breakdown, stargazers" width="780">
 
 <em>Project tab: the community vote, the reports-over-time trend (open FPs, real closures, withdrawn harness reports), and the breakdown bars. Closures are split honestly: "closed (Anthropic)" counts only cyber/aup the maintainers closed; the withdrawn harness reports are a separate "harness withdrawn (false)" tally, not counted as Anthropic acting.</em>
 
 <br><br>
 
-<img src="docs/screenshot-activity.png" alt="ClAudit Activity tab — pseudo-3D chrono-line of every filed issue, one depth lane per kind, your issues ringed" width="780">
+<img src="docs/screenshot-activity.png" alt="ClAudit Activity tab, pseudo-3D chrono-line of every filed issue, one depth lane per kind, your issues ringed" width="780">
 
 <em>Activity tab: a pseudo-3D chrono-line of the real cyber/AUP false positives (the auto-mode-classifier reports are excluded). Two lanes; a stem rises to each issue with height set by age, so the timeline reads as an ascending ridge. Closure shows state: open stands at its age, a real-action close (COMPLETED) turns green and lifts above the line with a ✓, and a dismissed/ignored close greys out and sinks to the floor with a ✕. New issues grow in place with a ripple as they post; your own are ringed; the newest carries a reticle. An abstract drifting backdrop sits behind it. Drag to rotate (it eases back to a readable angle when you let go), wheel to zoom, and the Cinematic button flies the camera along each lane in turn. Pure QPainter, no OpenGL, and zero repaints when idle.</em>
 
 <br><br>
 
-<img src="docs/screenshot-settings.png" alt="ClAudit Settings tab — every setting as a live toggle, applied instantly with no save button" width="780">
+<img src="docs/screenshot-settings.png" alt="ClAudit Settings tab, every setting as a live toggle, applied instantly with no save button" width="780">
 
-<em>Settings tab: every configurable knob as a live toggle — filing &amp; detection, defense, reliability (the crash-recovery <strong>watchdog</strong>), LLM &amp; PII, and timing sliders. Each control applies the moment you flip it (no save button) and persists across restarts, staying in sync with the tray menu. The header's 🔥 token meter glows its alarming red⇄orange because burn-tokens mode is on here.</em>
+<em>Settings tab: every configurable knob as a live toggle, filing &amp; detection, defense, reliability (the crash-recovery <strong>watchdog</strong>), LLM &amp; PII, and timing sliders. Each control applies the moment you flip it (no save button) and persists across restarts, staying in sync with the tray menu. The header's 🔥 token meter glows its alarming red⇄orange because burn-tokens mode is on here.</em>
 
 </div>
 
@@ -140,12 +140,12 @@ equivalent **headless CLI watcher**.
 
 It is deliberately **not** a spam tool. It logs-and-ignores transient noise (rate limits, overloaded,
 usage caps), files **at most one issue per distinct blocked request**, runs **single-instance**, and
-defaults to **review-before-send** — and its strongest mode (**burn-tokens**) has Claude itself write
+defaults to **review-before-send**, and its strongest mode (**burn-tokens**) has Claude itself write
 each report so no raw transcript text is ever echoed into a public issue.
 
 ## Why it exists
 
-If you write code with Claude Code, you've hit this. Security work, sure — but honestly **any** code,
+If you write code with Claude Code, you've hit this. Security work, sure, but honestly **any** code,
 anything touching computers, and sometimes things that have nothing to do with either (people report
 it on agriculture, on biology, on plain prose). A legitimate, in-scope request just gets stopped by a
 server-side block:
@@ -154,7 +154,7 @@ server-side block:
 > `API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy.`
 > `Permission for this action was denied by the Claude Code auto mode classifier.`
 
-Each carries a **Request ID** that Anthropic can look up server-side — which makes each one a
+Each carries a **Request ID** that Anthropic can look up server-side, which makes each one a
 genuinely actionable false-positive report. The friction is that nobody is going to copy-paste,
 scrub, and file dozens of these by hand. ClAudit does it for you.
 
@@ -234,15 +234,15 @@ The trend chart separates this out honestly: closing the withdrawn `harness` rep
 ## The honesty gate (opt-in, off by default)
 
 Whether a block was a *correct* safety stop or a *false positive* is the single contested judgment
-this whole project exists to question — so by default ClAudit **doesn't make it**. It files every
+this whole project exists to question, so by default ClAudit **doesn't make it**. It files every
 genuine block you hit and leaves the verdict to Anthropic. Pre-judging it in the filer would bake in
 the exact unreliable classification we're trying to surface.
 
 A conservative LLM gate is still available as an **opt-in** for anyone who wants it: enable `--gate`
 (or `"gate": true` in config) and each block is judged before filing, skipping only the ones the LLM
 is confident were **clearly, justifiably correct** (an agent told not to mass-post to an external
-repo, steal credentials, deploy malware, or evade safety controls). It is deliberately conservative —
-everything ambiguous or plausibly in-scope is still reported — and it requires the `claude` CLI.
+repo, steal credentials, deploy malware, or evade safety controls). It is deliberately conservative , 
+everything ambiguous or plausibly in-scope is still reported, and it requires the `claude` CLI.
 With the gate off (the default), nothing is pre-judged and every genuine block is filed.
 
 ## PII protection (read this)
@@ -252,25 +252,25 @@ most important thing. There are **three layers**, strongest last:
 
 1. **Regex scrubbers.** Emails, IPs, API keys (Anthropic/OpenAI/AWS), GitHub & Bearer tokens, JWTs,
    private keys, DB connection strings, Slack webhooks, MACs, UUIDs, phone numbers, Entra tenant
-   domains, home-directory usernames — **including the dash-encoded form** Claude Code uses in
+   domains, home-directory usernames, **including the dash-encoded form** Claude Code uses in
    `claude-1000` task dirs and session paths (`-var-home-USER-…`).
 2. **Your local denylist.** Names the regex can't possibly know: your org, tenant names, client
    names, internal hostnames, project codenames, teammates' names. One per line in
-   `~/.claude/claudit/scrub.txt` (copy `scrub.txt.example`). **This file is local — never committed.**
-3. **Burn-tokens mode — the strongest defense, and the recommended one.** Instead of echoing raw
+   `~/.claude/claudit/scrub.txt` (copy `scrub.txt.example`). **This file is local, never committed.**
+3. **Burn-tokens mode, the strongest defense, and the recommended one.** Instead of echoing raw
    transcript text into the issue, ClAudit has the `claude` CLI **write a bespoke, generic description**
-   of what was blocked — explicitly instructed to include **no** names, hosts, IPs, tenants, or paths.
+   of what was blocked, explicitly instructed to include **no** names, hosts, IPs, tenants, or paths.
    Because the report is *composed* rather than *copied*, sensitive operational detail (security
    posture, infrastructure specifics, conversation context) simply never makes it into the post. The
    output is then run back through layers 1 and 2 as a safety net. **If you care about PII, turn
-   burn-tokens on** — it is the best way to prevent leaks.
+   burn-tokens on**, it is the best way to prevent leaks.
 
 > Request IDs (`req_…`) and the words Claude / Anthropic / ClAudit / GitHub are **hard-protected** and
 > never redacted, so reports stay actionable.
 
 By default the public report contains only: the block type + work-domain tag, a short
 "why it's a false positive," the Request IDs, your in-scope justification, and the block message.
-The raw conversation leadup and project paths are kept in your **local** database only — not posted.
+The raw conversation leadup and project paths are kept in your **local** database only, not posted.
 
 ## Install
 
@@ -290,7 +290,7 @@ pip install ".[gui]"        # or: pipx install ".[gui]"
 ```
 
 Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
-for the GUI, and — to actually use burn-tokens / LLM scrub — the **`claude`** CLI on your PATH.
+for the GUI, and, to actually use burn-tokens / LLM scrub, the **`claude`** CLI on your PATH.
 
 ## Quick start
 
@@ -312,20 +312,20 @@ automatically by ClAudit" marker, so it shows all kinds, not just ones with "fal
 title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
-  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today —
+  (cyber / aup / harness), how many you have defended and reopened, and how many you filed today , 
   plus a **30-day sparkline** of reports-over-time and the **🔥 token meter**: rolling 7-day LLM
   spend as an estimated share of each Anthropic plan's weekly cap (see
   [Burn-tokens mode](#burn-tokens-mode)). In quiet mode the meter pill **fills left-to-right** with
   your weekly plan usage (green → amber → red); in burn mode it pulses an alarming red⇄orange.
 - **Live tray badge:** the tray icon carries the current open false-positive count, updated as
-  reports file and close — the tally is visible without opening the window.
+  reports file and close, the tally is visible without opening the window.
 - **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
   not-defended**, and a search that matches the title or a `#number`. The list shows only the **real
-  cyber/AUP false positives** — the withdrawn auto-mode-classifier (harness) reports are never listed
+  cyber/AUP false positives**, the withdrawn auto-mode-classifier (harness) reports are never listed
   (they stay a separate "harness withdrawn (false)" tally in the stats bar).
 - **Ownership colors:** your issues in purple, other ClAudit users' in teal; newest first with exact
   local timestamps.
-- **Kind chips:** the leading `[Bug][cyber]` / `[aup]` tags paint as coloured pill chips (blue cyber,
+- **Kind chips:** the leading `[Bug][cyber]` / `[aup]` tags paint as colored pill chips (blue cyber,
   amber aup), so the kind mix reads at a glance without parsing bracket soup.
 - **Double-click any row** for a **detail panel**: status and close reason, kind, Request IDs, and a
   full **timeline** (filed, dup-bot flagged, defended, closed by whom and why, reopened) built from
@@ -333,8 +333,8 @@ title.
   that has no defense yet.
 - **Right-click any row** for quick actions: Details, Defend, Reopen, Open on GitHub.
 - **Chain graph in the list gutter.** The left column is a git-graph: reports from the same work
-  session are strung onto one coloured vertical lane with a node per row, so the cross-linked chains
-  are visible at a glance (the same colours used on the 3D chart). Each Request ID is its own bespoke
+  session are strung onto one colored vertical lane with a node per row, so the cross-linked chains
+  are visible at a glance (the same colors used on the 3D chart). Each Request ID is its own bespoke
   issue; the lane shows which ones belong together.
 - **Dwell auto-file (opt-in).** Instead of filing immediately or waiting for a manual push, new
   cyber/AUP blocks are held for a dwell (default 5 min) so repeats accrue as their own incidents,
@@ -365,19 +365,19 @@ title.
   comments and @mentions on the ClAudit repos, so you see community engagement (a contributor asking
   to help, a maintainer replying) as it happens. It logs each to the Activity feed.
 - A **live backfill progress bar** (filed / total / next-drip countdown / current pace).
-- **Settings tab — everything live, no save button.** Every configurable knob as an animated toggle,
+- **Settings tab, everything live, no save button.** Every configurable knob as an animated toggle,
   grouped: **Filing & detection** (auto-post, dwell auto-file, backfill, harness reports),
   **Defense** (auto-defend, auto-reopen, community 👍 amplify), **Reliability** (the watchdog),
   **LLM & PII** (Claude scrubbing, burn-tokens, honesty gate), and **Timing** sliders (dwell minutes,
   watch interval). Each control applies to the running watcher the moment you flip it, persists to
   config, and stays mirrored with the tray menu. Dependencies cascade (dwell ⇒ PII scrubbing on).
 - **Watchdog (opt-in keep-alive).** A detached supervisor process watches the GUI and relaunches it
-  automatically if it ever crashes — while a normal Quit still quits (an intent flag tells the
+  automatically if it ever crashes, while a normal Quit still quits (an intent flag tells the
   watchdog to stand down). It tolerates the brief gap during a self-update restart, never stacks a
   second supervisor, and stops within seconds of toggling it off.
 - Tray toggles mirror the Settings tab: **Auto-post**, **Dwell auto-file**, **Backfill**,
   **Auto-defend dup-bot flags** (on by default), **Auto-reopen dup-bot closes** (off by default),
-  and **Claude PII scrubbing** — flip either surface and both stay in sync.
+  and **Claude PII scrubbing**, flip either surface and both stay in sync.
 
 The GUI **updates itself from GitHub**: every few minutes it fetches origin and fast-forward-pulls if
 the checkout is clean and behind, then relaunches on the new code. It only ever fast-forwards, so a
@@ -456,7 +456,7 @@ When you `--baseline`, every block that already exists becomes a **backlog** ite
 ClAudit drip-files that backlog **newest-first** (so the blocks you're actively hitting get reported
 before stale ones) **while** the live watcher keeps insta-posting genuinely new blocks. The pace is
 **adaptive**: it starts at `--backfill-interval` seconds, creeps faster while GitHub is happy, and
-**backs off exponentially the moment GitHub rate-limits** — so it goes as fast as is safe without you
+**backs off exponentially the moment GitHub rate-limits**, so it goes as fast as is safe without you
 tuning anything. The GUI shows the live count, what's left, and the next-drip countdown.
 
 ## Burn-tokens mode
@@ -464,11 +464,11 @@ tuning anything. The GUI shows the live count, what's left, and the next-drip co
 `--burn-tokens` (or the saved config flag) tells ClAudit to **spend tokens to do each report well**:
 the `claude` CLI writes a **specific, bespoke title** (no `[REDACTED]` filler) and a tight, factual
 explanation of exactly what legitimate work was wrongly blocked. As covered above, this is also **the
-strongest PII protection** — the report is composed generically instead of echoing your transcript.
+strongest PII protection**, the report is composed generically instead of echoing your transcript.
 It's slower and uses tokens (hence the name); it's the recommended mode for anyone who cares about
 either report quality or PII. Set it once in your config and forget it.
 
-**Token meter.** Every `claude` call ClAudit makes — compose, scrub, gate, dedup verdict — is run in
+**Token meter.** Every `claude` call ClAudit makes, compose, scrub, gate, dedup verdict, is run in
 JSON mode and its usage (input / output / cache tokens + USD cost) tallied into
 `~/.claude/claudit/tokens.json`, accumulated across every session with a rolling 7-day cost history.
 
@@ -481,13 +481,13 @@ Rolling 7-day spend: $4.20  →  estimated share of each plan's weekly cap
   Pro     14.0%   (est. cap $30/wk)
   Max 5x   2.8%   (est. cap $150/wk)
   Max 20x  0.7%   (est. cap $600/wk)
-  (estimates — Anthropic caps are usage-window based, not $-metered)
+  (estimates, Anthropic caps are usage-window based, not $-metered)
 
 Lifetime across every session:
   5.60M tokens  ·  152 claude calls  ·  $21.52
 ```
 
-While burn-tokens mode is **on** the meter pulses in an alarming red⇄orange — so you always know how
+While burn-tokens mode is **on** the meter pulses in an alarming red⇄orange, so you always know how
 hard ClAudit is leaning on your plan; with burn-tokens off it stays muted grey but keeps counting.
 
 > The plan percentages are **estimates**. Anthropic's subscription limits are usage-window based, not
@@ -507,11 +507,11 @@ python3 claudit_scan.py --dedup-guard          # dry-run: print the LLM's verdic
 python3 claudit_scan.py --dedup-guard --apply  # comment ONLY on the genuinely-distinct ones
 ```
 
-It is **judge-first by default** — it prints verdicts and posts nothing until you add `--apply`. With
+It is **judge-first by default**, it prints verdicts and posts nothing until you add `--apply`. With
 `--apply`, on the genuinely-distinct issues it leaves a bespoke factual comment **and** reacts 👎 to
-the dup-bot (the exact mechanism the bot offers — *"to prevent auto-closure… 👎 this comment"*); on
+the dup-bot (the exact mechanism the bot offers, *"to prevent auto-closure… 👎 this comment"*); on
 real duplicates it does nothing, so they consolidate onto the canonical issue. It does **not**
-blanket-fight auto-closure — only where the LLM finds a clear, factual distinction.
+blanket-fight auto-closure, only where the LLM finds a clear, factual distinction.
 
 ## Manual one-off filing
 
@@ -542,13 +542,13 @@ Both are off by default and toggle live from the Settings tab or the tray.
 
 A running ClAudit GUI **looks to GitHub and updates itself**: every few minutes it `git fetch`es the
 origin and, if this checkout is strictly **behind** the remote branch *and* the working tree is
-**clean**, it **fast-forward pulls**. It only ever fast-forwards — local, dirty, or diverged checkouts
+**clean**, it **fast-forward pulls**. It only ever fast-forwards, local, dirty, or diverged checkouts
 are never force-updated, so your own work is safe. It **relaunches only when the pull changed source**
 (a `.py` file or a dependency manifest). Pulls that just refresh the counter/poll/trend/README update
 the checkout silently and keep running, so the periodic stats-refresh commits don't bounce the app. A
 manual `git pull` with code changes is picked up the same way, so it's never running stale code.
 
-If the **watchdog** (Settings → Reliability) is on, it rides through self-update restarts — the
+If the **watchdog** (Settings → Reliability) is on, it rides through self-update restarts, the
 supervisor tolerates the brief singleton-lock gap while the new version comes up, and only steps in
 when the GUI actually dies.
 
@@ -566,10 +566,10 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 ## Responsible use
 
 - Only report blocks on **genuinely in-scope, authorized** work.
-- **Use burn-tokens** (and keep your denylist current) before posting publicly — it's the best PII
+- **Use burn-tokens** (and keep your denylist current) before posting publicly, it's the best PII
   defense.
 - Don't blast hundreds of near-identical issues; the dup-bot will (correctly) consolidate them.
-  Quality over volume — that's the whole point.
+  Quality over volume, that's the whole point.
 - ClAudit posts under your account. Treat it like you'd treat your own GitHub voice.
 
 ## Troubleshooting
@@ -578,16 +578,16 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
   ClAudit now adds the interpreter's bin dir to PATH automatically; update to ≥1.5.1.
 - **Titles show `[REDACTED]`:** that was an old over-redaction bug; update and use burn-tokens for
   bespoke titles.
-- **Backfill looks frozen:** check the progress bar's pace — it backs off when GitHub rate-limits.
+- **Backfill looks frozen:** check the progress bar's pace, it backs off when GitHub rate-limits.
 - **PII slipped through:** add the term to `~/.claude/claudit/scrub.txt` and turn on burn-tokens; you
   can re-scrub already-posted issues with `gh issue edit`.
 - **"Another ClAudit watcher is already running":** the GUI and the headless `claudit_scan.py --watch`
-  share one singleton lock — run one or the other, not both (the GUI has its own built-in watcher).
+  share one singleton lock, run one or the other, not both (the GUI has its own built-in watcher).
   If it appears with nothing running, a crash left a stale `~/.claude/claudit/watcher.lock`; it's
   cleared automatically when the dead PID is detected, or delete it by hand.
 - **Running but no window:** click the tray icon once (it raises + focuses the window, including on
   Wayland/GNOME) or use the tray menu's **Show window**.
-- **Worried about token spend:** watch the header's 🔥 meter — at idle ClAudit makes **zero** `claude`
+- **Worried about token spend:** watch the header's 🔥 meter, at idle ClAudit makes **zero** `claude`
   calls; tokens are only spent filing, judging, or defending.
 
 ## Project layout
@@ -603,15 +603,15 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 
 ## Help wanted (good first issues)
 
-New here? These are the best places to jump in — all tagged **good first issue / help wanted**:
+New here? These are the best places to jump in, all tagged **good first issue / help wanted**:
 
-- **[Test the tray app on Windows and macOS](https://github.com/sworrl/ClAudit/issues/1)** — it's only
+- **[Test the tray app on Windows and macOS](https://github.com/sworrl/ClAudit/issues/1)**, it's only
   been run on Linux; confirm the tray, notifications, and dashboard work elsewhere.
-- **[Packaging: Homebrew / AUR / Flatpak](https://github.com/sworrl/ClAudit/issues/2)** — make it
+- **[Packaging: Homebrew / AUR / Flatpak](https://github.com/sworrl/ClAudit/issues/2)**, make it
   installable without `git clone`.
-- **[Add new block-classification signatures](https://github.com/sworrl/ClAudit/issues/3)** — teach
+- **[Add new block-classification signatures](https://github.com/sworrl/ClAudit/issues/3)**, teach
   `classify()` about block phrasings it doesn't recognize yet.
-- **[Autostart helpers for macOS & Windows](https://github.com/sworrl/ClAudit/issues/4)** — Login Item
+- **[Autostart helpers for macOS & Windows](https://github.com/sworrl/ClAudit/issues/4)**, Login Item
   / Startup equivalents of the Linux installer.
 
 ## Contributing
@@ -623,7 +623,7 @@ does it for you), and never add anything designed to spam a repo or evade duplic
 ## License
 
 ClAudit is **free and open-source software**, released under the
-**[GNU General Public License v3.0](LICENSE)** — a strong copyleft license: you may use, study,
+**[GNU General Public License v3.0](LICENSE)**, a strong copyleft license: you may use, study,
 share, and modify it, but any derivative or larger work must also be GPL-3.0 and make its complete
 source available. Copyright and license notices must be preserved.
 
@@ -632,5 +632,5 @@ source available. Copyright and license notices must be preserved.
 ---
 
 <div align="center">
-<sub><i>To the classifier that keeps saying “no” to honest work — go ahead, get offended. We'll keep filing.</i></sub>
+<sub><i>To the classifier that keeps saying “no” to honest work, go ahead, get offended. We'll keep filing.</i></sub>
 </div>
