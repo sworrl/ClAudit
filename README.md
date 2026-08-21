@@ -228,6 +228,7 @@ GitHub runs a duplicate-detection bot on `anthropics/claude-code` that flags and
 - **Defend.** Every few minutes the watcher finds issues the bot flagged (by the `duplicate` label, which is authoritative) and posts a factual "not a duplicate" note plus a 👎 on the bot's comment. It is idempotent (a single search finds what is already defended, so it never double-posts) and paced (one action every few seconds, to stay under GitHub abuse limits). It handles label-only flags too, where the bot labels an issue without commenting.
 - **Track closures.** It records why each closed issue closed (`duplicate`, `not_planned`, `completed`) and who closed it. The GUI shows this on every closed row and in the per-issue timeline.
 - **Reopen (opt-in, off by default).** It can reopen issues the bot closed as duplicates, once each (so it cannot loop if the bot re-closes). It never touches issues you closed yourself, and by default it does not fight a human maintainer's close; those are recorded for your review instead.
+- **Closure defender (sweeps and merges, on by default).** Two bulk-close patterns get their own handling. When the inactivity bot sweeps untriaged reports as "not planned" ("inactive for too long"), ClAudit attempts the reopen, and since GitHub refuses authors that, posts one still-relevant note per report and maintains a single umbrella issue listing every swept report with its request IDs, grouped by sweep day (config `umbrella_issue`). When a maintainer closes a report as "duplicate of #N", ClAudit treats the consolidation as fair triage and folds the closed report's request IDs onto the open canonical, with the 👍 the close comment asks for, so every blocked call stays traceable. Both are idempotent through state plus comment markers, so a lost state file cannot double-post. The GUI marks the rows: 🧹 swept, ⇥ merged, 📎 canonical.
 
 The trend chart separates this out honestly: closing the withdrawn `harness` reports does not count toward the "closed by Anthropic" line, so the chart shows real progress, not your own cleanup.
 
@@ -248,11 +249,12 @@ With the gate off (the default), nothing is pre-judged and every genuine block i
 ## PII protection (read this)
 
 ClAudit posts to a **public** repository under **your** GitHub identity, so PII hygiene is the single
-most important thing. There are **three layers**, strongest last:
+most important thing. There are **four layers**, strongest last:
 
-1. **Regex scrubbers.** Emails, IPs, API keys (Anthropic/OpenAI/AWS), GitHub & Bearer tokens, JWTs,
-   private keys, DB connection strings, Slack webhooks, MACs, UUIDs, phone numbers, Entra tenant
-   domains, home-directory usernames, **including the dash-encoded form** Claude Code uses in
+1. **Regex scrubbers.** Emails, IPv4/IPv6, API keys (Anthropic/OpenAI/AWS/Google/Stripe), GitHub,
+   GitLab, Slack, npm & Bearer tokens, JWTs, private keys, SSH public keys, DB connection strings
+   and `user:pass@` URLs, Slack webhooks, MACs, UUIDs, phone numbers, Entra tenant domains,
+   home-directory usernames, **including the dash-encoded form** Claude Code uses in
    `claude-1000` task dirs and session paths (`-var-home-USER-…`).
 2. **Your local denylist.** Names the regex can't possibly know: your org, tenant names, client
    names, internal hostnames, project codenames, teammates' names. One per line in
@@ -264,6 +266,12 @@ most important thing. There are **three layers**, strongest last:
    posture, infrastructure specifics, conversation context) simply never makes it into the post. The
    output is then run back through layers 1 and 2 as a safety net. **If you care about PII, turn
    burn-tokens on**, it is the best way to prevent leaks.
+4. **Tandem engines (v2.2.0).** With both the `agy` (Antigravity) and `claude` CLIs installed,
+   `--engine tandem` (what `auto` now resolves to) runs the LLM layers through **both models**:
+   the identify-PII pass is unioned, so a name one model misses is still caught by the other, and
+   every composed title/body/defense comment gets a second-model review that redacts leftover PII
+   and rejects drafts that read as AI slop (falling back to the deterministic templates). agy
+   carries the generation calls; claude (Haiku 4.5) only gets the short review calls.
 
 > Request IDs (`req_…`) and the words Claude / Anthropic / ClAudit / GitHub are **hard-protected** and
 > never redacted, so reports stay actionable.
@@ -290,7 +298,8 @@ pip install ".[gui]"        # or: pipx install ".[gui]"
 ```
 
 Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
-for the GUI, and, to actually use burn-tokens / LLM scrub, the **`claude`** CLI on your PATH.
+for the GUI, and, to actually use burn-tokens / LLM scrub, the **`claude`** and/or **`agy`**
+(Antigravity) CLI on your PATH — with both installed they run in tandem, cross-checking each other.
 
 ## Quick start
 
@@ -440,6 +449,10 @@ Defend, reopen, and track:
 | `--watch --reopen` | Run the reopen sweep on a timer (opt-in) |
 | `--reopen-humans` | Also reopen issues a human maintainer closed as duplicate (default: bot only) |
 | `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (dry-run without `--apply`) |
+| `--sweep-scan` | Classify your closed issues (swept / merged / closed) and print the rollup; posts nothing |
+| `--defend-closures` | One-shot: answer bot stale-sweeps + fold merged request IDs onto canonicals, refresh the umbrella |
+| `--update-umbrella` | Refresh the umbrella issue's body from recorded swept closures |
+| `--watch --closures` | Run the closure defender on a timer (default every 15 min) |
 
 PII and output:
 

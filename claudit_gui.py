@@ -26,8 +26,8 @@ import time
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import claudit  # noqa: E402  (LLM_SCRUB flag)
-import claudit_scan as cs  # noqa: E402
+import claudit
+import claudit_scan as cs
 
 STATE_LOCK = threading.Lock()
 
@@ -53,7 +53,7 @@ except Exception:
     _HAVE_SVG = False
 try:
     sys.path.insert(0, os.path.join(REPO_DIR, "scripts"))
-    import render_poll as _rp          # reuse render_trend_svg for the in-GUI chart
+    import render_poll as _rp  # reuse render_trend_svg for the in-GUI chart
 except Exception:
     _rp = None
 
@@ -78,7 +78,7 @@ def _pid_alive(pid):
 
 def _read_pid(path):
     try:
-        return int((open(path).read().strip() or "0"))
+        return int(open(path).read().strip() or "0")
     except (OSError, ValueError):
         return 0
 
@@ -274,8 +274,12 @@ QListWidget::item:selected { background: #3a2f63; }
 
 
 try:
+    from PyQt6.QtOpenGL import (
+        QOpenGLShader,
+        QOpenGLShaderProgram,
+        QOpenGLVertexArrayObject,
+    )
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-    from PyQt6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader, QOpenGLVertexArrayObject
     _HAVE_GL = True
 except Exception:
     _HAVE_GL = False
@@ -1238,6 +1242,7 @@ class Watcher(QtCore.QThread):
     acted = QtCore.pyqtSignal(int, str)    # (count, kind: "auto"|"queued"|"backfill"|"defend")
 
     DEFEND_INTERVAL = 240                   # seconds between dedup-defender sweeps (fast: 1 search/pass)
+    CLOSURE_INTERVAL = 900                  # seconds between closure-defender sweeps (sweeps + merges)
 
     def __init__(self, state, repo, interval, auto, backfill, backfill_interval, backfill_max,
                  defend=True):
@@ -1251,6 +1256,8 @@ class Watcher(QtCore.QThread):
         self.dwell = False                 # dwell auto-file: hold new Request IDs, LLM-judge+compose,
                                            # then file each as its own linked bespoke issue (opt-in)
         self.reopen = False                # auto-reopen dup-bot-CLOSED issues; opt-in (off by default)
+        self.closures = True               # closure defender: answer bot stale-sweeps (still-relevant
+                                           # note -> umbrella) + fold merged dups onto canonicals
         self.amplify = False               # solidarity 👍 on other users' FP issues; opt-in (dormant solo)
         self._transient_mark = ""          # newest overloaded/rate-limit ts we've alerted on
         self.bf_done = 0
@@ -1258,6 +1265,7 @@ class Watcher(QtCore.QThread):
         self.last_bf = 0.0
         self.last_defend = 0.0
         self.last_reopen = 0.0
+        self.last_closures = 0.0
         self.last_amplify = 0.0
         self.last_transient = 0.0
         self.bf_delay = max(4.0, float(backfill_interval))   # seconds between drips, adaptive
@@ -1322,6 +1330,23 @@ class Watcher(QtCore.QThread):
                         self.acted.emit(rr, "reopen")
                 except Exception as e:
                     print("reopen error:", e, file=sys.stderr)
+            # CLOSURES: answer stale-bot sweeps + fold maintainer merges (idempotent, paced inside).
+            # Capped per pass: a cold state (hundreds of un-answered sweeps) must not hold
+            # STATE_LOCK for the whole backlog — each tick takes a bounded slice instead.
+            if self.closures and now - self.last_closures >= self.CLOSURE_INTERVAL:
+                self.last_closures = now
+                try:
+                    with STATE_LOCK:
+                        cc = cs.defend_closures(self.repo, self.state, limit=25,
+                                                compose=claudit.BURN_TOKENS)
+                        if cc:
+                            cs.update_umbrella(self.repo, self.state)
+                    if cc:
+                        self.acted.emit(cc, "closures")
+                        if cc >= 25:                   # backlog remains — take the next slice soon
+                            self.last_closures = now - self.CLOSURE_INTERVAL + 120
+                except Exception as e:
+                    print("closure defender error:", e, file=sys.stderr)
             # AMPLIFY: opt-in solidarity 👍 on OTHER users' open false-positive issues (every 30 min).
             if self.amplify and now - self.last_amplify >= 1800:
                 self.last_amplify = now
@@ -1384,17 +1409,31 @@ class CommunityFetcher(QtCore.QThread):
                                 capture_output=True, text=True).stdout.strip()
         except Exception:
             pass
+        by_num = {}
+        # 1. Fetch user's own issues (all states, up to 2000)
         try:
-            out = subprocess.run(
-                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "1000",
-                 "--search", '"Filed automatically by ClAudit"',
-                 "--json", "number,state,stateReason,title,author,url,createdAt"],
+            out_me = subprocess.run(
+                ["gh", "issue", "list", "-R", self.repo, "--author", "@me", "--state", "all",
+                 "--limit", "2000", "--json", "number,state,title,author,url,createdAt"],
                 capture_output=True, text=True, check=True).stdout
-            items = json.loads(out)
+            for it in json.loads(out_me or "[]"):
+                by_num[it["number"]] = it
+        except Exception as e:
+            print("my issues fetch failed:", e, file=sys.stderr)
+        # 2. Fetch community ClAudit issues (all authors, up to 2000)
+        try:
+            out_comm = subprocess.run(
+                ["gh", "issue", "list", "-R", self.repo, "--state", "all", "--limit", "2000",
+                 "--search", '"Filed automatically by ClAudit"',
+                 "--json", "number,state,title,author,url,createdAt"],
+                capture_output=True, text=True, check=True).stdout
+            for it in json.loads(out_comm or "[]"):
+                by_num[it["number"]] = it
         except Exception as e:
             print("community fetch failed:", e, file=sys.stderr)
-        # the list above is a capped SAMPLE (search returns at most 1000); the tray pill needs the
-        # exact open count, which only search total_count gives. -1 = unknown (fall back to sample).
+        items = list(by_num.values())
+        items.sort(key=lambda x: x.get("number", 0), reverse=True)
+        # exact open count for tray pill
         nopen = -1
         try:
             def _count(q):
@@ -1482,6 +1521,29 @@ class DefendAllWorker(QtCore.QThread):
                                   on_done=lambda num, ok: self.progress.emit(num, ok))
         except Exception as e:
             print("defend_all error:", e, file=sys.stderr)
+        self.finished_n.emit(n)
+
+
+class ClosureWorker(QtCore.QThread):
+    """One live closure-defender pass: classify fresh closes, answer swept ones (still-relevant
+    note -> umbrella), fold merged dups' request IDs onto canonicals, refresh the umbrella."""
+    progress = QtCore.pyqtSignal(int)         # issue/canonical number acted on
+    finished_n = QtCore.pyqtSignal(int)       # total actions this pass
+
+    def __init__(self, state, repo):
+        super().__init__()
+        self.state, self.repo = state, repo
+
+    def run(self):
+        n = 0
+        try:
+            with STATE_LOCK:
+                n = cs.defend_closures(self.repo, self.state, compose=claudit.BURN_TOKENS,
+                                       on_done=lambda num, info: self.progress.emit(num))
+                if n:
+                    cs.update_umbrella(self.repo, self.state)
+        except Exception as e:
+            print("closure worker error:", e, file=sys.stderr)
         self.finished_n.emit(n)
 
 
@@ -1655,7 +1717,17 @@ class IssueDetailFetcher(QtCore.QThread):
         ev = [(created, "📤", "Filed by ClAudit")] if created else []
         for c in comments:
             who, b = (c.get("author") or {}).get("login", "?"), (c.get("body", "") or "").lower()
-            if "possible duplicate" in b or "closed as a duplicate" in b:
+            m_merge = cs.MERGE_TARGET_RE.search(c.get("body", "") or "")
+            if m_merge and "clos" in b:
+                ev.append((c.get("createdAt", ""), "⇥", f"Merged into #{m_merge.group(1)} by {who}"))
+            elif cs.STALE_CLOSE_RE.search(b):
+                ev.append((c.get("createdAt", ""), "🧹", "Swept by the inactivity bot (stale close)"))
+            elif cs._is_swept_defense(c.get("body", "")):
+                ev.append((c.get("createdAt", ""), "🛡",
+                           f"ClAudit answered the sweep — tracked in #{cs.umbrella_num()}"))
+            elif cs._is_fold_note(c.get("body", "")):
+                ev.append((c.get("createdAt", ""), "📎", "ClAudit folded merged siblings' Request IDs here"))
+            elif "possible duplicate" in b or "closed as a duplicate" in b:
                 ev.append((c.get("createdAt", ""), "🤖", "Dup-bot flagged as duplicate"))
             elif "not a duplicate" in b:
                 ev.append((c.get("createdAt", ""), "🛡", "ClAudit defended — not a duplicate"))
@@ -1800,7 +1872,7 @@ class Main(QtWidgets.QMainWindow):
         self.f_kind = QtWidgets.QComboBox()
         self.f_kind.addItems(["All kinds", "cyber", "aup", "Fable 5"])   # harness is excluded
         self.f_dedup = QtWidgets.QComboBox()
-        self.f_dedup.addItems(["Any", "Defended", "Not defended"])
+        self.f_dedup.addItems(["Any", "Defended", "Not defended", "Swept", "Merged"])
         self.f_search = QtWidgets.QLineEdit()
         self.f_search.setPlaceholderText("Filter by title or #number…")
         self.f_search.setClearButtonEnabled(True)
@@ -1894,6 +1966,8 @@ class Main(QtWidgets.QMainWindow):
             self.watcher.defend = bool(_cfg["defend"])
         if "reopen" in _cfg:
             self.watcher.reopen = bool(_cfg["reopen"])
+        if "closures" in _cfg:
+            self.watcher.closures = bool(_cfg["closures"])
 
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(board, "Issues")
@@ -2104,10 +2178,19 @@ class Main(QtWidgets.QMainWindow):
         self.act_reopen.setCheckable(True)
         self.act_reopen.setChecked(bool(self.watcher and self.watcher.reopen))
         self.act_reopen.toggled.connect(self._toggle_reopen)
+        self.act_closures = menu.addAction("Auto-defend sweeps && merges")
+        self.act_closures.setCheckable(True)
+        self.act_closures.setChecked(bool(self.watcher and self.watcher.closures))
+        self.act_closures.toggled.connect(self._toggle_closures)
         self.act_llm = menu.addAction("Claude PII scrubbing")
         self.act_llm.setCheckable(True)
         self.act_llm.setChecked(claudit.LLM_SCRUB)
         self.act_llm.toggled.connect(self._toggle_llm)
+        menu.addSeparator()
+        menu.addAction("🧹 Defend closures now", self._defend_closures_now)
+        menu.addAction("☂ Open umbrella issue",
+                       lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(
+                           f"https://github.com/{self.repo}/issues/{cs.umbrella_num()}")))
         menu.addSeparator()
         menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
         menu.addAction("Show window", self._show_window)
@@ -2203,6 +2286,26 @@ class Main(QtWidgets.QMainWindow):
         self.tray.showMessage("ClAudit", "Auto-reopen ENABLED — issues the dup-bot CLOSED as "
                               "duplicates get reopened (your own closes are left alone)." if on
                               else "Auto-reopen paused.")
+
+    def _toggle_closures(self, on):
+        if not self.watcher:
+            return
+        self.watcher.closures = on
+        self._sync_setting_ui("closures", on)
+        if on:
+            self.watcher.last_closures = 0.0   # sweep on the next tick
+        self.tray.showMessage("ClAudit", "Closure defender ENABLED — bot stale-sweeps get a "
+                              "still-relevant note (tracked in the umbrella issue) and merged "
+                              "dups' request IDs are folded onto their canonicals." if on
+                              else "Closure defender paused.")
+
+    def _defend_closures_now(self):
+        self._log("🧹 closure defender: scanning your closed issues…")
+        self._cwq = ClosureWorker(self.state, self.repo)
+        self._cwq.progress.connect(lambda num: self._log(f"🧹 acted on #{num}"))
+        self._cwq.finished_n.connect(lambda n: (
+            self._log(f"🧹 closure defender done — {n} action(s)"), self.refresh()))
+        self._cwq.start()
 
     # ---- project stats tab ----
     def _build_poll_panel(self):
@@ -2402,6 +2505,9 @@ class Main(QtWidgets.QMainWindow):
              "flagged issue.", bool(w and w.defend)),
             ("reopen", "Auto-reopen dup-bot closes", "Reopen issues the dup-bot closed as duplicates (your "
              "own closes are left alone).", bool(w and w.reopen)),
+            ("closures", "Closure defender (sweeps && merges)", "Answer inactivity-bot stale-sweeps with a "
+             "still-relevant note tracked in the umbrella issue, and fold merged dups' request IDs onto "
+             "their canonicals.", bool(w and w.closures)),
             ("amplify", "Community 👍 amplification", "👍 other ClAudit users' open false-positive issues to "
              "boost the shared signal.", bool(w and w.amplify))])
         grp("Reliability", [
@@ -2440,6 +2546,19 @@ class Main(QtWidgets.QMainWindow):
         self.cmb_effort.currentTextChanged.connect(
             lambda t: self._apply_setting("llm_effort", t))
         mform.addRow("Effort:", self.cmb_effort)
+        self.cmb_engine = QtWidgets.QComboBox()
+        self._engine_opts = [("Auto (tandem when both installed)", "auto"),
+                             ("Tandem — agy + claude cross-check", "tandem"),
+                             ("agy (Antigravity CLI)", "agy"),
+                             ("claude (Claude CLI)", "claude")]
+        for label, _v in self._engine_opts:
+            self.cmb_engine.addItem(label)
+        cur_eng = (claudit.LLM_ENGINE or "auto").lower()
+        self.cmb_engine.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._engine_opts)
+                                              if v == cur_eng), 0))
+        self.cmb_engine.currentIndexChanged.connect(
+            lambda i: self._apply_setting("llm_engine", self._engine_opts[i][1]))
+        mform.addRow("LLM Engine:", self.cmb_engine)
         mv.addLayout(mform)
         # estimated weekly spend per model at YOUR current filing rate — selected model highlighted
         self.cost_bars = BreakdownBars()
@@ -2534,6 +2653,10 @@ class Main(QtWidgets.QMainWindow):
             w.reopen = val
             if val:
                 w.last_reopen = 0.0
+        elif key == "closures" and w:
+            w.closures = val
+            if val:
+                w.last_closures = 0.0
         elif key == "amplify" and w:
             w.amplify = val
         elif key == "llm_scrub":
@@ -2553,6 +2676,8 @@ class Main(QtWidgets.QMainWindow):
             self._refresh_llm_cost()
         elif key == "llm_effort":
             claudit.LLM_EFFORT = str(val)
+        elif key == "llm_engine":
+            claudit.LLM_ENGINE = str(val)
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
@@ -2567,7 +2692,8 @@ class Main(QtWidgets.QMainWindow):
     def _sync_setting_ui(self, key, val):
         """Keep the tray menu, the settings switches, and dependent toggles in sync after any change."""
         trays = {"auto": "act_auto", "backfill": "act_backfill", "defend": "act_defend",
-                 "reopen": "act_reopen", "dwell_autofile": "act_dwell", "llm_scrub": "act_llm"}
+                 "reopen": "act_reopen", "closures": "act_closures", "dwell_autofile": "act_dwell",
+                 "llm_scrub": "act_llm"}
         a = getattr(self, trays.get(key, ""), None)
         if a is not None and a.isChecked() != bool(val):
             a.blockSignals(True)
@@ -2827,6 +2953,13 @@ class Main(QtWidgets.QMainWindow):
         needle = self.f_search.text().strip().lstrip("#").lower()
         deduped = _snap(self.state.get("__deduped__"))
         reopened_map = _snap(self.state.get("__reopened__"))
+        closures = _snap(self.state.get("__closures__"))
+        swept_def = _snap(self.state.get("__swept_defended__"))
+        folded = _snap(self.state.get("__folded__"))
+        canon_dups = {}                 # open canonical -> the dup numbers merged into it
+        for n, i in closures.items():
+            if i.get("kind") == "merged" and i.get("into"):
+                canon_dups.setdefault(str(i["into"]), []).append(n)
         chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
         model_of = {str(rec.get("issue")): rec.get("model", "")
                     for rec in cs.load_issue_rows() if rec.get("issue")}   # which model flagged it
@@ -2884,7 +3017,9 @@ class Main(QtWidgets.QMainWindow):
 
         for it in self.community:
             st = it.get("state", "").lower()
-            author = (it.get("author") or {}).get("login", "—")
+            auth_raw = it.get("author")
+            author = (auth_raw.get("login", "—") if isinstance(auth_raw, dict)
+                      else auth_raw if isinstance(auth_raw, str) else "—")
             title = it.get("title", "")
             if "[harness]" in title.lower():
                 continue                     # harness = withdrawn auto-classifier noise; never list it
@@ -2906,20 +3041,51 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if dedupf == "Not defended" and is_defended:
                 continue
+            cinfo = closures.get(str(it["number"]))
+            is_canon = str(it["number"]) in canon_dups
+            if dedupf == "Swept" and (not cinfo or cinfo.get("kind") != "swept"):
+                continue
+            if dedupf == "Merged" and not (is_canon or (cinfo and cinfo.get("kind") == "merged")):
+                continue
             if needle and needle not in title.lower() and needle not in str(it.get("number", "")):
                 continue
             created = fmt_ts(it.get("createdAt", ""))
             ded = deduped.get(str(it["number"]))
             reopened = reopened_map.get(str(it["number"]))
             label = f"#{it['number']}" + (" 👎✓" if ded == "not-duplicate" else "")
+            if cinfo and cinfo.get("kind") == "swept":
+                label += " 🧹"
+            elif cinfo and cinfo.get("kind") == "merged":
+                label += " ⇥"
+            if is_canon:
+                label += " 📎"
             why = ""
             if st == "closed":
                 reason = (it.get("stateReason") or "").lower()
                 why = {"not_planned": "closed: not planned (often = duplicate)",
                        "duplicate": "closed as DUPLICATE — not actually a dupe",
                        "completed": "closed: completed"}.get(reason, f"closed ({reason or '—'})")
+                if cinfo and cinfo.get("kind") == "swept":
+                    why = f"🧹 swept by the inactivity bot {(cinfo.get('at') or '')[:10]}"
+                    dd = swept_def.get(str(it["number"]))
+                    if dd == "reopened":
+                        why += " · ♻ reopened by ClAudit"
+                    elif dd:
+                        why += f" · 🛡 still-relevant note posted; tracked in #{cs.umbrella_num()}"
+                elif cinfo and cinfo.get("kind") == "merged":
+                    tgt = cinfo.get("into")
+                    why = (f"⇥ merged into #{tgt or '?'}"
+                           + (f" by {cinfo.get('by')}" if cinfo.get("by") else ""))
+                    if tgt and str(it["number"]) in {str(x) for x in folded.get(str(tgt), [])}:
+                        why += " · 🛡 request IDs folded onto the canonical"
                 if reopened and not str(reopened).startswith("review"):
                     why += " · ♻ reopened by ClAudit"
+            if is_canon:
+                sibs = sorted(canon_dups[str(it["number"])], key=int)
+                extra = (f"📎 canonical — {len(sibs)} merged sibling(s): "
+                         + ", ".join(f"#{s}" for s in sibs[:6])
+                         + (" …" if len(sibs) > 6 else ""))
+                why = f"{why} · {extra}" if why else extra
             rows.append((it.get("createdAt", ""), st, label, author, created, title,
                          it.get("url", ""), why, chain_of.get(str(it.get("number"))), mdl))
 
@@ -3001,6 +3167,7 @@ class Main(QtWidgets.QMainWindow):
         defended = sum(1 for v in _snap(self.state.get("__deduped__")).values() if v == "not-duplicate")
         reopened = sum(1 for v in _snap(self.state.get("__reopened__")).values()
                        if not str(v).startswith("review"))
+        csum = cs.closure_summary(self.state)
         today = datetime.datetime.now().astimezone().strftime("%Y-%m-%d")
         nday = sum(1 for it in c if (it.get("createdAt", "") or "")[:10] == today)
         self.stats_bar.setText(
@@ -3009,11 +3176,17 @@ class Main(QtWidgets.QMainWindow):
             f"cyber {kinds['cyber']} · aup {kinds['aup']} &nbsp;|&nbsp; "
             f"<span style='color:#b58a8a'>⊘ {harness_withdrawn} harness withdrawn (false)</span> &nbsp;|&nbsp; "
             f"🛡 {defended} &nbsp; ♻ {reopened} &nbsp; "
+            f"<span style='color:#d29922'>🧹 {csum['swept']} swept</span> &nbsp; "
+            f"<span style='color:#a371f7'>⇥ {csum['merged']} merged</span> &nbsp; "
             f"<span style='color:#5eead4'>+{nday} today</span>")
         self.stats_bar.setToolTip(
             f"{real_closed} cyber/aup reports actually closed by Anthropic.\n"
             f"{harness_withdrawn} harness (auto-mode-classifier) reports were ClAudit's own false "
-            "reports, withdrawn as log-only — they do NOT count as Anthropic closing a ticket.")
+            "reports, withdrawn as log-only — they do NOT count as Anthropic closing a ticket.\n"
+            f"🧹 {csum['swept']} swept by the inactivity bot ({csum['defended']} answered; tracked "
+            f"in umbrella #{csum['umbrella']}).\n"
+            f"⇥ {csum['merged']} merged into canonicals by a maintainer ({csum['folded']} request-ID "
+            "set(s) folded).")
         if hasattr(self, "breakdown"):
             self.breakdown.set_data([
                 ("open", nopen, "#3fb950"),
@@ -3090,6 +3263,14 @@ class Main(QtWidgets.QMainWindow):
         m.addAction("🔍 Details", lambda: self._open_detail_num(num))
         m.addAction("🛡 Defend (not a duplicate)", lambda: self._quick_defend(num))
         m.addAction("♻ Reopen (if closed)", lambda: self._quick_reopen(num))
+        cinfo = _snap(self.state.get("__closures__")).get(str(num))
+        if cinfo and cinfo.get("kind") == "merged" and cinfo.get("into"):
+            tgt = int(cinfo["into"])
+            m.addAction(f"📎 Open canonical #{tgt}", lambda: self._open_detail_num(tgt))
+        if cinfo and cinfo.get("kind") == "swept":
+            m.addAction(f"☂ Open umbrella #{cs.umbrella_num()}",
+                        lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(
+                            f"https://github.com/{self.repo}/issues/{cs.umbrella_num()}")))
         m.addSeparator()
         m.addAction("↗ Open on GitHub", lambda: QtGui.QDesktopServices.openUrl(
             QtCore.QUrl(f"https://github.com/{self.repo}/issues/{num}")))
@@ -3122,6 +3303,13 @@ class Main(QtWidgets.QMainWindow):
             self.tray.showMessage("ClAudit · 🛡 DEFENDED",
                                   f"Auto-defended {n} dup-bot-flagged issue(s) (👎 + note).", icon)
             self._log(f"🛡 auto-defended {n} dup-bot-flagged issue(s)")
+            return
+        if kind == "closures":   # closure defender: swept notes + merged req-ID folds
+            self.tray.showMessage("ClAudit · 🧹 CLOSURES",
+                                  f"Closure defender acted on {n} issue(s): still-relevant notes on "
+                                  f"bot-swept reports (umbrella #{cs.umbrella_num()}) and request-ID "
+                                  "folds onto merge canonicals.", icon)
+            self._log(f"🧹 closure defender acted on {n} issue(s)")
             return
         if kind == "ratelimit":  # a session got throttled (transient, not your usage limit)
             self.tray.showMessage("ClAudit · ⏳ RATE LIMITED",
@@ -3261,6 +3449,8 @@ def main():
         claudit.LLM_MODEL = str(cfg["llm_model"])
     if "llm_effort" in cfg:
         claudit.LLM_EFFORT = str(cfg["llm_effort"])
+    if "llm_engine" in cfg:
+        claudit.LLM_ENGINE = str(cfg["llm_engine"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

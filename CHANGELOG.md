@@ -3,6 +3,25 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.2.0] — 2026-08-21
+**Tandem engines: agy writes, haiku checks.** ClAudit's LLM calls can now run both installed CLIs together instead of picking one (`--engine tandem`; `auto` resolves to tandem when both `agy` and `claude` are on PATH). agy leads every generation call (it carries the larger token budget); claude (Haiku 4.5, medium effort) only gets short review calls:
+- **PII scrubbing on new issues** — `llm_redact` runs the identify-terms pass through EVERY installed engine and unions the findings, so a name one model misses is still caught by the other. Redaction stays deterministic (the models only list terms; the request-ID/vendor-name guard still applies).
+- **Composed text is cross-checked** — after agy drafts a title/body/defense comment, claude reviews the draft: PII it finds is redacted in place, and a draft it judges AI-slop is rejected so the caller falls back to its deterministic template. Reviewer breakage never blocks a draft. Every compose prompt now carries the condensed no-ai-slop rules (no em-dashes, no intensifiers, no filler, end on checkable facts, plain register).
+- **False-positive gate is a two-model vote** — either engine's clear "correct block" verdict vetoes the filing; a broken engine abstains instead of vetoing.
+- **Swept-closure notes can be composed** — `defend_swept` gains `compose=` (on by default wherever burn-tokens is on): the still-relevant note is written per issue, tandem-reviewed, umbrella link guaranteed, template fallback on refusal/meta/slop.
+- **More regex scrubbers** — IPv6 (timestamp/`::`-scope safe), GitLab/Slack/npm/Google/Stripe tokens, SSH public keys, `user:pass@` in http/git/ftp URLs.
+- GUI: engine picker gains Tandem; Auto is labeled for what it now does.
+
+## [2.1.0] — 2026-08-15
+**Closure intelligence: stale sweeps and maintainer merges.** On 2026-08-15 two bulk-close patterns hit the filed reports: the inactivity bot closed 364 untriaged reports as "not planned" over seven daily sweeps ("inactive for too long"), and a maintainer consolidated 22 same-trigger reports into open canonicals ("Closing as a duplicate of #N"). Authors cannot reopen an issue someone else closed, so ClAudit now tracks and answers both patterns instead of pretending reopen works:
+- `closure_scan` classifies every recently closed report once into swept / merged / closed (`state['__closures__']`), windowed by update date like the other sweeps.
+- `defend_swept` answers each swept report: it attempts the reopen, and when GitHub refuses it posts one still-relevant note pointing at the umbrella issue (#86940 by default, config `umbrella_issue`) that collects the swept reports with their request IDs. `update_umbrella` keeps that issue's body current, grouped by sweep day.
+- `fold_merged` accepts maintainer consolidation as fair triage and folds the closed duplicates' request IDs onto their open canonical (one comment per new batch, plus the 👍 the close comment asks for), so no blocked call becomes untraceable.
+- All three are idempotent twice over: state plus comment-marker re-parsing, so a lost state file cannot double-post (the markers also recognize the manual 2026-08-15 defense run).
+- CLI: `--sweep-scan` (classify + rollup, posts nothing), `--defend-closures`, `--update-umbrella`, and `--closures` / `--closure-interval` for the watch loop.
+- GUI: closure defender runs by default (15-min cadence, toggle in tray + Settings), rows show 🧹 swept / ⇥ merged / 📎 canonical with sweep date, defense status, and merge target in the tooltip; the stats bar counts swept and merged; the board filter gains "Swept" and "Merged"; the detail timeline names sweeps, merges, folds, and umbrella notes; right-click jumps from a merged report to its canonical and from a swept one to the umbrella.
+- Fix: `closure_info` (and the new classifier) no longer rely on `gh issue view --json stateReason`, which older gh builds reject; that failure was silently skipping every close in `reopen_dupe_closes`. Both now read the REST `state_reason` / `closed_by`.
+
 ## [2.0.110] — 2026-07-07
 **Survive GraphQL rate-limit exhaustion.** A heavy day (backfill + repeated full sweeps) spent the account's 5000/hr GraphQL budget mid-run; 29 issues became unverifiable and the cloud run failed (the gate worked, but the defense should outlast the budget, not just report it):
 - Issue fetches in the defender, verifier, and closure checks now detect exhaustion, **sleep until the budget resets, and retry** — a guarantee like "every issue checked daily" stays honest instead of quietly skipping.

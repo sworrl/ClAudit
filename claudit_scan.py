@@ -25,8 +25,8 @@ import collections
 import hashlib
 import json
 import os
-import re
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -35,8 +35,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import claudit  # noqa: E402  (LLM_SCRUB flag + llm_redact)
-from claudit import scrub  # noqa: E402  (reuse the PII scrubber)
+import claudit
+from claudit import scrub
 
 # Launched from a desktop icon, PATH is often minimal and `gh`/`claude` aren't found.
 # Make sure the interpreter's own bin dir (where gh usually lives) + common bins are on PATH.
@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.0.111"
+__version__ = "2.2.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -120,7 +120,9 @@ def classify(text):
             or "terms of service violation" in t
             or "policy compliance" in t and "block" in t
             or "request violates" in t
-            or "prohibited by our policies" in t):
+            or "prohibited by our policies" in t
+            or "legal/aup" in t
+            or "safeguards flagged" in t):
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
@@ -409,14 +411,14 @@ def save_state(state):
 
 
 DOMAIN_PATTERNS = [
-    ("cloud-iam", re.compile(r"\b(entra|azure ad|tenant|conditional access|app role|app registration|service principal|okta|oauth|iam)\b", re.I)),
-    ("defensive-hardening", re.compile(r"\b(harden|hardening|mfa|firewall|edr|blue team|patch|cis benchmark|least privilege|lockdown)\b", re.I)),
-    ("reverse-engineering", re.compile(r"\b(disassemble|decompile|ghidra|ida pro|opcode|unpack|reverse engineer)\b", re.I)),
-    ("infra-devops", re.compile(r"\b(kubernetes|docker|terraform|nginx|ansible|systemd|hypervisor|reverse proxy)\b", re.I)),
-    ("web-security", re.compile(r"\b(xss|sql injection|sqli|csrf|ssrf|burp|owasp)\b", re.I)),
-    ("offensive-pentest", re.compile(r"\b(exploit|payload|msfvenom|metasploit|shellcode|reverse shell|\bc2\b|privilege escalation|lateral movement)\b", re.I)),
-    ("crypto-secrets", re.compile(r"\b(encrypt|decrypt|private key|certificate|tls|keystore)\b", re.I)),
-    ("malware-forensics", re.compile(r"\b(malware|forensic|memory dump|yara|incident response|ioc)\b", re.I)),
+    ("cloud-iam", re.compile(r"\b(entra|azure ad|tenant|conditional access|app role|app registration|service principal|okta|oauth|iam)\b", re.IGNORECASE)),
+    ("defensive-hardening", re.compile(r"\b(harden|hardening|mfa|firewall|edr|blue team|patch|cis benchmark|least privilege|lockdown)\b", re.IGNORECASE)),
+    ("reverse-engineering", re.compile(r"\b(disassemble|decompile|ghidra|ida pro|opcode|unpack|reverse engineer)\b", re.IGNORECASE)),
+    ("infra-devops", re.compile(r"\b(kubernetes|docker|terraform|nginx|ansible|systemd|hypervisor|reverse proxy)\b", re.IGNORECASE)),
+    ("web-security", re.compile(r"\b(xss|sql injection|sqli|csrf|ssrf|burp|owasp)\b", re.IGNORECASE)),
+    ("offensive-pentest", re.compile(r"\b(exploit|payload|msfvenom|metasploit|shellcode|reverse shell|\bc2\b|privilege escalation|lateral movement)\b", re.IGNORECASE)),
+    ("crypto-secrets", re.compile(r"\b(encrypt|decrypt|private key|certificate|tls|keystore)\b", re.IGNORECASE)),
+    ("malware-forensics", re.compile(r"\b(malware|forensic|memory dump|yara|incident response|ioc)\b", re.IGNORECASE)),
 ]
 
 
@@ -1165,18 +1167,18 @@ def review(findings):
         edited = fh.read()
     os.unlink(path)
     notes = {}
-    for chunk in re.split(r"^### KEEP ", edited, flags=re.M)[1:]:
+    for chunk in re.split(r"^### KEEP ", edited, flags=re.MULTILINE)[1:]:
         s = chunk[:12]
-        mm = re.search(r"^note:\s*(.*)$", chunk, flags=re.M)
+        mm = re.search(r"^note:\s*(.*)$", chunk, flags=re.MULTILINE)
         notes[s] = (mm.group(1).strip() if mm else "")
     by_sig = {f["sig"]: f for f in findings}
     return [(by_sig[s], notes[s]) for s in notes if s in by_sig]
 
 
 def _llm_dupe_verdict(title, body, flagtext):
-    """Ask the `claude` CLI to honestly judge whether an issue is a genuine duplicate."""
-    if not shutil.which("claude"):
-        return {"duplicate": True, "reason": "no claude CLI available — defaulting to leave it alone"}
+    """Ask the active LLM CLI (agy or claude) to honestly judge whether an issue is a genuine duplicate."""
+    if not claudit.get_available_llm_engine():
+        return {"duplicate": True, "reason": "no LLM CLI available — defaulting to leave it alone"}
     prompt = (
         "You are triaging GitHub bug reports for a maintainer. Decide whether THIS issue is genuinely a "
         "DUPLICATE of the flagged issue(s) — i.e. the SAME underlying bug / root cause — or genuinely "
@@ -1186,7 +1188,7 @@ def _llm_dupe_verdict(title, body, flagtext):
         '{"duplicate": true/false, "of": "#N or empty", "reason": "one factual sentence"}.\n\n'
         f"THIS ISSUE:\n{title}\n{body[:1500]}\n\nDUP-BOT FLAG (lists the claimed duplicates):\n{flagtext[:1500]}")
     try:
-        out = claudit._claude(prompt, 90)        # routed through the token meter
+        out = claudit._run_llm(prompt, 90)        # routed through the token meter
         m = re.search(r"\{.*\}", out, re.DOTALL)
         return json.loads(m.group(0)) if m else {"duplicate": True, "reason": "no parseable verdict"}
     except Exception as e:
@@ -1359,7 +1361,7 @@ def _is_my_defense(body):
             or ("request id" in b and any(w in b for w in ("separate", "distinct", "individual"))))
 
 
-def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
+def _dup_flagged_numbers(repo, state, cutoff=None, limit=2000):
     """Numbers of my issues the dup-bot has touched: the UNION of the `duplicate` label listing and
     a comment-text search — since 2026-07 the bot often posts its flag comment WITHOUT applying the
     label, so a label-only listing silently skips those issues and they auto-close undefended.
@@ -1369,15 +1371,15 @@ def _dup_flagged_numbers(repo, state, cutoff=None, limit=200):
     labeled = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", state,
                         "--label", "duplicate",
                         *(["--search", f"updated:>={cutoff}"] if cutoff else []),
-                        "--limit", str(limit), "--json", "number"])
+                        "--limit", str(limit or 2000), "--json", "number"])
     searched = _gh_json(["search", "issues", "possible duplicate issues in:comments",
                          "--repo", repo, "--author", "@me", "--state", state,
                          *(["--updated", f">={cutoff}"] if cutoff else []),
-                         "--limit", str(min(limit, 1000)), "--json", "number"])
+                         "--limit", str(min(limit or 2000, 2000)), "--json", "number"])
     by_bot = _gh_json(["search", "issues", "commenter:app/github-actions",
                        "--repo", repo, "--author", "@me", "--state", state,
                        *(["--updated", f">={cutoff}"] if cutoff else []),
-                       "--limit", str(min(limit, 1000)), "--json", "number"])
+                       "--limit", str(min(limit or 2000, 2000)), "--json", "number"])
     if labeled is None and searched is None and by_bot is None:
         return None
     return sorted({it["number"] for it in (labeled or []) + (searched or []) + (by_bot or [])})
@@ -1546,13 +1548,14 @@ def undefended_flags(repo, since_days=4, limit=1000):
 def closure_info(repo, num):
     """For a CLOSED issue: {'num','actor','reason','self'}. None if it's open. `actor` is who closed
     it; `reason` is GitHub's state reason (completed / not_planned / duplicate / …)."""
-    j = _gh_json_wait(["issue", "view", str(num), "-R", repo, "--json", "state,stateReason"])
-    if not isinstance(j, dict) or j.get("state") != "CLOSED":
+    # One REST call: `gh issue view --json stateReason` is GraphQL and older gh builds reject the
+    # field, which silently skipped every close. REST also carries closed_by directly.
+    j = _gh_json_wait(["api", f"repos/{repo}/issues/{num}", "--jq",
+                       '{state: .state, reason: .state_reason, actor: .closed_by.login}'])
+    if not isinstance(j, dict) or (j.get("state") or "").lower() != "closed":
         return None
-    d = _gh_json(["api", f"repos/{repo}/issues/{num}/events",
-                  "--jq", '{actor: ([.[] | select(.event=="closed")] | last | .actor.login)}']) or {}
-    actor = d.get("actor") or ""
-    return {"num": num, "actor": actor, "reason": (j.get("stateReason") or "").lower(),
+    actor = j.get("actor") or ""
+    return {"num": num, "actor": actor, "reason": (j.get("reason") or "").lower(),
             "self": bool(actor) and actor == gh_login()}
 
 
@@ -1568,7 +1571,7 @@ def reopen_one(repo, num):
     return True
 
 
-def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0, since_days=7):
+def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, limit=0, since_days=7, compose=False):
     """Reopen ClAudit issues CLOSED AS DUPLICATES by someone other than you — they aren't duplicates
     (each is a distinct Request ID on your own authorized infra). Idempotent: each issue is reopened
     at most once (state['__reopened__']) so it can't loop forever if the bot re-closes. by_bot_only
@@ -1595,10 +1598,20 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
         r = subprocess.run(["gh", "issue", "reopen", str(num), "-R", repo],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            gh_comment(repo, str(num), scrub(
-                "Reopening — this is a distinct false-positive block with its own Request ID, on the "
-                "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as "
-                "a duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")[0])
+            msg = None
+            if compose:
+                msg = claudit.llm_compose(
+                    "A duplicate-detection bot auto-closed this issue as a duplicate. "
+                    "Write a professional GitHub note (2-3 sentences) stating that this issue was reopened "
+                    "because it represents a distinct false-positive block with its own Request ID. "
+                    "Request that Anthropic maintainers review it individually.",
+                    f"Issue #{num} closed by {ci['actor']}"
+                )
+            if not msg or _is_refusal(msg) or _is_meta_reply(msg):
+                msg = ("Reopening — this is a distinct false-positive block with its own Request ID, on the "
+                       "reporter's own authorized infrastructure. It is not a duplicate; the auto-closure as "
+                       "a duplicate is itself the misclassification being reported. (Reopened by ClAudit.)")
+            gh_comment(repo, str(num), scrub(msg)[0])
             reopened[str(num)] = ci["actor"]
         else:
             # 2026-07: the repo now BLOCKS authors from reopening bot-closed issues. Don't pretend —
@@ -1609,12 +1622,22 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
             already = any((c.get("author") or {}).get("login") == me and _is_my_defense(c.get("body", ""))
                           for c in (data.get("comments") or []))
             if not already:
-                gh_comment(repo, str(num), scrub(
-                    "**Not a duplicate — requesting maintainer reopen.** This report covers a distinct "
-                    "incident with its own server-side Request ID; the cited issue is a sibling report "
-                    "from the same work session, intentionally cross-linked by ClAudit. Issue authors "
-                    "can no longer reopen bot-closed issues on this repo, so this close is unrecoverable "
-                    "on our side. (Assessed by ClAudit.)")[0] + "\n\n" + DEFENSE_MARKER)
+                msg = None
+                if compose:
+                    msg = claudit.llm_compose(
+                        "A duplicate-detection bot auto-closed this issue as a duplicate, and issue authors "
+                        "cannot directly reopen bot-closed issues. Write a firm, polite maintainer reopen request "
+                        "(3-4 sentences) explaining that this is a distinct incident with a unique Request ID "
+                        "and asking maintainers to reopen it for review.",
+                        f"Issue #{num} closed by {ci['actor']}"
+                    )
+                if not msg or _is_refusal(msg) or _is_meta_reply(msg):
+                    msg = ("**Not a duplicate — requesting maintainer reopen.** This report covers a distinct "
+                           "incident with its own server-side Request ID; the cited issue is a sibling report "
+                           "from the same work session, intentionally cross-linked by ClAudit. Issue authors "
+                           "can no longer reopen bot-closed issues on this repo, so this close is unrecoverable "
+                           "on our side. (Assessed by ClAudit.)")
+                gh_comment(repo, str(num), scrub(msg)[0] + "\n\n" + DEFENSE_MARKER)
             reopened[str(num)] = f"protest:{ci['actor']}"
         save_state(state)
         done += 1
@@ -1623,6 +1646,290 @@ def reopen_dupe_closes(repo, state, on_done=None, delay=5, by_bot_only=True, lim
         time.sleep(delay)
     print(f"reopen_dupe_closes: reopened {done}", file=sys.stderr)
     return done
+
+
+# ---------------- closure intelligence: stale sweeps + maintainer merges ----------------
+# Two close patterns hit ClAudit reports in bulk on 2026-08-15 and need distinct handling:
+#   swept  — github-actions[bot] closes untriaged reports as not_planned ("inactive for too long").
+#            Authors can't reopen, so the defense is a still-relevant note + one umbrella issue
+#            (ours, editable) collecting every swept report with its Request ID.
+#   merged — a maintainer closes a report as "duplicate of #N", consolidating same-trigger siblings
+#            into one open canonical. That's fair triage; the defense is folding the closed dups'
+#            Request IDs onto the canonical (+1 reaction) so no blocked call becomes untraceable.
+UMBRELLA_ISSUE = 86940       # default umbrella; override with config `umbrella_issue`
+STALE_CLOSE_RE = re.compile(r"inactive for too long", re.IGNORECASE)
+MERGE_TARGET_RE = re.compile(r"duplicat\w*\s+of\s+(?:#|\S*/issues/)(\d+)", re.IGNORECASE)
+SWEPT_MARKER = "<!-- claudit:swept-defense -->"
+FOLD_MARKER = "<!-- claudit:fold -->"
+
+
+def umbrella_num():
+    try:
+        return int(load_config().get("umbrella_issue") or UMBRELLA_ISSUE)
+    except (TypeError, ValueError):
+        return UMBRELLA_ISSUE
+
+
+def _is_swept_defense(body):
+    """A ClAudit still-relevant note on a swept issue (marker, or the stock phrasing the manual
+    2026-08-15 defense run posted before the marker existed)."""
+    b = (body or "").lower()
+    return SWEPT_MARKER in (body or "") or "cannot reopen after a bot close" in b
+
+
+def _is_fold_note(body):
+    """A ClAudit Request-ID fold note on a canonical issue (marker, or the stock opening the manual
+    2026-08-15 run posted before the marker existed)."""
+    return FOLD_MARKER in (body or "") or (body or "").startswith(
+        "Request IDs from the duplicates folded into this issue")
+
+
+def classify_closure(repo, num):
+    """One CLOSED issue -> {'kind','by','into','reason','at','title'}; None if open / fetch failed.
+    kind: 'swept' (bot stale-close), 'merged' (closed as duplicate of #into), 'closed' (anything
+    else — completed, self-close, unexplained)."""
+    # stateReason is not available from `gh issue view` on older gh builds, so the comments carry
+    # the classification and the REST state_reason is only fetched when they don't decide it.
+    j = _gh_json_wait(["issue", "view", str(num), "-R", repo,
+                       "--json", "state,title,closedAt,comments"])
+    if not isinstance(j, dict) or j.get("state") != "CLOSED":
+        return None
+    reason = ""
+    kind, by, into = "closed", "", 0
+    for c in reversed(j.get("comments") or []):       # newest close-explaining comment wins
+        who = (c.get("author") or {}).get("login", "")
+        body = c.get("body", "") or ""
+        m = MERGE_TARGET_RE.search(body)
+        if m and "clos" in body.lower():
+            kind, by, into = "merged", who, int(m.group(1))
+            break
+        if STALE_CLOSE_RE.search(body) and _is_bot_login(who):
+            kind, by = "swept", who
+            break
+    if kind == "closed":
+        d = _gh_json(["api", f"repos/{repo}/issues/{num}", "--jq", "{r: .state_reason}"]) or {}
+        reason = (d.get("r") or "").lower()
+        if reason == "duplicate":
+            kind = "merged"                           # dup-close without a parseable comment
+    return {"kind": kind, "by": by, "into": into, "reason": reason,
+            "at": j.get("closedAt", ""), "title": j.get("title", "")}
+
+
+def closure_scan(repo, state, since_days=7, limit=0, on_event=None):
+    """Classify MY recently-closed issues once each into state['__closures__'] (swept / merged /
+    closed). Windowed by `updated` like the other sweeps; since_days=None = full backfill.
+    Returns count newly classified."""
+    closures = state.setdefault("__closures__", {})
+    cutoff = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+              if since_days else None)
+    listing = _gh_json(["issue", "list", "-R", repo, "--author", "@me", "--state", "closed",
+                        *(["--search", f"updated:>={cutoff}"] if cutoff else []),
+                        "--limit", str(limit or 2000), "--json", "number"]) or []
+    fresh = 0
+    for it in listing:
+        num = str(it.get("number"))
+        if not num.isdigit() or num in closures:
+            continue
+        info = classify_closure(repo, num)
+        if not info:
+            continue
+        closures[num] = info
+        save_state(state)
+        fresh += 1
+        if on_event:
+            on_event(int(num), info)
+    return fresh
+
+
+def defend_swept(repo, state, delay=3, on_done=None, limit=0, compose=False):
+    """Answer every un-defended swept close: try the reopen (in case the repo ever allows authors
+    again); when it's refused, post ONE still-relevant note pointing at the umbrella issue. With
+    compose=True the note is LLM-written per issue (tandem-reviewed when both engines are
+    installed), falling back to the deterministic template on refusal/meta/slop. Idempotent twice
+    over: state['__swept_defended__'] plus a comment-marker check that survives state loss (and
+    recognizes the manual 2026-08-15 run). Returns count acted on."""
+    umb = umbrella_num()
+    me = gh_login()
+    defended = state.setdefault("__swept_defended__", {})
+    done = 0
+    for num, info in sorted(state.get("__closures__", {}).items(), key=lambda kv: int(kv[0])):
+        if info.get("kind") != "swept" or num in defended:
+            continue
+        data = _gh_json_wait(["issue", "view", num, "-R", repo, "--json", "state,comments"])
+        if data is None:
+            continue                                  # transient fetch failure: retry next pass
+        if data.get("state") == "OPEN":
+            defended[num] = "already-open"
+            save_state(state)
+            continue
+        if any((c.get("author") or {}).get("login") == me and _is_swept_defense(c.get("body", ""))
+               for c in data.get("comments") or []):
+            defended[num] = f"noted:#{umb}"           # defended earlier (manual run / lost state)
+            save_state(state)
+            continue
+        r = subprocess.run(["gh", "issue", "reopen", num, "-R", repo],
+                           capture_output=True, text=True)
+        msg = None
+        if compose:
+            msg = claudit.llm_compose(
+                "An inactivity bot closed this GitHub bug report as 'not planned' with no "
+                "maintainer response, and the author cannot reopen a bot-closed issue. Write a "
+                "2-3 sentence note for the closed issue stating: the report is still relevant, "
+                "the classifier behavior it documents is still producing the same blocks, and it "
+                f"is tracked with the other swept reports in issue #{umb}. Refer to the issue's "
+                "own request ID only as 'the request ID above'; quote nothing.",
+                f"Closed {(info.get('at') or '')[:10]} by {info.get('by', 'the bot')}; "
+                f"title: {(info.get('title') or '')[:120]}")
+            if msg and (_is_refusal(msg) or _is_meta_reply(msg)):
+                msg = None
+            if msg and f"#{umb}" not in msg:   # the umbrella link is the point of the note
+                msg += f" Tracked with the rest of the sweep in #{umb}."
+        try:
+            if r.returncode == 0:
+                gh_comment(repo, num, scrub(
+                    msg or ("Reopening: still relevant. The inactivity bot closed this "
+                            "without a maintainer response; the classifier behavior it documents is "
+                            f"still occurring. Tracked with the rest of the sweep in #{umb}."))[0]
+                           + f"\n\n{SWEPT_MARKER}")
+                defended[num] = "reopened"
+            else:
+                gh_comment(repo, num, scrub(
+                    msg or ("Still relevant. An issue author cannot reopen after a bot "
+                            f"close, so this report is tracked with the "
+                            f"{(info.get('at') or '')[:10]} sweep in #{umb}."))[0]
+                           + f"\n\n{SWEPT_MARKER}")
+                defended[num] = f"noted:#{umb}"
+        except subprocess.CalledProcessError as e:
+            print(f"  ! swept defense failed on #{num}: {e}", file=sys.stderr)
+            continue                                  # not recorded -> retried next pass
+        save_state(state)
+        done += 1
+        if on_done:
+            on_done(int(num), info)
+        if limit and done >= limit:
+            break
+        time.sleep(delay)
+    return done
+
+
+def fold_merged(repo, state, delay=3, on_done=None, limit=0):
+    """For every merge target, post the closed dups' Request IDs onto the open canonical (one
+    comment per new batch) and 👍 it — the follow signal the maintainer's close comment asks for.
+    Idempotent: state['__folded__'] tracks which dups each canonical already carries, and the
+    canonical's existing fold notes are re-parsed so a lost state file can't double-post.
+    Returns count of canonicals commented."""
+    folded = state.setdefault("__folded__", {})       # canon -> [dup numbers already folded]
+    me = gh_login()
+    by_canon = {}
+    for num, info in state.get("__closures__", {}).items():
+        if info.get("kind") == "merged" and info.get("into"):
+            by_canon.setdefault(str(info["into"]), []).append((int(num), info))
+    done = 0
+    for canon, dups in sorted(by_canon.items(), key=lambda kv: int(kv[0])):
+        new = [(n, i) for n, i in sorted(dups) if n not in set(folded.get(canon, []))]
+        if not new:
+            continue
+        data = _gh_json_wait(["issue", "view", canon, "-R", repo, "--json", "comments"])
+        if data is None:
+            continue
+        already = {int(n) for c in data.get("comments") or []
+                   if (c.get("author") or {}).get("login") == me and _is_fold_note(c.get("body", ""))
+                   for n in re.findall(r"#(\d+)", c.get("body", ""))}
+        folded[canon] = sorted(set(folded.get(canon, [])) | already)
+        new = [(n, i) for n, i in new if n not in already]
+        if not new:
+            save_state(state)
+            continue
+        try:
+            gh_comment(repo, canon, fold_note_md(new))
+        except subprocess.CalledProcessError as e:
+            print(f"  ! fold note failed on #{canon}: {e}", file=sys.stderr)
+            continue
+        subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{canon}/reactions",
+                        "-f", "content=+1"], capture_output=True, text=True)
+        folded[canon] = sorted(set(folded[canon]) | {n for n, _ in new})
+        save_state(state)
+        done += 1
+        if on_done:
+            on_done(int(canon), new)
+        if limit and done >= limit:
+            break
+        time.sleep(delay)
+    return done
+
+
+def fold_note_md(new):
+    """The canonical-issue fold comment for [(dup_num, info), ...]."""
+    lines = []
+    for n, info in new:
+        reqs = ", ".join(REQ_ID.findall(info.get("title") or "")) or "request ID in issue body"
+        lines.append(f"- {reqs} (#{n})")
+    return ("Request IDs from the duplicates folded into this issue, same trigger, separate "
+            "blocked calls:\n" + "\n".join(lines) + f"\n\n{FOLD_MARKER}")
+
+
+def defend_closures(repo, state, on_done=None, delay=3, since_days=7, limit=0, compose=False):
+    """One pass of the closure defender: classify fresh closes, answer swept ones, fold merged
+    ones. Returns total actions taken (notes + reopens + fold comments)."""
+    closure_scan(repo, state, since_days=since_days)
+    n = defend_swept(repo, state, delay=delay, on_done=on_done, limit=limit, compose=compose)
+    n += fold_merged(repo, state, delay=delay, on_done=on_done, limit=limit)
+    return n
+
+
+def umbrella_md(swept, repo=DEFAULT_REPO):
+    """The umbrella issue body from [(num, info), ...] swept closures, grouped by sweep day."""
+    by_day = collections.defaultdict(list)
+    for num, info in swept:
+        by_day[(info.get("at") or "")[:10] or "unknown"].append((num, info))
+    L = ["The inactivity bot closes untriaged ClAudit false-positive reports as \"not planned\". "
+         "GitHub does not let an issue author reopen an issue closed by someone else, so this "
+         "issue collects the swept reports in one place. Each documents a distinct blocked API "
+         "call with its own request ID, and the classifier behavior they report is still "
+         "producing the same blocks.", "",
+         "Requesting: reopen the reports below, or keep them closed and triage the request IDs "
+         "from here, whichever is less work on your side.", "",
+         f"_Maintained automatically by [ClAudit]({PROJECT_URL}); refreshed as sweeps happen._", ""]
+    for day in sorted(by_day, reverse=True):
+        items = sorted(by_day[day])
+        L += [f"<details><summary>{day} sweep — {len(items)} report(s) "
+              "(issue, request ID)</summary>", ""]
+        for num, info in items:
+            reqs = ", ".join(REQ_ID.findall(info.get("title") or "")) or "request ID in issue body"
+            L.append(f"- #{num} {reqs}")
+        L += ["", "</details>", ""]
+    return scrub("\n".join(L))[0]
+
+
+def update_umbrella(repo, state, num=0):
+    """Refresh the umbrella issue's body from recorded swept closures. The umbrella is OUR issue,
+    so editing it is allowed. Returns count of swept reports listed (0 = nothing to do/failed)."""
+    num = num or umbrella_num()
+    swept = sorted(((int(k), v) for k, v in state.get("__closures__", {}).items()
+                    if v.get("kind") == "swept"))
+    if not swept:
+        return 0
+    r = subprocess.run(["gh", "issue", "edit", str(num), "-R", repo,
+                        "--body", umbrella_md(swept, repo)], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  ! umbrella refresh failed on #{num}: {(r.stderr or r.stdout).strip()[:160]}",
+              file=sys.stderr)
+        return 0
+    return len(swept)
+
+
+def closure_summary(state):
+    """GUI-facing rollup of recorded closures: counts, per-day sweep sizes, and the merge map."""
+    closures = state.get("__closures__", {})
+    swept = {n: i for n, i in closures.items() if i.get("kind") == "swept"}
+    merged = {n: i for n, i in closures.items() if i.get("kind") == "merged"}
+    days = collections.Counter((i.get("at") or "")[:10] or "unknown" for i in swept.values())
+    return {"swept": len(swept), "merged": len(merged),
+            "defended": len(state.get("__swept_defended__", {})),
+            "folded": sum(len(v) for v in state.get("__folded__", {}).values()),
+            "sweep_days": dict(days),
+            "merged_map": {n: i.get("into", 0) for n, i in merged.items()},
+            "umbrella": umbrella_num()}
 
 
 # ---------------- consolidated pattern report (one canonical, auto-refreshed tracking issue) -----
@@ -1769,10 +2076,32 @@ def main():
                    help="also reopen issues a human maintainer closed as duplicate (default: bot only)")
     p.add_argument("--reopen-interval", dest="reopen_interval", type=float, default=3600,
                    help="with --watch --reopen: seconds between reopen sweeps (default 3600 = 1h)")
+    p.add_argument("--sweep-scan", dest="sweep_scan", action="store_true",
+                   help="classify your closed issues (swept / merged / closed) and print the rollup; posts nothing")
+    p.add_argument("--defend-closures", dest="defend_closures", action="store_true",
+                   help="answer bot stale-sweeps (still-relevant note -> umbrella) + fold merged dups' "
+                        "request IDs onto their canonicals, then refresh the umbrella issue (live)")
+    p.add_argument("--update-umbrella", dest="update_umbrella", action="store_true",
+                   help="refresh the umbrella issue's body from recorded swept closures, then exit")
+    p.add_argument("--closures", action="store_true",
+                   help="with --watch: periodically run the closure defender (sweeps + merges)")
+    p.add_argument("--closure-interval", dest="closure_interval", type=float, default=900,
+                   help="with --watch --closures: seconds between closure sweeps (default 900 = 15m)")
+    p.add_argument("--since-days", dest="since_days", type=float, default=7,
+                   help="closure scans look back this many days of updates (0 = full backfill; default 7)")
     p.add_argument("--prune-backlog", dest="prune_backlog", action="store_true",
                    help="clear backlog items that can no longer be filed (stale/removed sessions)")
+    p.add_argument("--engine", choices=["auto", "claude", "agy", "tandem"], default=None,
+                   help="LLM engine for compose/scrub/defend/reopen: auto, claude, agy, or tandem "
+                        "(both engines, cross-checking each other)")
+    p.add_argument("--compose", action="store_true",
+                   help="use LLM composition during --defend-all or --reopen-dupes")
     args = p.parse_args()
     cfg = load_config()
+    if args.engine:
+        claudit.LLM_ENGINE = str(args.engine)
+    elif cfg.get("llm_engine"):
+        claudit.LLM_ENGINE = str(cfg["llm_engine"])
     if args.llm_scrub or cfg.get("llm_scrub"):
         claudit.LLM_SCRUB = True
     if args.burn_tokens or cfg.get("burn_tokens"):
@@ -1792,7 +2121,8 @@ def main():
         return
 
     if args.defend_all:
-        n = defend_all(args.repo, state, limit=args.limit,
+        use_compose = args.compose or claudit.BURN_TOKENS
+        n = defend_all(args.repo, state, limit=args.limit, compose=use_compose,
                        on_done=lambda num, ok: print(f"  #{num}: {'👎 + note' if ok else 'note only'}",
                                                      file=sys.stderr))
         print(f"Defended {n} flagged issue(s).", file=sys.stderr)
@@ -1803,8 +2133,36 @@ def main():
         print(f"Refreshed tracking issue #{args.update_tracking} from {n} reports.", file=sys.stderr)
         return
 
+    if args.sweep_scan:
+        n = closure_scan(args.repo, state, since_days=args.since_days or None, limit=args.limit,
+                         on_event=lambda num, i: print(
+                             f"  #{num}: {i['kind']}"
+                             + (f" -> #{i['into']}" if i.get("into") else "")
+                             + (f" by {i['by']}" if i.get("by") else ""), file=sys.stderr))
+        s = closure_summary(state)
+        print(f"Classified {n} new closure(s). Totals: {s['swept']} swept, {s['merged']} merged; "
+              f"{s['defended']} defended, {s['folded']} req-ID set(s) folded. "
+              f"Sweep days: {s['sweep_days']}. Umbrella: #{s['umbrella']}.", file=sys.stderr)
+        return
+
+    if args.defend_closures:
+        n = defend_closures(args.repo, state, since_days=args.since_days or None, limit=args.limit,
+                            delay=args.delay, compose=args.compose or claudit.BURN_TOKENS,
+                            on_done=lambda num, i: print(f"  acted on #{num}", file=sys.stderr))
+        u = update_umbrella(args.repo, state)
+        print(f"Closure defender: {n} action(s); umbrella #{umbrella_num()} lists {u} swept "
+              "report(s).", file=sys.stderr)
+        return
+
+    if args.update_umbrella:
+        u = update_umbrella(args.repo, state)
+        print(f"Umbrella #{umbrella_num()} refreshed with {u} swept report(s).", file=sys.stderr)
+        return
+
     if args.reopen_dupes:
+        use_compose = args.compose or claudit.BURN_TOKENS
         n = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans, since_days=None,
+                               limit=args.limit, compose=use_compose,
                                on_done=lambda num, ci: print(f"  reopened #{num} (closed by {ci['actor']})",
                                                              file=sys.stderr))
         print(f"Reopened {n} dup-closed issue(s).", file=sys.stderr)
@@ -1846,7 +2204,7 @@ def main():
         if not args.auto:
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
         last_live, last_bf, bf_done = 0.0, 0.0, 0
-        last_defend, last_track, last_reopen = 0.0, 0.0, 0.0
+        last_defend, last_track, last_reopen, last_closures = 0.0, 0.0, 0.0, 0.0
         bf_delay = max(4.0, float(args.backfill_interval))
         try:
             while True:
@@ -1890,6 +2248,13 @@ def main():
                     rr = reopen_dupe_closes(args.repo, state, by_bot_only=not args.reopen_humans)
                     if rr:
                         print(f"  (reopened {rr} dup-closed issue(s))", file=sys.stderr)
+                if args.closures and now - last_closures >= max(300.0, args.closure_interval):
+                    last_closures = now                # closure defender: sweeps + merges
+                    cc = defend_closures(args.repo, state, since_days=args.since_days or None,
+                                         compose=args.compose or claudit.BURN_TOKENS)
+                    if cc:
+                        update_umbrella(args.repo, state)
+                        print(f"  (closure defender acted on {cc} issue(s))", file=sys.stderr)
                 time.sleep(2)
         except KeyboardInterrupt:
             print("\nStopped.", file=sys.stderr)

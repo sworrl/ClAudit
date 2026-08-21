@@ -6,8 +6,8 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import claudit            # noqa: E402
-import claudit_scan as cs  # noqa: E402
+import claudit
+import claudit_scan as cs
 
 
 @pytest.fixture(autouse=True)
@@ -460,3 +460,274 @@ def test_daily_recheck_window_selection(monkeypatch):
     checked.clear()
     cs.daily_recheck("o/r", {}, window_start=0, window_end=25 * 3600)
     assert checked == sorted(nums)                  # >24h window -> full sweep
+
+
+def test_get_available_llm_engine(monkeypatch):
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "auto")
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/" + cmd if cmd in ("agy", "claude") else None)
+    assert claudit.get_available_llm_engine() == "tandem"    # auto + both installed = tandem
+    assert claudit.available_engines() == ["agy", "claude"]  # agy leads, claude reviews
+
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/claude" if cmd == "claude" else None)
+    assert claudit.get_available_llm_engine() == "claude"
+
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "agy")
+    assert claudit.get_available_llm_engine() is None  # no agy on path
+    assert claudit.available_engines() == []
+
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/agy" if cmd == "agy" else None)
+    assert claudit.get_available_llm_engine() == "agy"
+
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "tandem")
+    assert claudit.available_engines() == ["agy"]      # tandem degrades to whatever is installed
+    assert claudit.get_available_llm_engine() == "agy"
+
+
+def _both_engines(monkeypatch):
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "tandem")
+    monkeypatch.setattr(claudit.shutil, "which",
+                        lambda cmd: "/bin/" + cmd if cmd in ("agy", "claude") else None)
+
+
+def test_llm_redact_tandem_unions_both_engines(monkeypatch):
+    _both_engines(monkeypatch)
+    monkeypatch.setattr(claudit, "LLM_SCRUB", True)
+    monkeypatch.setattr(claudit, "_agy", lambda prompt, timeout: '["AcmeCorp"]')
+    monkeypatch.setattr(claudit, "_claude", lambda prompt, timeout: '["jsmith", "req_KEEPME"]')
+    out = claudit.llm_redact("AcmeCorp ticket from jsmith about req_KEEPME failing")
+    assert "AcmeCorp" not in out and "jsmith" not in out   # each engine's find is applied
+    assert "req_KEEPME" in out                             # protected even when a model lists it
+    assert out.count("[REDACTED]") == 2
+
+
+def test_llm_redact_tandem_survives_one_engine_failing(monkeypatch):
+    _both_engines(monkeypatch)
+    monkeypatch.setattr(claudit, "LLM_SCRUB", True)
+    monkeypatch.setattr(claudit, "_agy", lambda prompt, timeout: (_ for _ in ()).throw(RuntimeError))
+    monkeypatch.setattr(claudit, "_claude", lambda prompt, timeout: '["hostname9"]')
+    assert "hostname9" not in claudit.llm_redact("ssh to hostname9 failed")
+
+
+def test_llm_compose_tandem_review_redacts_and_rejects_slop(monkeypatch):
+    _both_engines(monkeypatch)
+    monkeypatch.setattr(claudit, "BURN_TOKENS", True)
+    monkeypatch.setattr(claudit, "_agy", lambda prompt, timeout: "Block fired on AcmeCorp work.")
+    monkeypatch.setattr(claudit, "_claude",
+                        lambda prompt, timeout: '{"pii": ["AcmeCorp"], "slop": false}')
+    out = claudit.llm_compose("write note", "ctx")
+    assert out == "Block fired on [REDACTED] work."       # reviewer's PII find is redacted
+
+    monkeypatch.setattr(claudit, "_claude", lambda prompt, timeout: '{"pii": [], "slop": true}')
+    assert claudit.llm_compose("write note", "ctx") is None  # slop verdict -> template fallback
+
+    # reviewer breakage never blocks the draft
+    monkeypatch.setattr(claudit, "_claude", lambda prompt, timeout: "not json at all")
+    assert claudit.llm_compose("write note", "ctx") == "Block fired on AcmeCorp work."
+
+
+def test_llm_is_false_positive_tandem_veto(monkeypatch):
+    _both_engines(monkeypatch)
+    monkeypatch.setattr(claudit, "LLM_SCRUB", True)
+    monkeypatch.setattr(claudit, "_agy",
+                        lambda prompt, timeout: '{"false_positive": true, "reason": "in-scope"}')
+    monkeypatch.setattr(claudit, "_claude",
+                        lambda prompt, timeout: '{"false_positive": false, "reason": "mass posting"}')
+    fp, reason = claudit.llm_is_false_positive("cyber", "blocked")
+    assert fp is False and reason == "mass posting"       # either engine's clear no vetoes
+
+    monkeypatch.setattr(claudit, "_claude",
+                        lambda prompt, timeout: '{"false_positive": true, "reason": "fine"}')
+    fp, _ = claudit.llm_is_false_positive("cyber", "blocked")
+    assert fp is True                                     # both agree -> file it
+
+
+def test_agy_llm_call_and_token_meter(monkeypatch, tmp_path):
+    tok_file = str(tmp_path / "tokens.json")
+    monkeypatch.setattr(claudit, "TOKENS_FILE", tok_file)
+
+    def fake_run(cmd, capture_output, text, timeout):
+        assert cmd[0] == "agy"
+        assert "-p" in cmd
+        payload = json.dumps({
+            "status": "SUCCESS",
+            "response": " This is an agy generated defense. ",
+            "usage": {"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 20}
+        })
+        return type("R", (), {"stdout": payload, "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(claudit.subprocess, "run", fake_run)
+    res = claudit._agy("test prompt", 30)
+    assert res == "This is an agy generated defense."
+
+    tokens = claudit.load_tokens()
+    assert tokens["input"] == 100
+    assert tokens["output"] == 50
+    assert tokens["cache_read"] == 20
+    assert tokens["calls"] == 1
+
+
+def test_run_llm_dispatches_to_agy(monkeypatch):
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "agy")
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/agy" if cmd == "agy" else None)
+    monkeypatch.setattr(claudit, "_agy", lambda prompt, timeout: "agy response")
+    assert claudit._run_llm("hello") == "agy response"
+
+
+def test_llm_compose_with_agy(monkeypatch):
+    monkeypatch.setattr(claudit, "BURN_TOKENS", True)
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "agy")
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/agy" if cmd == "agy" else None)
+    monkeypatch.setattr(claudit, "_run_llm", lambda prompt, timeout: "Composed defense note.")
+    res = claudit.llm_compose("write defense", "ctx")
+    assert res == "Composed defense note."
+
+
+def test_reopen_dupe_closes_with_compose(monkeypatch):
+    state = {}
+    monkeypatch.setattr(cs, "_dup_flagged_numbers", lambda repo, state, cutoff, limit: [42])
+    monkeypatch.setattr(cs, "closure_info", lambda repo, num: {"num": 42, "actor": "github-actions[bot]", "reason": "duplicate", "self": False})
+    reopened_calls = []
+    comments_posted = []
+
+    def fake_run(cmd, capture_output, text):
+        reopened_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(cs.subprocess, "run", fake_run)
+    monkeypatch.setattr(cs, "gh_comment", lambda repo, num, body: comments_posted.append((num, body)))
+    monkeypatch.setattr(claudit, "llm_compose", lambda instr, ctx: "Bespoke reopen explanation for issue.")
+
+    n = cs.reopen_dupe_closes("o/r", state, compose=True)
+    assert n == 1
+    assert len(reopened_calls) == 1
+    assert comments_posted[0][0] == "42"
+    assert "Bespoke reopen explanation for issue." in comments_posted[0][1]
+
+
+
+# ---------------- closure intelligence: sweeps + merges ----------------
+def test_merge_target_re_parses_hash_and_url():
+    assert cs.MERGE_TARGET_RE.search("Closing as a duplicate of #85365 — please follow").group(1) == "85365"
+    assert cs.MERGE_TARGET_RE.search(
+        "closed as duplicate of https://github.com/o/r/issues/123").group(1) == "123"
+    assert cs.MERGE_TARGET_RE.search("possible duplicate issues: #1, #2") is None
+
+
+def test_classify_closure_swept_merged_and_open(monkeypatch):
+    views = {
+        "10": {"state": "CLOSED", "title": "t (req_A1)",
+               "closedAt": "2026-08-15T10:10:00Z", "comments": [
+                   {"author": {"login": "github-actions"},
+                    "body": "Closing for now — inactive for too long."}]},
+        "11": {"state": "CLOSED", "title": "t (req_B2)",
+               "closedAt": "2026-08-15T16:08:00Z", "comments": [
+                   {"author": {"login": "bcherny"},
+                    "body": "Closing as a duplicate of #85365 — please follow and 👍 that issue."}]},
+        "12": {"state": "CLOSED", "title": "t", "closedAt": "", "comments": []},
+        "13": {"state": "OPEN"},
+    }
+    monkeypatch.setattr(cs, "_gh_json_wait", lambda args: views.get(args[2]))
+    monkeypatch.setattr(cs, "_gh_json", lambda args: {"r": "duplicate"})   # REST reason fallback
+    swept = cs.classify_closure("o/r", 10)
+    assert (swept["kind"], swept["by"]) == ("swept", "github-actions")
+    merged = cs.classify_closure("o/r", 11)
+    assert (merged["kind"], merged["by"], merged["into"]) == ("merged", "bcherny", 85365)
+    assert cs.classify_closure("o/r", 12)["kind"] == "merged"   # dup reason, no parseable comment
+    assert cs.classify_closure("o/r", 13) is None
+
+
+def test_swept_and_fold_markers_recognize_manual_run():
+    manual_swept = ("Still relevant. An issue author cannot reopen after a bot close, so this "
+                    "report is tracked with the rest of the 2026-08-15 sweep in #86940.")
+    assert cs._is_swept_defense(manual_swept)
+    assert cs._is_swept_defense("anything\n\n" + cs.SWEPT_MARKER)
+    assert not cs._is_swept_defense("Not a duplicate — distinct Request ID.")
+    manual_fold = ("Request IDs from the duplicates folded into this issue on 2026-08-15, same "
+                   "trigger, separate blocked calls:\n- req_X (#85363)")
+    assert cs._is_fold_note(manual_fold)
+    assert cs._is_fold_note("body\n" + cs.FOLD_MARKER)
+    assert not cs._is_fold_note("Comment citing #85363 without folding.")
+
+
+def test_fold_note_md_lists_reqs_and_dups():
+    md = cs.fold_note_md([(85363, {"title": "FP while: x (req_011AAA)"}),
+                          (85364, {"title": "no req id here"})])
+    assert "req_011AAA (#85363)" in md
+    assert "request ID in issue body (#85364)" in md
+    assert cs.FOLD_MARKER in md
+
+
+def test_umbrella_md_groups_by_sweep_day():
+    md = cs.umbrella_md([(70811, {"at": "2026-08-15T10:10:46Z", "title": "t (req_A)"}),
+                         (70812, {"at": "2026-08-15T10:10:47Z", "title": "t (req_B)"}),
+                         (60000, {"at": "2026-07-01T09:00:00Z", "title": "t (req_C)"})])
+    assert "2026-08-15 sweep — 2 report(s)" in md
+    assert "2026-07-01 sweep — 1 report(s)" in md
+    assert "- #70811 req_A" in md
+    assert md.index("2026-08-15") < md.index("2026-07-01")      # newest sweep first
+
+
+def test_defend_swept_skips_already_defended_and_posts_note(monkeypatch):
+    state = {"__closures__": {
+        "70811": {"kind": "swept", "at": "2026-08-15T10:10:00Z", "title": "t (req_A)"},
+        "70812": {"kind": "swept", "at": "2026-08-15T10:10:01Z", "title": "t (req_B)"},
+        "85365": {"kind": "merged", "into": 85348, "title": "t"},
+    }}
+    views = {
+        "70811": {"state": "CLOSED", "comments": [                # manually defended earlier today
+            {"author": {"login": "me"},
+             "body": "Still relevant. An issue author cannot reopen after a bot close, so this "
+                     "report is tracked with the rest of the 2026-08-15 sweep in #86940."}]},
+        "70812": {"state": "CLOSED", "comments": []},
+    }
+    monkeypatch.setattr(cs, "_gh_json_wait", lambda args: views.get(args[2]))
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    monkeypatch.setattr(cs.subprocess, "run", lambda cmd, capture_output, text: type(
+        "R", (), {"returncode": 1, "stdout": "", "stderr": "GraphQL: Could not reopen"})())
+    posted = []
+    monkeypatch.setattr(cs, "gh_comment", lambda repo, num, body: posted.append((num, body)))
+    n = cs.defend_swept("o/r", state, delay=0)
+    assert n == 1                                                 # only 70812 needed a note
+    assert posted[0][0] == "70812"
+    assert "#86940" in posted[0][1] and cs.SWEPT_MARKER in posted[0][1]
+    assert state["__swept_defended__"]["70811"] == "noted:#86940"
+    assert state["__swept_defended__"]["70812"] == "noted:#86940"
+    assert cs.defend_swept("o/r", state, delay=0) == 0            # idempotent second pass
+
+
+def test_fold_merged_folds_only_new_dups(monkeypatch):
+    state = {"__closures__": {
+        "85363": {"kind": "merged", "into": 85348, "title": "t (req_X1)"},
+        "85364": {"kind": "merged", "into": 85348, "title": "t (req_X2)"},
+    }}
+    canon_comments = {"comments": [
+        {"author": {"login": "me"},
+         "body": "Request IDs from the duplicates folded into this issue on 2026-08-15, same "
+                 "trigger, separate blocked calls:\n- req_X1 (#85363)"}]}
+    monkeypatch.setattr(cs, "_gh_json_wait", lambda args: canon_comments)
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    posted, reacted = [], []
+    monkeypatch.setattr(cs, "gh_comment", lambda repo, num, body: posted.append((num, body)))
+    monkeypatch.setattr(cs.subprocess, "run", lambda cmd, capture_output, text: (
+        reacted.append(cmd), type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())[1])
+    n = cs.fold_merged("o/r", state, delay=0)
+    assert n == 1
+    assert posted[0][0] == "85348"
+    assert "req_X2 (#85364)" in posted[0][1]                      # only the un-folded dup
+    assert "req_X1" not in posted[0][1]
+    assert any("reactions" in " ".join(c) for c in reacted)       # 👍 the canonical
+    assert sorted(state["__folded__"]["85348"]) == [85363, 85364]
+    assert cs.fold_merged("o/r", state, delay=0) == 0             # idempotent second pass
+
+
+def test_closure_summary_rollup():
+    state = {"__closures__": {
+        "1": {"kind": "swept", "at": "2026-08-15T10:00:00Z"},
+        "2": {"kind": "swept", "at": "2026-08-15T10:01:00Z"},
+        "3": {"kind": "merged", "into": 99, "at": "2026-08-15T16:00:00Z"},
+        "4": {"kind": "closed", "at": ""},
+    }, "__swept_defended__": {"1": "noted:#86940"}, "__folded__": {"99": [3]}}
+    s = cs.closure_summary(state)
+    assert (s["swept"], s["merged"], s["defended"], s["folded"]) == (2, 1, 1, 1)
+    assert s["sweep_days"] == {"2026-08-15": 2}
+    assert s["merged_map"] == {"3": 99}

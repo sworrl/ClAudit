@@ -2,6 +2,7 @@
 """Generate claudit_icon.png — a blue->purple gradient shield with a magnifying glass
 and a red alert. Pure Pillow, no network. Run: python3 scripts/gen-icon.py"""
 import os
+
 from PIL import Image, ImageDraw
 
 S = 1024          # final size
