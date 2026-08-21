@@ -459,7 +459,10 @@ PII and output:
 | Flag | Meaning |
 |------|---------|
 | `--burn-tokens` | Bespoke LLM-written reports (strongest PII defense) |
-| `--llm-scrub` | Add the Claude PII pass on top of regex + denylist |
+| `--llm-scrub` | Add the LLM PII pass on top of regex + denylist (unioned across engines in tandem) |
+| `--engine X` | LLM engine: `auto`, `claude`, `agy`, or `tandem` (both, cross-checking) |
+| `--compose` | LLM-compose defense/reopen comments during `--defend-all` / `--defend-closures` / `--reopen-dupes` |
+| `--since-days N` | Look-back window for closure scans and `--defend-all` (0 = full backfill; default 7) |
 | `--delay N` | Seconds between posts (default 3) |
 | `-R owner/repo` | Target repo (default `anthropics/claude-code`) |
 
