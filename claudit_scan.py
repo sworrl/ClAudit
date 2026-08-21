@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.2.2"
+__version__ = "2.2.3"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -179,11 +179,52 @@ def reqs_of(f):
     return out
 
 
+MUTE_FILE = os.path.join(STATE_DIR, "mute.txt")
+_MUTE_CACHE = (None, [])
+
+
+def muted_terms():
+    """Terms that MUTE a finding entirely: nothing about it is ever posted, composed, or sent to
+    any LLM. One term per line in ~/.claude/claudit/mute.txt ('#' lines are comments), matched
+    case-insensitively as a SUBSTRING (so 'pepper' also mutes 'PepperConnector'). Unlike the
+    scrub denylist (which redacts and still posts), a mute suppresses the report outright — for
+    work too sensitive to describe even generically, e.g. matters in litigation. Reloaded on
+    file change, so a long-running watcher picks up edits without a restart."""
+    global _MUTE_CACHE
+    try:
+        mt = os.path.getmtime(MUTE_FILE)
+    except OSError:
+        return []
+    if mt != _MUTE_CACHE[0]:
+        try:
+            with open(MUTE_FILE, encoding="utf-8") as fh:
+                terms = [t.strip().lower() for t in fh
+                         if t.strip() and not t.lstrip().startswith("#")]
+        except OSError:
+            return _MUTE_CACHE[1]
+        _MUTE_CACHE = (mt, terms)
+    return _MUTE_CACHE[1]
+
+
+def is_muted(f):
+    """True when any muted term appears anywhere in the finding: block text, blocked prompt,
+    conversation leadup, or project paths. Checked BEFORE the LLM gate, so muted content never
+    reaches an LLM CLI either."""
+    terms = muted_terms()
+    if not terms:
+        return False
+    txt = " ".join([f.get("block_text", "") or "", f.get("prompt", "") or "",
+                    " ".join(t for _, t in (f.get("leadup") or [])),
+                    " ".join((o.get("proj") or "") for o in f.get("occ", []))]).lower()
+    return any(t in txt for t in terms)
+
+
 def should_file(f):
     """ClAudit only auto-publishes server-side API false positives (cyber/aup) that carry a Request
     ID Anthropic can look up. Harness is log-only. A cyber/aup block with NO Request ID is not
-    referenceable server-side, so filing it is wasted; skip it."""
-    return f.get("kind") in ("cyber", "aup") and bool(reqs_of(f))
+    referenceable server-side, so filing it is wasted; skip it. Muted findings (mute.txt) are
+    never filed regardless of kind."""
+    return f.get("kind") in ("cyber", "aup") and bool(reqs_of(f)) and not is_muted(f)
 
 
 def harness_denial(entry):
@@ -699,6 +740,9 @@ def poll_vote(choice, me=None):
 def file_one(f, note, repo, state):
     """Create an issue, or comment if it already exists with fresh Request IDs.
     Returns (action, title_or_ref, url) with action in {'new','updated',None}."""
+    if is_muted(f):                  # muted findings never post, even on a manual push
+        print(f"  muted: #{f['sig']} matches mute.txt — not posting", file=sys.stderr)
+        return (None, None, None)
     rec = state.get(f["sig"])
     cur_reqs = [o["req"] for o in reqs_of(f)]
     if rec is None:

@@ -259,6 +259,10 @@ most important thing. There are **four layers**, strongest last:
 2. **Your local denylist.** Names the regex can't possibly know: your org, tenant names, client
    names, internal hostnames, project codenames, teammates' names. One per line in
    `~/.claude/claudit/scrub.txt` (copy `scrub.txt.example`). **This file is local, never committed.**
+   For work that must not be reported *at all* (redaction isn't enough, e.g. matters in
+   litigation), put a term in `~/.claude/claudit/mute.txt` instead: any finding containing it —
+   in the block text, prompt, leadup, or project path — is never filed, composed, or sent to any
+   LLM. Substring match, case-insensitive, picked up by a running watcher without a restart.
 3. **Burn-tokens mode, the strongest defense, and the recommended one.** Instead of echoing raw
    transcript text into the issue, ClAudit has the `claude` CLI **write a bespoke, generic description**
    of what was blocked, explicitly instructed to include **no** names, hosts, IPs, tenants, or paths.

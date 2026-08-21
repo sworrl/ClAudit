@@ -731,3 +731,51 @@ def test_closure_summary_rollup():
     assert (s["swept"], s["merged"], s["defended"], s["folded"]) == (2, 1, 1, 1)
     assert s["sweep_days"] == {"2026-08-15": 2}
     assert s["merged_map"] == {"3": 99}
+
+
+# ---------------- mute list: legal-case / too-sensitive-to-post findings ----------------
+def _mute_finding(**kw):
+    f = {"kind": "cyber", "sig": "abc123def456", "block_text": "blocked", "prompt": "",
+         "leadup": [], "occ": [{"req": "req_X1", "ts": "2026-08-21", "session": "s",
+                                "proj": "/home/u/proj"}]}
+    f.update(kw)
+    return f
+
+
+def test_muted_terms_reload_on_change(tmp_path, monkeypatch):
+    mf = tmp_path / "mute.txt"
+    monkeypatch.setattr(cs, "MUTE_FILE", str(mf))
+    monkeypatch.setattr(cs, "_MUTE_CACHE", (None, []))
+    assert cs.muted_terms() == []                    # no file -> nothing muted
+    mf.write_text("# comment\npepper\n\nPEPCON\n")
+    assert cs.muted_terms() == ["pepper", "pepcon"]  # lowered, comments/blanks dropped
+    os.utime(mf, (1, 1))
+    mf.write_text("other\n")
+    os.utime(mf, (2, 2))
+    assert cs.muted_terms() == ["other"]             # mtime change -> reload, no restart needed
+
+
+def test_is_muted_matches_all_finding_fields(tmp_path, monkeypatch):
+    mf = tmp_path / "mute.txt"
+    mf.write_text("pepper\npepcon\n")
+    monkeypatch.setattr(cs, "MUTE_FILE", str(mf))
+    monkeypatch.setattr(cs, "_MUTE_CACHE", (None, []))
+    assert not cs.is_muted(_mute_finding())
+    assert cs.is_muted(_mute_finding(block_text="work on PepperConnector blocked"))  # substring, any case
+    assert cs.is_muted(_mute_finding(prompt="fix the pepcon sync"))
+    assert cs.is_muted(_mute_finding(leadup=[("user", "the Pepper VPN keeps dropping")]))
+    assert cs.is_muted(_mute_finding(occ=[{"req": "req_Y", "ts": "", "session": "s",
+                                      "proj": "/home/u/pepper-keeper"}]))
+
+
+def test_should_file_and_file_one_refuse_muted(tmp_path, monkeypatch):
+    mf = tmp_path / "mute.txt"
+    mf.write_text("pepper\n")
+    monkeypatch.setattr(cs, "MUTE_FILE", str(mf))
+    monkeypatch.setattr(cs, "_MUTE_CACHE", (None, []))
+    f = _mute_finding(block_text="pepper-vpn work blocked")
+    assert cs.should_file(f) is False                # auto paths never see it
+    created = []
+    monkeypatch.setattr(cs, "gh_create", lambda repo, t, b: created.append(t) or "u/1")
+    assert cs.file_one(f, "", "o/r", {}) == (None, None, None)   # manual push refused too
+    assert created == []
