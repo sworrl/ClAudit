@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1458,10 +1458,12 @@ def _defend_issue(repo, num, me, state, compose=False):
 
 def defend_all(repo, state, on_done=None, delay=5, limit=0, compose=False, since_days=4):
     """Rapid-response dedup-defender: answers unanswered/re-posted bot dup-flags on issues updated
-    within `since_days` (the auto-close window). A re-flag gets a fresh contextual reply; a settled
-    issue (defense already after the bot) is left alone. Returns count acted on this pass."""
+    within `since_days` (the auto-close window; None/0 = full backfill). A re-flag gets a fresh
+    contextual reply; a settled issue (defense already after the bot) is left alone. Returns
+    count acted on this pass."""
     me = gh_login()
-    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+    cutoff = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+              if since_days else None)
     flagged = _dup_flagged_numbers(repo, "open", cutoff=cutoff, limit=limit or 200)
     if flagged is None:
         print("defend_all: cannot list flagged issues", file=sys.stderr)
@@ -2123,6 +2125,7 @@ def main():
     if args.defend_all:
         use_compose = args.compose or claudit.BURN_TOKENS
         n = defend_all(args.repo, state, limit=args.limit, compose=use_compose,
+                       since_days=args.since_days or None,
                        on_done=lambda num, ok: print(f"  #{num}: {'👎 + note' if ok else 'note only'}",
                                                      file=sys.stderr))
         print(f"Defended {n} flagged issue(s).", file=sys.stderr)
