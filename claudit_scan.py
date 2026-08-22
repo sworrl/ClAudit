@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.2.4"
+__version__ = "2.2.5"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -2150,6 +2150,8 @@ def main():
         claudit.LLM_ENGINE = str(cfg["llm_engine"])
     if "agy_project" in cfg:
         claudit.AGY_PROJECT = str(cfg["agy_project"] or "")
+    if "agy_review_model" in cfg:
+        claudit.AGY_REVIEW_MODEL = str(cfg["agy_review_model"] or "")
     if args.llm_scrub or cfg.get("llm_scrub"):
         claudit.LLM_SCRUB = True
     if args.burn_tokens or cfg.get("burn_tokens"):

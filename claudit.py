@@ -35,6 +35,11 @@ LLM_EFFORT = "medium"
 # compose/scrub/gate runs stay OUT of the default chat history and manual conversations remain easy
 # to find and resume. Override with config `agy_project`; set to "" to use the default project.
 AGY_PROJECT = "ClAudit"
+# In agy-ONLY mode (llm_engine "agy"), the tandem cross-checks don't have a second CLI — instead
+# the second voice is agy itself on this model (a different family than the session default), so
+# review/veto diversity survives without spending any claude-CLI quota. "" disables the second
+# voice. Override with config `agy_review_model`; `agy models` lists the choices.
+AGY_REVIEW_MODEL = "gemini-3.1-pro-low"
 
 # ---- cumulative token meter: every LLM CLI call's usage is tallied here, persisted forever ----
 TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
@@ -130,12 +135,12 @@ def _record_tokens(usage, cost):
             pass
 
 
-def _claude(prompt, timeout):
+def _claude(prompt, timeout, model=None):
     """Run the `claude` CLI in JSON mode, tally token usage into the lifetime meter, and return the
     model's text. Falls back gracefully (returns '' on error; raw stdout on an older non-JSON CLI)."""
     cmd = ["claude", "-p", prompt, "--output-format", "json"]
-    if LLM_MODEL:
-        cmd += ["--model", LLM_MODEL]
+    if model or LLM_MODEL:
+        cmd += ["--model", model or LLM_MODEL]
     if LLM_EFFORT:
         cmd += ["--effort", LLM_EFFORT]
     try:
@@ -158,13 +163,15 @@ def _claude(prompt, timeout):
     return ""
 
 
-def _agy(prompt, timeout):
+def _agy(prompt, timeout, model=None):
     """Run the `agy` CLI in non-interactive print mode with JSON output, tally token usage into the
     lifetime meter, and return the model's text. Falls back gracefully (returns '' on error)."""
     cmd = ["agy", "-p", prompt, "--output-format", "json"]
     if AGY_PROJECT:
         cmd += ["--project", AGY_PROJECT]
-    if LLM_MODEL and not LLM_MODEL.startswith("claude-"):
+    if model:
+        cmd += ["--model", model]
+    elif LLM_MODEL and not LLM_MODEL.startswith("claude-"):
         cmd += ["--model", LLM_MODEL]
     if LLM_EFFORT:
         cmd += ["--effort", LLM_EFFORT]
@@ -186,14 +193,26 @@ def _agy(prompt, timeout):
     return ""
 
 
-def _run_llm(prompt, timeout=120, engine=None):
-    """Run one LLM prompt through `engine` ('agy' or 'claude'), or the primary available one."""
+def engine_slots():
+    """The distinct LLM 'voices' this run uses, as [(engine, model_override), ...]. Tandem gives
+    agy + claude. In agy-ONLY mode with AGY_REVIEW_MODEL set, the second voice is agy on that
+    different model — cross-checking survives without spending any claude quota."""
+    engines = available_engines()
+    slots = [(e, None) for e in engines]
+    if engines == ["agy"] and AGY_REVIEW_MODEL:
+        slots.append(("agy", AGY_REVIEW_MODEL))
+    return slots
+
+
+def _run_llm(prompt, timeout=120, engine=None, model=None):
+    """Run one LLM prompt through `engine` ('agy' or 'claude'), or the primary available one,
+    optionally forcing a specific model."""
     engines = available_engines()
     engine = engine or (engines[0] if engines else None)
     if engine == "agy":
-        return _agy(prompt, timeout)
+        return _agy(prompt, timeout, model) if model else _agy(prompt, timeout)
     if engine == "claude":
-        return _claude(prompt, timeout)
+        return _claude(prompt, timeout, model) if model else _claude(prompt, timeout)
     return ""
 
 
@@ -221,10 +240,10 @@ def _redact_terms(text, terms):
 def _tandem_review(draft, timeout=90):
     """Tandem mode: the SECOND engine reviews the first engine's draft before it can be posted.
     Returns (ok, pii_terms): pii_terms are exact substrings to redact; ok=False means the draft
-    reads as AI slop and the caller should fall back to its deterministic template. Single-engine
-    runs and reviewer failures return (True, []) so tandem never blocks what one engine allowed."""
-    engines = available_engines()
-    if len(engines) < 2 or not (draft or "").strip():
+    reads as AI slop and the caller should fall back to its deterministic template. Single-voice
+    runs and reviewer failures return (True, []) so tandem never blocks what one voice allowed."""
+    slots = engine_slots()
+    if len(slots) < 2 or not (draft or "").strip():
         return True, []
     prompt = (
         "Review the DRAFT below, written for a public GitHub issue. Respond with ONLY JSON: "
@@ -237,7 +256,7 @@ def _tandem_review(draft, timeout=90):
         "(em-dashes, intensifiers, filler openers, hollow claims, brochure tone).\n\n"
         "DRAFT:\n" + draft[:6000])
     try:
-        out = _run_llm(prompt, timeout=timeout, engine=engines[1])
+        out = _run_llm(prompt, timeout=timeout, engine=slots[1][0], model=slots[1][1])
         m = re.search(r"\{.*\}", out, re.DOTALL)
         d = json.loads(m.group(0)) if m else {}
     except Exception:
@@ -356,9 +375,9 @@ def _deny_regex(term):
     return r"(?<![A-Za-z])" + re.escape(term) + r"(?![A-Za-z])"
 
 
-def _identify_pii_terms(text, engine):
-    """One engine's PII pass: returns the list of exact substrings it flags. Raises on failure so
-    llm_redact can tell 'engine found nothing' from 'engine broke'."""
+def _identify_pii_terms(text, engine, model=None):
+    """One voice's PII pass: returns the list of exact substrings it flags. Raises on failure so
+    llm_redact can tell 'voice found nothing' from 'voice broke'."""
     prompt = (
         "You are a strict PII redactor. From the TEXT below, return ONLY a JSON array of the EXACT "
         "substrings that are identifying: real people's names, initials that stand for a name, "
@@ -366,7 +385,7 @@ def _identify_pii_terms(text, engine):
         "project codenames, emails, IPs, secrets. "
         "Do NOT include: Request IDs (anything starting with 'req_'), or the words Claude, Anthropic, "
         "ClAudit, GitHub — those must stay. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
-    out = _run_llm(prompt, timeout=90, engine=engine)
+    out = _run_llm(prompt, timeout=90, engine=engine, model=model)
     m = re.search(r"\[.*\]", out, re.DOTALL)
     return json.loads(m.group(0)) if m else []
 
@@ -381,9 +400,9 @@ def llm_redact(text: str) -> str:
     if not LLM_SCRUB or not available_engines() or not text.strip():
         return text
     terms, any_ok = set(), False
-    for engine in available_engines():
+    for engine, model in engine_slots():
         try:
-            found = _identify_pii_terms(text, engine)
+            found = _identify_pii_terms(text, engine, model)
         except Exception:
             continue
         any_ok = True
@@ -413,13 +432,13 @@ def llm_is_false_positive(kind, block_text, context=""):
         'JSON: {"false_positive": true/false, "reason": "one short sentence"}.\n\n'
         f"BLOCK REASON / MESSAGE:\n{(block_text or '')[:1500]}\n\nWORK CONTEXT:\n{(context or '')[:1200]}")
     reason = ""
-    for engine in available_engines():
+    for engine, model in engine_slots():
         try:
-            out = _run_llm(prompt, timeout=90, engine=engine)
+            out = _run_llm(prompt, timeout=90, engine=engine, model=model)
             m = re.search(r"\{.*\}", out, re.DOTALL)
             d = json.loads(m.group(0)) if m else {}
         except Exception:
-            continue                       # a broken engine never vetoes; the other still votes
+            continue                       # a broken voice never vetoes; the other still votes
         if not bool(d.get("false_positive", True)):
             return False, str(d.get("reason", ""))
         reason = reason or str(d.get("reason", ""))

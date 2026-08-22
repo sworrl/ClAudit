@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.2.5] — 2026-08-22
+**agy-only mode keeps the cross-check, spends zero claude quota.** Tandem's claude/Haiku review calls were eating the user's weekly Claude plan (rolling 7-day: $11+ API-equivalent). With `llm_engine: "agy"`, the second voice is now agy itself on a different model (`agy_review_model`, default `gemini-3.1-pro-low`) instead of the claude CLI: PII passes still union two models, composed drafts still get a second-model slop/PII review, and the false-positive gate still takes two votes — all billed to Antigravity. Set `agy_review_model: ""` for a true single-voice run. `--engine tandem` still uses both CLIs for anyone who wants it.
+
 ## [2.2.4] — 2026-08-22
 **agy calls no longer pollute the chat history.** Every headless `agy -p` run (compose, scrub, gate, verdict) was landing as its own conversation in Antigravity's default history, burying the user's manual conversations and making them hard to resume. All ClAudit agy calls now run under a dedicated Antigravity project (`--project ClAudit`), keeping the default history clean. Config `agy_project` renames it; set it to `""` to restore the old behavior.
 

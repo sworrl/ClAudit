@@ -782,3 +782,50 @@ def test_should_file_and_file_one_refuse_muted(tmp_path, monkeypatch):
     monkeypatch.setattr(cs, "gh_create", lambda repo, t, b: created.append(t) or "u/1")
     assert cs.file_one(f, "", "o/r", {}) == (None, None, None)   # manual push refused too
     assert created == []
+
+
+# ---------------- agy-only mode: cross-checking without claude quota ----------------
+def _agy_only(monkeypatch):
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "agy")
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/agy" if cmd == "agy" else None)
+
+
+def test_engine_slots_agy_only_second_voice(monkeypatch):
+    _agy_only(monkeypatch)
+    monkeypatch.setattr(claudit, "AGY_REVIEW_MODEL", "gemini-3.1-pro-low")
+    assert claudit.engine_slots() == [("agy", None), ("agy", "gemini-3.1-pro-low")]
+    monkeypatch.setattr(claudit, "AGY_REVIEW_MODEL", "")
+    assert claudit.engine_slots() == [("agy", None)]        # disabled -> single voice
+    # tandem (both CLIs) keeps the two real engines, no extra agy voice
+    monkeypatch.setattr(claudit, "LLM_ENGINE", "tandem")
+    monkeypatch.setattr(claudit, "AGY_REVIEW_MODEL", "gemini-3.1-pro-low")
+    monkeypatch.setattr(claudit.shutil, "which", lambda cmd: "/bin/" + cmd if cmd in ("agy", "claude") else None)
+    assert claudit.engine_slots() == [("agy", None), ("claude", None)]
+
+
+def test_agy_model_override_in_cmd(monkeypatch):
+    seen = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        seen.append(cmd)
+        return type("R", (), {"stdout": "{}", "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(claudit.subprocess, "run", fake_run)
+    claudit._agy("x", 30, model="gemini-3.1-pro-low")
+    assert seen[0][seen[0].index("--model") + 1] == "gemini-3.1-pro-low"
+
+
+def test_llm_redact_agy_only_runs_both_voices(monkeypatch):
+    _agy_only(monkeypatch)
+    monkeypatch.setattr(claudit, "LLM_SCRUB", True)
+    monkeypatch.setattr(claudit, "AGY_REVIEW_MODEL", "gemini-3.1-pro-low")
+    calls = []
+
+    def fake_agy(prompt, timeout, model=None):
+        calls.append(model)
+        return '["AcmeCorp"]' if model is None else '["jsmith"]'
+
+    monkeypatch.setattr(claudit, "_agy", fake_agy)
+    out = claudit.llm_redact("AcmeCorp ticket from jsmith")
+    assert calls == [None, "gemini-3.1-pro-low"]            # two agy voices, zero claude calls
+    assert "AcmeCorp" not in out and "jsmith" not in out    # findings unioned
