@@ -31,6 +31,10 @@ LLM_ENGINE = "auto"  # LLM engine choice: "auto", "claude", "agy", or "tandem" (
 # CLI session default.
 LLM_MODEL = "claude-haiku-4-5-20251001"
 LLM_EFFORT = "medium"
+# Every non-interactive agy call is filed under this Antigravity project, so ClAudit's hundreds of
+# compose/scrub/gate runs stay OUT of the default chat history and manual conversations remain easy
+# to find and resume. Override with config `agy_project`; set to "" to use the default project.
+AGY_PROJECT = "ClAudit"
 
 # ---- cumulative token meter: every LLM CLI call's usage is tallied here, persisted forever ----
 TOKENS_FILE = os.path.expanduser("~/.claude/claudit/tokens.json")
@@ -158,6 +162,8 @@ def _agy(prompt, timeout):
     """Run the `agy` CLI in non-interactive print mode with JSON output, tally token usage into the
     lifetime meter, and return the model's text. Falls back gracefully (returns '' on error)."""
     cmd = ["agy", "-p", prompt, "--output-format", "json"]
+    if AGY_PROJECT:
+        cmd += ["--project", AGY_PROJECT]
     if LLM_MODEL and not LLM_MODEL.startswith("claude-"):
         cmd += ["--model", LLM_MODEL]
     if LLM_EFFORT:

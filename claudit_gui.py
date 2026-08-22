@@ -3451,6 +3451,8 @@ def main():
         claudit.LLM_EFFORT = str(cfg["llm_effort"])
     if "llm_engine" in cfg:
         claudit.LLM_ENGINE = str(cfg["llm_engine"])
+    if "agy_project" in cfg:
+        claudit.AGY_PROJECT = str(cfg["agy_project"] or "")
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

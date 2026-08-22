@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.2.4] — 2026-08-22
+**agy calls no longer pollute the chat history.** Every headless `agy -p` run (compose, scrub, gate, verdict) was landing as its own conversation in Antigravity's default history, burying the user's manual conversations and making them hard to resume. All ClAudit agy calls now run under a dedicated Antigravity project (`--project ClAudit`), keeping the default history clean. Config `agy_project` renames it; set it to `""` to restore the old behavior.
+
 ## [2.2.3] — 2026-08-21
 **Mute list: findings too sensitive to post at all.** The scrub denylist redacts and still posts; some work (e.g. matters in active litigation) must not be described publicly even generically. `~/.claude/claudit/mute.txt` (one substring per line, case-insensitive, `#` comments) now mutes any finding whose block text, blocked prompt, conversation leadup, or project path contains a listed term:
 - Muted findings are never filed, never composed, and never sent to ANY LLM CLI — the check runs before the gate, so muted content stays entirely on the machine.

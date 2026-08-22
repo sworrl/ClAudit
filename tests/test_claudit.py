@@ -548,6 +548,9 @@ def test_agy_llm_call_and_token_meter(monkeypatch, tmp_path):
     def fake_run(cmd, capture_output, text, timeout):
         assert cmd[0] == "agy"
         assert "-p" in cmd
+        # every headless call must be filed under the ClAudit Antigravity project, so the
+        # user's own chat history stays clean and their manual conversations resumable
+        assert cmd[cmd.index("--project") + 1] == "ClAudit"
         payload = json.dumps({
             "status": "SUCCESS",
             "response": " This is an agy generated defense. ",
