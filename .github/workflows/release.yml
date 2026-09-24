@@ -1,5 +1,13 @@
 # Tag-driven release: push a tag like v2.3.0 and this builds the sdist + wheel, pulls that
-# version's CHANGELOG section for the notes, and publishes a GitHub Release with the files attached.
+# version's CHANGELOG section for the notes, publishes a GitHub Release with the files attached,
+# and then uploads the same files to PyPI as `claudit-cc` through Trusted Publishing (OIDC, no
+# token to store). A release created with GITHUB_TOKEN cannot trigger a separate workflow, which is
+# why the PyPI step lives here rather than in its own `on: release` file.
+#
+# One-time PyPI setup (the only step that needs an account): pypi.org -> Your projects ->
+# Publishing -> "Add a new pending publisher": project claudit-cc, owner sworrl, repository
+# ClAudit, workflow release.yml, environment pypi. Until it exists the publish job fails and is
+# marked continue-on-error, so the GitHub Release itself is unaffected.
 name: Release
 
 on:
@@ -8,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -44,3 +53,19 @@ jobs:
             --title "ClAudit ${GITHUB_REF_NAME}" \
             --notes-file notes.md \
             --verify-tag
+
+  pypi:
+    name: publish to PyPI (claudit-cc)
+    needs: release
+    runs-on: ubuntu-latest
+    environment: pypi
+    continue-on-error: true      # until the pending publisher is registered on pypi.org
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

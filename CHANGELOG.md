@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.7.1] — 2026-09-23
+- Fix: the PyPI publish job never ran, because a GitHub Release created by the workflow token cannot trigger another workflow. It is now a second job inside `release.yml`, after the release is published, marked continue-on-error until the pending publisher exists on pypi.org.
+
 ## [2.7.0] — 2026-09-23
 **The GUI is a package, the screenshots are generated, the counter was undercounting, and the release path reaches PyPI and Homebrew.**
 - `claudit_gui.py` (170 KB, one file) is now `claudit_ui/`: `common`, `widgets`, `workers`, `dialogs`, `main_window`, `app`. The split was done by an AST pass that computed each module's imports from the names it uses, then verified by building the full window against live data. `claudit_gui.py` stays the entry point and re-exports every name, so `import claudit_gui as g` and the launchers keep working. The watchdog and self-update paths point at the entry script explicitly.
