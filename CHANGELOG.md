@@ -3,6 +3,18 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.7.0] — 2026-09-23
+**The GUI is a package, the screenshots are generated, the counter was undercounting, and the release path reaches PyPI and Homebrew.**
+- `claudit_gui.py` (170 KB, one file) is now `claudit_ui/`: `common`, `widgets`, `workers`, `dialogs`, `main_window`, `app`. The split was done by an AST pass that computed each module's imports from the names it uses, then verified by building the full window against live data. `claudit_gui.py` stays the entry point and re-exports every name, so `import claudit_gui as g` and the launchers keep working. The watchdog and self-update paths point at the entry script explicitly.
+- `claudit_gui.py --screenshot DIR` builds the window read-only (no watcher, no filing, no singleton lock), saves one PNG per tab, and exits. The four README screenshots were regenerated with it; they had been from July 1 and showed none of the usage meter, mute list, closure markers, or doctor.
+- Fix: the README counter and trend listed at most 800 issues, so it reported 447 closed while 1023 were closed. The limit is 5000 now; the next hourly run corrects the numbers and the trend line will step.
+- Umbrella issue #86940 gets its title refreshed along with its body: "Inactivity bot has closed 593 ClAudit false-positive reports since 2026-08-09 (18 sweep days)" instead of the first day's 83.
+- Cloud defend checks the PAT's expiry header every run: a warning from 30 days out, a failed run (which emails you) at 7.
+- PyPI: the distribution is named `claudit-cc` (`claudit` is a reserved placeholder owned by someone else). `.github/workflows/publish.yml` publishes on every GitHub Release through PyPI Trusted Publishing, so there is no token to store; it needs the one-time pending-publisher registration on pypi.org described in the workflow header.
+- Homebrew tap `sworrl/homebrew-claudit` exists: `brew tap sworrl/claudit && brew install --HEAD claudit`.
+- Ruff runs its full ruleset in CI now (`[tool.ruff]` in `pyproject.toml`, every ignored rule carries its reason). 35 findings fixed mechanically (implicit string concatenation in literals, unused noqa, chained-operator parentheses).
+- Settings: the closure defender label showed a literal `&&`; the header line lost its dash.
+
 ## [2.6.1] — 2026-09-23
 - Fix: the first Windows CI run failed on a test that opened the README with the locale codec (cp1252). Every text-file open that can hold non-ASCII (the error log, the scrub and mute lists, the poll renderer's README and JSON, the tests) now says `encoding="utf-8"`. Lock and PID files stay as they were; they are digits.
 

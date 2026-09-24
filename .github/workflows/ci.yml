@@ -27,8 +27,8 @@ jobs:
         run: python -m py_compile claudit.py claudit_scan.py claudit_gui.py scripts/gen-icon.py scripts/render_poll.py scripts/pattern_report.py
       - name: Install dev deps
         run: pip install ruff pytest
-      - name: Ruff (lint for real errors only)
-        run: ruff check --select E9,F63,F7,F82 .
+      - name: Ruff
+        run: ruff check .   # the ruleset lives in pyproject.toml
       - name: Tests
         run: python -m pytest tests/ -q
 

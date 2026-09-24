@@ -156,14 +156,14 @@ def test_flag_model_extraction():
     ("You've hit your limit", "limit"),
     ("just normal text", "other"),
     # 2026-07 Fable 5 rewordings — these matched NOTHING and silently dropped to 'other'
-    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+    (("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
      "This sometimes happens with safe, normal conversations. Claude Code can't respond to this "
-     "request with Fable 5.", "aup"),
-    ("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
-     "They may flag safe, normal content as well.", "aup"),
-    ("API Error: Fable 5's safeguards flagged this message for a cybersecurity topic. If your work "
+     "request with Fable 5."), "aup"),
+    (("API Error: Fable 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+     "They may flag safe, normal content as well."), "aup"),
+    (("API Error: Fable 5's safeguards flagged this message for a cybersecurity topic. If your work "
      "requires this access, you can apply for an exemption: "
-     "https://claude.com/form/cyber-use-case?token=xyz", "cyber"),
+     "https://claude.com/form/cyber-use-case?token=xyz"), "cyber"),
     # future-proofing: an unseen rewording that keeps 'safeguards flagged' still files as aup
     ("API Error: The model's safeguards flagged this message. Try rephrasing.", "aup"),
 ])
@@ -952,7 +952,8 @@ def test_record_tokens_per_engine_and_weekly_usage(tmp_path, monkeypatch):
 
 
 def test_fmt_reset():
-    import calendar, time
+    import calendar
+    import time
     now = calendar.timegm(time.strptime("2026-09-24T05:00:00", "%Y-%m-%dT%H:%M:%S"))
     assert claudit.fmt_reset("2026-09-24T07:50:00.370022+00:00", now) == "in 2h 50m"
     assert claudit.fmt_reset("2026-09-27T06:00:00+00:00", now) == "in 3d 1h"
@@ -1066,3 +1067,12 @@ def test_fold_merged_records_locked_canonical_instead_of_retrying(monkeypatch):
     monkeypatch.setattr(cs, "_issue_locked", lambda repo, num: False)
     cs.fold_merged("o/r", state2, delay=0)
     assert state2["__folded__"].get("71888", []) == [] and len(attempts) == 2
+
+
+def test_umbrella_title_counts_reports_and_sweep_days():
+    swept = [(1, {"kind": "swept", "at": "2026-08-15T10:00:00Z"}),
+             (2, {"kind": "swept", "at": "2026-08-15T10:01:00Z"}),
+             (3, {"kind": "swept", "at": "2026-09-20T10:17:00Z"})]
+    assert cs.umbrella_title(swept) == ("Inactivity bot has closed 3 ClAudit false-positive reports "
+                                        "since 2026-08-15 (2 sweep days)")
+    assert cs.umbrella_title([(9, {"kind": "swept", "at": "2026-09-01T00:00:00Z"})]).endswith("(1 sweep day)")

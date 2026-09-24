@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.6.1. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.7.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -248,16 +248,19 @@ pip install ".[gui]"        # or: pipx install ".[gui]"
 # claudit (manual filing), claudit-watch (watcher), claudit-gui (tray app)
 ```
 
-Tagged versions are on the [releases page](https://github.com/sworrl/ClAudit/releases) with a wheel
-and sdist attached. A pinned install without a clone:
+The PyPI name is `claudit-cc` (`claudit` is a reserved placeholder owned by someone else). Once the
+first release lands there, `pip install "claudit-cc[gui]"` works. Tagged versions are on the
+[releases page](https://github.com/sworrl/ClAudit/releases) with a wheel and sdist attached, and a
+pinned install without a clone is:
 
 ```bash
-pip install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/v2.6.0.tar.gz"
+pip install "claudit-cc[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/v2.6.0.tar.gz"
 ```
 
-Homebrew and Arch users: see [packaging/](packaging/) for a head formula and a `claudit-git`
-PKGBUILD. Both install the CLI tools; the tray app still wants PyQt6 from pip. Flatpak is still open
-in [#2](https://github.com/sworrl/ClAudit/issues/2).
+Homebrew: `brew tap sworrl/claudit && brew install --HEAD claudit` (the tap mirrors
+`packaging/homebrew/claudit.rb`). Arch: `cd packaging/aur && makepkg -si`. Both install the CLI
+tools; the tray app still wants PyQt6 from pip. Flatpak is still open in
+[#2](https://github.com/sworrl/ClAudit/issues/2).
 
 The self-update under [Auto-update](#auto-update) only works from a git clone. A pip install stays on
 the version you installed, but the tray tells you once when a newer release is out, with the upgrade
@@ -281,6 +284,9 @@ choice" box. Say yes. Then turn on burn-tokens in the Settings tab.
 ## The GUI
 
 `python3 claudit_gui.py [--auto] [--backfill] [--burn-tokens] [--hidden] [-R owner/repo]`
+
+`--screenshot DIR` builds the window read-only, saves one PNG per tab into DIR, and exits; that is
+how the screenshots above are made (`QT_QPA_PLATFORM=offscreen python3 claudit_gui.py --screenshot docs`).
 
 A native system-tray icon (Qt StatusNotifier, renders on KDE, GNOME, Windows, and macOS) plus a
 window that shows every ClAudit-filed issue on the repo, all authors, open and closed. It keys on the
@@ -549,7 +555,8 @@ prerequisite in one pass and prints one line per check.
 | Path | Purpose |
 |------|---------|
 | `claudit_scan.py` | Watcher: scan, classify, dedup, file, backfill, defend, closures, doctor, single-instance lock |
-| `claudit_gui.py` | PyQt6 tray app and dashboard |
+| `claudit_gui.py` | Entry point for the tray app; re-exports the package below so older imports keep working |
+| `claudit_ui/` | The PyQt6 app as a package: `common` (paths, git, watchdog, style), `widgets` (banner, charts, delegates, 3D timeline), `workers` (every QThread), `dialogs`, `main_window`, `app` |
 | `claudit.py` | Manual filing, the shared PII scrubber, the LLM helpers, the usage meter |
 | `scripts/gen-icon.py` | Regenerate `claudit_icon.png` and `claudit_icon.ico` (`--ico-only` derives just the .ico) |
 | `scripts/install-linux.sh` | Linux launcher and XDG autostart |

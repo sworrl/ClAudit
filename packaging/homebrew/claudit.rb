@@ -4,7 +4,7 @@
 #
 # It installs from the main branch, because the project has no stable tarball checksum workflow
 # yet. The tray app (claudit-gui) needs PyQt6, which is not packaged here; install it with
-#   pipx install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/heads/main.tar.gz"
+#   pipx install "claudit-cc[gui] @ https://github.com/sworrl/ClAudit/archive/refs/heads/main.tar.gz"
 # or from a clone with pip. Untested on a clean Mac as of 2.6.0; reports welcome on issue #2.
 class Claudit < Formula
   include Language::Python::Virtualenv
@@ -29,7 +29,7 @@ class Claudit < Formula
       Then baseline once so the existing backlog is not filed all at once:
         claudit-watch --baseline
       The tray app (claudit-gui) is not in this formula; it needs PyQt6:
-        pipx install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/heads/main.tar.gz"
+        pipx install "claudit-cc[gui] @ https://github.com/sworrl/ClAudit/archive/refs/heads/main.tar.gz"
     EOS
   end
 

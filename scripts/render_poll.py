@@ -33,13 +33,14 @@ SEARCH_URL = (f"https://github.com/{cs.DEFAULT_REPO}/issues?q="
 
 
 def kind_counts():
-    """Per-kind counts from the issue LIST (title-based, reliable). Full-text 'harness' search is
+    """Per-kind counts from the issue LIST (title-based, reliable). The limit has to exceed the
+    total ever filed: at 800 the counter reported 447 closed while 1023 were closed. Full-text 'harness' search is
     polluted by dup-bot comments that quote harness titles, so we classify by the issue's own title.
     Returns {open_api, closed_api, harness} or None: cyber/aup are the real API false positives;
     harness is the withdrawn class, tracked separately and NOT counted as a closed API ticket."""
     out = subprocess.run(
         ["gh", "issue", "list", "-R", cs.DEFAULT_REPO, "--search", '"Filed automatically by ClAudit"',
-         "--state", "all", "--limit", "800", "--json", "state,title"],
+         "--state", "all", "--limit", "5000", "--json", "state,title"],
         capture_output=True, text=True)
     try:
         items = json.loads(out.stdout or "[]")

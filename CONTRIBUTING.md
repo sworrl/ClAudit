@@ -32,12 +32,15 @@ in the GUI, so it is safe to hack on. State lives in `~/.claude/claudit/`; delet
 
 - Keep changes focused and match the existing style: stdlib first, no heavy dependencies in the
   core. `claudit_scan.py` and `claudit.py` have to stay importable without PyQt6.
-- CI runs `py_compile`, `ruff check --select E9,F63,F7,F82`, and `pytest tests/` on Linux (Python
+- The GUI lives in `claudit_ui/` (`common`, `widgets`, `workers`, `dialogs`, `main_window`, `app`).
+  `claudit_gui.py` is the entry point and re-exports those names. Put new widgets in `widgets`,
+  new threads in `workers`; `main_window` should only wire them together.
+- CI runs `py_compile`, `ruff check .` (ruleset in `pyproject.toml`), and `pytest tests/` on Linux (Python
   3.9, 3.12, 3.13), macOS, and Windows, then builds the wheel and smoke-tests the console scripts.
   Run the fast part locally before pushing:
 
   ```bash
-  ruff check --select E9,F63,F7,F82 . && python -m pytest tests/ -q
+  ruff check . && python -m pytest tests/ -q
   ```
 
 - Add a test for any behavior change. The suite mocks `gh`, `claude`, and `agy` and never touches

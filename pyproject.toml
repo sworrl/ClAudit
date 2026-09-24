@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claudit"
+name = "claudit-cc"          # "claudit" on PyPI is a reserved placeholder owned by someone else
 description = "Catch false-positive Claude Code safety/policy blocks, scrub PII, and file clean GitHub issues automatically."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,8 +19,10 @@ icon = ["Pillow>=10.0"]
 dev = ["pytest", "ruff"]
 
 [project.urls]
-Homepage = "https://github.com/sworrl/ClAudit"
+Homepage = "https://sworrl.github.io/ClAudit/"
+Repository = "https://github.com/sworrl/ClAudit"
 Issues = "https://github.com/sworrl/ClAudit/issues"
+Changelog = "https://github.com/sworrl/ClAudit/blob/main/CHANGELOG.md"
 
 [project.scripts]
 claudit = "claudit:main"             # manual paste -> scrub -> file
@@ -29,6 +31,40 @@ claudit-gui = "claudit_gui:main"     # tray app + dashboard
 
 [tool.setuptools]
 py-modules = ["claudit", "claudit_scan", "claudit_gui"]
+packages = ["claudit_ui"]
 
 [tool.setuptools.dynamic]
 version = { attr = "claudit_scan.__version__" }
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+# Real errors plus the cleanups worth keeping. Style rules that fight a long-running watcher are
+# listed under ignore with the reason, so `ruff check .` is the whole story for this repo.
+select = ["E4", "E7", "E9", "F", "W", "B", "C4", "ISC", "SIM", "UP", "RUF", "DTZ", "BLE", "S110", "S112", "PLW1510"]
+ignore = [
+  "BLE001",   # blind `except Exception`: deliberate in the watcher/GUI; a bad gh reply must never kill the loop
+  "PLW1510",  # subprocess.run without check=: return codes are inspected by hand where they matter
+  "S110",     # try/except/pass: best-effort toasts, cache writes, and clipboard reads
+  "S112",     # try/except/continue: skip one bad transcript line, keep scanning
+  "E501",     # long lines: the GUI's stylesheet and prompt strings; 120 is the soft target
+  "E741",     # ambiguous names (l, I): used for short loops in the painters
+  "RUF001", "RUF002", "RUF003",  # non-ASCII in strings/comments: the UI uses arrows and dots on purpose
+  "RUF012",   # mutable class attributes: Qt widget constants, never mutated
+  "SIM108", "SIM102", "SIM105",  # ternary/nesting/contextlib rewrites that read worse in this code
+  "UP015", "UP031", "UP032",  # legacy formatting kept where it is clearer
+  "B007", "B008", "B023", "B904", "B905",  # loop vars, defaults, closures, raise-from, zip strict: reviewed, intentional
+  "DTZ011",   # date.today() for the local-day sparkline is the point
+  "E702",     # `a = 1; b = 2` one-liners in the QPainter code: paired assignments read better side by side
+  "E731",     # `sx = lambda p: ...` helpers inside the painters and gen-icon
+  "RUF005",   # list concatenation where the unpacked form is no clearer
+  "C408", "C401", "C414", "C419",  # dict()/set() literal calls and comprehension style
+  "W291", "W293",  # trailing whitespace inside multi-line prompt strings
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402", "S", "SIM", "B", "UP", "RUF"]
+"claudit_gui.py" = ["F401", "E402"]
+"scripts/*" = ["E402"]

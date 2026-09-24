@@ -1,0 +1,32 @@
+# Publish the sdist and wheel to PyPI when a GitHub Release is published (release.yml creates it
+# from a v* tag). Uses PyPI Trusted Publishing (OIDC), so there is no token to store or rotate.
+#
+# One-time setup on pypi.org (the only step that needs an account): Your projects -> Publishing ->
+# "Add a new pending publisher": project name claudit-cc, owner sworrl, repository ClAudit,
+# workflow publish.yml, environment pypi. Until that exists this job fails at the publish step and
+# nothing else is affected.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

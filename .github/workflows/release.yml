@@ -34,7 +34,7 @@ jobs:
             found { print }
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "See CHANGELOG.md." > notes.md; fi
-          printf '\n---\nInstall: `pip install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/%s.tar.gz"` or download the wheel below.\n' "${GITHUB_REF_NAME}" >> notes.md
+          printf '\n---\nInstall: `pip install "claudit-cc[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/%s.tar.gz"` or download the wheel below.\n' "${GITHUB_REF_NAME}" >> notes.md
           cat notes.md
       - name: Publish GitHub Release
         env:

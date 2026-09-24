@@ -39,6 +39,18 @@ jobs:
           # An expired/revoked PAT must FAIL the run (GitHub emails on scheduled-workflow failure),
           # not quietly answer zero flags while issues auto-close.
           gh api user --jq .login || { echo "::error::CLAUDIT_PAT is invalid or expired"; exit 1; }
+          # Fine-grained and expiring classic PATs report their expiry in a response header. Warn
+          # from 30 days out so the sweep does not go dark unnoticed; fail at 7 so the failure email
+          # arrives while there is still time to rotate the secret.
+          exp=$(gh api -i user 2>/dev/null | grep -i '^github-authentication-token-expiration:' | cut -d' ' -f2- | tr -d '\r')
+          if [ -n "$exp" ]; then
+            left=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+            echo "CLAUDIT_PAT expires $exp ($left days)"
+            if [ "$left" -le 7 ]; then echo "::error::CLAUDIT_PAT expires in $left days: rotate it in repo settings"; exit 1; fi
+            if [ "$left" -le 30 ]; then echo "::warning::CLAUDIT_PAT expires in $left days ($exp)"; fi
+          else
+            echo "CLAUDIT_PAT has no expiry header (non-expiring classic token)"
+          fi
           python3 - <<'EOF'
           import calendar, os, sys, time
           import claudit_scan as cs

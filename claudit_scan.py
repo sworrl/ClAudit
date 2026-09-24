@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.6.1"
+__version__ = "2.7.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -118,7 +118,7 @@ def classify(text):
             or "content policy violation" in t
             or "acceptable use policy" in t
             or "terms of service violation" in t
-            or "policy compliance" in t and "block" in t
+            or ("policy compliance" in t and "block" in t)
             or "request violates" in t
             or "prohibited by our policies" in t
             or "legal/aup" in t
@@ -1293,8 +1293,8 @@ def _push_not_dup(repo, num, comment_id, of, reason, issue_body, compose=True,
     reacted = False
     if comment_id:
         r = subprocess.run(["gh", "api", "graphql", "-f",
-                            f'query=mutation{{addReaction(input:{{subjectId:"{comment_id}",'
-                            f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}'],
+                            (f'query=mutation{{addReaction(input:{{subjectId:"{comment_id}",'
+                            f'content:THUMBS_DOWN}}){{reaction{{content}}}}}}')],
                            capture_output=True, text=True)
         reacted = r.returncode == 0 and "THUMBS_DOWN" in r.stdout
         if not reacted:
@@ -1948,18 +1948,18 @@ def umbrella_md(swept, repo=DEFAULT_REPO):
     by_day = collections.defaultdict(list)
     for num, info in swept:
         by_day[(info.get("at") or "")[:10] or "unknown"].append((num, info))
-    L = ["The inactivity bot closes untriaged ClAudit false-positive reports as \"not planned\". "
+    L = [("The inactivity bot closes untriaged ClAudit false-positive reports as \"not planned\". "
          "GitHub does not let an issue author reopen an issue closed by someone else, so this "
          "issue collects the swept reports in one place. Each documents a distinct blocked API "
          "call with its own request ID, and the classifier behavior they report is still "
-         "producing the same blocks.", "",
-         "Requesting: reopen the reports below, or keep them closed and triage the request IDs "
-         "from here, whichever is less work on your side.", "",
+         "producing the same blocks."), "",
+         ("Requesting: reopen the reports below, or keep them closed and triage the request IDs "
+         "from here, whichever is less work on your side."), "",
          f"_Maintained automatically by [ClAudit]({PROJECT_URL}); refreshed as sweeps happen._", ""]
     for day in sorted(by_day, reverse=True):
         items = sorted(by_day[day])
-        L += [f"<details><summary>{day} sweep — {len(items)} report(s) "
-              "(issue, request ID)</summary>", ""]
+        L += [(f"<details><summary>{day} sweep — {len(items)} report(s) "
+              "(issue, request ID)</summary>"), ""]
         for num, info in items:
             reqs = ", ".join(REQ_ID.findall(info.get("title") or "")) or "request ID in issue body"
             L.append(f"- #{num} {reqs}")
@@ -1976,12 +1976,22 @@ def update_umbrella(repo, state, num=0):
     if not swept:
         return 0
     r = subprocess.run(["gh", "issue", "edit", str(num), "-R", repo,
+                        "--title", umbrella_title(swept),
                         "--body", umbrella_md(swept, repo)], capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  ! umbrella refresh failed on #{num}: {(r.stderr or r.stdout).strip()[:160]}",
               file=sys.stderr)
         return 0
     return len(swept)
+
+
+def umbrella_title(swept):
+    """'Inactivity bot has closed N ClAudit false-positive reports since YYYY-MM-DD (M sweeps)'.
+    The body has always been refreshed per sweep; the title used to stay at the first day's count."""
+    days = sorted({(info.get("at") or "")[:10] for _n, info in swept if info.get("at")})
+    first = days[0] if days else "2026-08-09"
+    return (f"Inactivity bot has closed {len(swept)} ClAudit false-positive reports since {first} "
+            f"({len(days)} sweep day{'s' if len(days) != 1 else ''})")
 
 
 def closure_summary(state):
@@ -2109,7 +2119,7 @@ def doctor_rows(fetch=True):
         warn("Claude plan usage", "no Claude Code login (~/.claude/.credentials.json); meter shows estimates")
 
     try:
-        import PyQt6  # noqa: F401
+        import PyQt6  # noqa: F401  availability probe
         ok("PyQt6 (GUI)", "importable")
     except ImportError:
         warn("PyQt6 (GUI)", "not installed; headless watcher only (pip install PyQt6)")
@@ -2184,18 +2194,18 @@ def pattern_report_md(rows):
     for r in rows:
         by_kind[r.get("kind", "other")].append(r)
     all_reqs = sorted({q for r in rows for q in (r.get("reqs") or [])})
-    L = ["# Pattern: Claude Code classifiers false-positive on authorized administration of the "
-         "reporter's OWN infrastructure", "",
-         f"_Auto-generated by [ClAudit]({PROJECT_URL}) from {len(rows)} filed reports · "
-         f"{len(all_reqs)} distinct Request IDs · PII-scrubbed · refreshed automatically._", "",
+    L = [("# Pattern: Claude Code classifiers false-positive on authorized administration of the "
+         "reporter's OWN infrastructure"), "",
+         (f"_Auto-generated by [ClAudit]({PROJECT_URL}) from {len(rows)} filed reports · "
+         f"{len(all_reqs)} distinct Request IDs · PII-scrubbed · refreshed automatically._"), "",
          "## Root cause (one sentence)", "",
-         "> The safety / Usage-Policy / auto-mode classifiers cannot distinguish **administering "
+         ("> The safety / Usage-Policy / auto-mode classifiers cannot distinguish **administering "
          "systems you own and are authorized to operate** from **attacking someone else's** — so they "
-         "pattern-match on security *terminology* and block legitimate, in-scope work.", "",
-         "Every block below stopped authorized work on the reporter's own infrastructure. Each "
+         "pattern-match on security *terminology* and block legitimate, in-scope work."), "",
+         ("Every block below stopped authorized work on the reporter's own infrastructure. Each "
          "**Request ID is server-side-lookup-able** — the original prompt can be inspected to confirm "
          "it was benign and in-scope. This is one underlying defect surfaced across many surfaces; it "
-         "is tracked here in one place rather than closed piecemeal as 'duplicates'.", "",
+         "is tracked here in one place rather than closed piecemeal as 'duplicates'."), "",
          "## Breakdown by failure mode", "",
          "| Kind | Reports | Request IDs | What gets flagged |", "|---|---:|---:|---|"]
     for kind in ("harness", "cyber", "aup"):
@@ -2217,11 +2227,11 @@ def pattern_report_md(rows):
         L.append("")
     L += ["## All Request IDs (for server-side lookup)", "", "```"] + all_reqs + ["```", "",
           "## What a fix looks like", "",
-          "- Treat operations on the user's **own, authorized** infrastructure as in-scope; the "
+          ("- Treat operations on the user's **own, authorized** infrastructure as in-scope; the "
           "presence of words like *credential, recovery token, IAM, bypass, audit* is not evidence of "
-          "an attack.",
-          "- When a block fires, surface **why** and a path to proceed for legitimate use — losing the "
-          "whole session to a false positive is the core harm.",
+          "an attack."),
+          ("- When a block fires, surface **why** and a path to proceed for legitimate use — losing the "
+          "whole session to a false positive is the core harm."),
           "- Use the Request IDs above to inspect the actual prompts and calibrate the classifiers.", ""]
     return scrub("\n".join(L))[0]
 
