@@ -834,13 +834,13 @@ def test_llm_redact_agy_only_runs_both_voices(monkeypatch):
 
 
 def test_version_is_consistent_across_badge_changelog_and_package():
-    """The README badge, the CHANGELOG, and pyproject's dynamic version all key off __version__;
-    2.0.111 sat on the badge through five releases before CI checked this."""
+    """The README version line, the CHANGELOG, and pyproject's dynamic version all key off
+    __version__; 2.0.111 sat on the old badge through five releases before CI checked this."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     v = cs.__version__
     assert re.fullmatch(r"\d+\.\d+\.\d+", v)
     with open(os.path.join(root, "README.md")) as fh:
-        assert f"version-{v}-" in fh.read()
+        assert f"\nCurrent version: {v}." in fh.read()
     with open(os.path.join(root, "CHANGELOG.md")) as fh:
         assert f"## [{v}]" in fh.read()
     with open(os.path.join(root, "pyproject.toml")) as fh:
@@ -1030,8 +1030,8 @@ def test_render_poll_helpers(tmp_path, monkeypatch):
     import render_poll as rp
     md = rp.render_md({"plus": 1, "minus": 3, "eyes": 0, "total": 4}, "2026-09-23 21:00")
     assert md.startswith(rp.START) and md.rstrip().endswith(rp.END)
-    assert "| 👎 Claude Code stays broken | `████████░░` | **75%** (3) |" in md
-    assert "4 vote(s)" in md
+    assert "| Claude Code stays broken (react `-1`) | `████████░░` | 75% (3) |" in md
+    assert "4 vote(s)" in md and "👎" not in md
     monkeypatch.setattr(rp, "HISTORY_JSON", str(tmp_path / "hist.json"))
     h = rp.append_history({"open_api": 5, "closed_api": 1, "harness": 0}, "2026-09-23 21:00 UTC")
     h = rp.append_history({"open_api": 6, "closed_api": 1, "harness": 0}, "2026-09-23 21:40 UTC")

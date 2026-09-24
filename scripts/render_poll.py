@@ -149,16 +149,16 @@ def _bar(pct, cells=10):
 def render_md(counts, when):
     total = counts["total"] or 1
     rows = []
-    for key, _content, emoji, meaning in cs.POLL_OPTS:
+    for key, content, _emoji, meaning in cs.POLL_OPTS:
         n = counts[key]
         pct = round(100 * n / total)
-        rows.append(f"| {emoji} {meaning} | `{_bar(pct)}` | **{pct}%** ({n}) |")
-    head = (f"**Will Anthropic fix Claude Code's false-positive blocking, or will it stay "
-            f"broken?**  ·  _{counts['total']} vote(s), updated {when} UTC_")
-    table = "| | | |\n|---|---:|---|\n" + "\n".join(rows)
-    return (f"{START}\n{head}\n\n{table}\n\n"
-            f"🗳️ **[Cast your vote →]({ISSUE_URL})**. React 👍 / 👎 / 👀 on the pinned issue "
-            f"(or vote in one click from the ClAudit app).\n{END}")
+        rows.append(f"| {meaning} (react `{content}`) | `{_bar(pct)}` | {pct}% ({n}) |")
+    head = (f"Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? "
+            f"{counts['total']} vote(s), updated {when} UTC.")
+    table = "| Answer | | Share |\n|---|---:|---|\n" + "\n".join(rows)
+    return (f"{START}\n### Community poll\n\n{head}\n\n{table}\n\n"
+            f"Vote by reacting on [the pinned issue]({ISSUE_URL}), or with one click from the "
+            f"ClAudit app.\n{END}")
 
 
 def main():
@@ -181,14 +181,14 @@ def main():
         with open(TREND_SVG, "w") as fh:
             fh.write(render_trend_svg(hist))
         counter_block = (
-            f"{CSTART}\n### 📊 {n} open false-positive blocks reported by ClAudit right now\n\n"
-            f"Real cyber/aup API false positives across **all** ClAudit users, live from "
-            f"[`anthropics/claude-code`]({SEARCH_URL}). **{d['closed_api']} closed by Anthropic** · "
-            f"_updated {when} UTC_\n\n"
+            f"{CSTART}\n### {n} open false-positive reports right now\n\n"
+            f"Cyber and AUP API blocks filed by every ClAudit user, counted hourly from "
+            f"[anthropics/claude-code]({SEARCH_URL}). {d['closed_api']} closed by Anthropic. "
+            f"Updated {when} UTC.\n\n"
             f"[![ClAudit reports over time](docs/trend.svg)]({SEARCH_URL})\n\n"
-            f"<sub>Three lines: open cyber/aup false positives (cyan), closed by Anthropic (green), and "
-            f"the {d['harness']} auto-mode-classifier (harness) reports ClAudit withdrew (muted), "
-            f"tracked separately and not counted as closed tickets.</sub>\n{CEND}")
+            f"<sub>Three lines: open cyber/AUP false positives (cyan), closed by Anthropic (green), and "
+            f"the {d['harness']} harness reports ClAudit withdrew itself (muted), tracked separately "
+            f"and not counted as closed tickets.</sub>\n{CEND}")
 
     block = render_md(counts, when)
     with open(README) as fh:

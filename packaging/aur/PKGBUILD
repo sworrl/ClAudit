@@ -1,0 +1,48 @@
+# Maintainer: sworrl <agent.jearl@gmail.com>
+# Arch VCS package for ClAudit. Build from this directory with:  makepkg -si
+# Untested on a clean Arch install as of 2.6.0; reports welcome on
+# https://github.com/sworrl/ClAudit/issues/2
+pkgname=claudit-git
+pkgver=r0
+pkgrel=1
+pkgdesc="Catch false-positive Claude Code safety/policy blocks, scrub PII, file clean GitHub issues"
+arch=('any')
+url="https://github.com/sworrl/ClAudit"
+license=('GPL-3.0-or-later')
+depends=('python' 'github-cli')
+optdepends=('python-pyqt6: tray app and dashboard (claudit-gui)'
+            'libnotify: desktop notifications'
+            'python-pillow: regenerate the icon (scripts/gen-icon.py)')
+makedepends=('git' 'python-build' 'python-installer' 'python-wheel' 'python-setuptools')
+provides=('claudit')
+conflicts=('claudit')
+source=("git+https://github.com/sworrl/ClAudit.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd ClAudit
+  printf "%s.r%s.%s" "$(grep -oE '__version__ = "[0-9.]+"' claudit_scan.py | grep -oE '[0-9.]+')" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd ClAudit
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd ClAudit
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 claudit_icon.png "$pkgdir/usr/share/icons/hicolor/1024x1024/apps/claudit.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/claudit.desktop" <<'DESK'
+[Desktop Entry]
+Type=Application
+Name=ClAudit
+Comment=Watch Claude Code for false-positive safety/AUP blocks
+Exec=claudit-gui --interval 30
+Icon=claudit
+Terminal=false
+Categories=Development;Utility;
+DESK
+}

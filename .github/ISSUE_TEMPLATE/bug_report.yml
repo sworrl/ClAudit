@@ -1,19 +1,27 @@
 name: Bug report
-description: Something in ClAudit isn't working
+description: Something in ClAudit is not working
 labels: [bug]
 body:
   - type: textarea
     id: what
     attributes:
-      label: What happened?
-      description: What did you expect, and what happened instead?
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `python3 claudit_scan.py --doctor`
+      description: Paste it as is. It has no secrets in it.
+      render: shell
     validations:
       required: true
   - type: input
     id: command
     attributes:
-      label: Command / mode
-      placeholder: "e.g. claudit_scan.py --watch --auto  /  claudit_gui.py"
+      label: Command or mode
+      placeholder: "claudit_scan.py --watch --auto  /  claudit_gui.py"
   - type: dropdown
     id: os
     attributes:
@@ -24,11 +32,6 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Relevant output
-      description: Paste any traceback or stderr. Scrub anything sensitive.
+      label: Traceback or stderr
+      description: Scrub anything sensitive first.
       render: shell
-  - type: input
-    id: versions
-    attributes:
-      label: Python / gh versions
-      placeholder: "python --version ; gh --version"

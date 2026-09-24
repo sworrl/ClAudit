@@ -74,7 +74,7 @@ ul.links li{margin:4px 0}
   <h2>Will Anthropic fix it?</h2>
   <div id="poll"><p class="total">Loading the live tally…</p></div>
   <a class="vote" href="https://github.com/sworrl/ClAudit/issues/6" target="_blank" rel="noopener">Cast your vote on GitHub</a>
-  <p class="note">One vote per GitHub account: react 👍 (Anthropic will fix it), 👎 (Claude Code stays broken), or 👀 (too soon to tell) on the pinned issue, or vote from inside the app.</p>
+  <p class="note">One vote per GitHub account: react +1 (Anthropic will fix it), -1 (Claude Code stays broken), or eyes (too soon to tell) on the pinned issue, or vote from inside the app.</p>
 </div>
 
 <div class="card">
@@ -98,9 +98,9 @@ claudit-gui                   # tray app: notify-only until you turn on auto-fil
 <script>
 const REPO = "sworrl/ClAudit", ISSUE = 6;
 const META = {
-  plus:  {cls:"fix",    emoji:"👍", label:"Anthropic will fix it"},
-  minus: {cls:"broken", emoji:"👎", label:"Claude Code stays broken"},
-  eyes:  {cls:"soon",   emoji:"👀", label:"Too soon to tell"},
+  plus:  {cls:"fix",    emoji:"+1",   label:"Anthropic will fix it"},
+  minus: {cls:"broken", emoji:"-1",   label:"Claude Code stays broken"},
+  eyes:  {cls:"soon",   emoji:"eyes", label:"Too soon to tell"},
 };
 const $ = id => document.getElementById(id);
 function renderPoll(c, updated){
@@ -110,7 +110,7 @@ function renderPoll(c, updated){
     ["plus","minus","eyes"].map(k=>{
       const n=c[k]||0, pct=Math.round(100*n/t), m=META[k];
       return `<div class="opt ${m.cls}">
-        <div class="lab"><span>${m.emoji} ${m.label}</span><span class="pct">${pct}% · ${n}</span></div>
+        <div class="lab"><span>${m.label} <span style="color:var(--muted);font-weight:500">(${m.emoji})</span></span><span class="pct">${pct}% · ${n}</span></div>
         <div class="track"><div class="fillbar" style="width:${pct}%"></div></div></div>`;
     }).join("") + `<div class="total">${total} vote${total===1?"":"s"}</div>`;
   if(updated) $("updated").textContent = "poll updated "+updated;

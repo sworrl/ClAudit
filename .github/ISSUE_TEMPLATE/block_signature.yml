@@ -1,0 +1,35 @@
+name: Block signature
+description: Claude Code blocked you with a phrasing ClAudit does not classify
+labels: [signature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ClAudit files only server-side `cyber` and `aup` blocks, and only when the error carries a
+        Request ID (`req_...`). Harness denials ("Permission for this action was denied by the auto
+        mode classifier") are logged, not filed, on purpose.
+  - type: textarea
+    id: text
+    attributes:
+      label: The exact block text
+      description: Copy the error line as Claude Code showed it. Remove hostnames, names, and paths, keep the wording.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: reqid
+    attributes:
+      label: Request ID
+      placeholder: "req_011..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Claude Code version
+      placeholder: "claude --version"
+  - type: textarea
+    id: context
+    attributes:
+      label: What you were doing
+      description: One or two sentences, generic. What kind of work, not the specifics.

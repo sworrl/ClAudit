@@ -2272,6 +2272,7 @@ class Main(QtWidgets.QMainWindow):
         menu.addSeparator()
         menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
         menu.addAction("🔇 Edit mute list…", self._edit_mute)
+        menu.addAction("🩺 Run doctor…", self._run_doctor)
         menu.addAction("Show window", self._show_window)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -2305,6 +2306,42 @@ class Main(QtWidgets.QMainWindow):
 
     def _edit_mute(self):
         MuteListDialog(self).exec()
+
+    def _run_doctor(self):
+        """The same environment check as `claudit_scan.py --doctor`, in a dialog (off-thread)."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("ClAudit doctor")
+        dlg.resize(720, 460)
+        if os.path.exists(cs.ICON):
+            dlg.setWindowIcon(QtGui.QIcon(cs.ICON))
+        v = QtWidgets.QVBoxLayout(dlg)
+        out = QtWidgets.QPlainTextEdit("Checking…")
+        out.setReadOnly(True)
+        out.setFont(QtGui.QFont("monospace"))
+        v.addWidget(out, 1)
+        row = QtWidgets.QHBoxLayout()
+        copy = QtWidgets.QPushButton("Copy")
+        copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(out.toPlainText()))
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        row.addStretch(1)
+        row.addWidget(copy)
+        row.addWidget(close)
+        v.addLayout(row)
+
+        class _Doc(QtCore.QThread):
+            done = QtCore.pyqtSignal(str)
+
+            def run(self):
+                try:
+                    self.done.emit(cs.doctor_text(cs.doctor_rows()))
+                except Exception as e:
+                    self.done.emit(f"doctor failed: {e}")
+        t = _Doc(dlg)
+        t.done.connect(out.setPlainText)
+        t.start()
+        dlg.exec()
+        t.wait(2000)
 
     def _toggle_auto(self, on):
         if not self.watcher:
@@ -3499,6 +3536,7 @@ def main():
     p.add_argument("--burn-tokens", dest="burn_tokens", action="store_true",
                    help="bespoke LLM-written titles/bodies — the strongest PII defense")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
+    p.add_argument("--version", action="version", version=f"ClAudit {cs.__version__}")
     p.add_argument("--watchdog", action="store_true",
                    help="(internal) run as the crash-recovery supervisor, not the GUI")
     args = p.parse_args()

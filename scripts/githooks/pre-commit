@@ -2,7 +2,7 @@
 # Directive: every code change bumps __version__. This hook enforces it automatically —
 # it auto-increments the patch version on every commit UNLESS the version was already
 # changed in this commit (so manual minor/major bumps are respected, not double-bumped).
-# Either way it keeps the README version badge in step with __version__.
+# Either way it keeps the README 'Current version:' line in step with __version__.
 #
 # Enable once per clone:   git config core.hooksPath scripts/githooks
 set -e
@@ -19,8 +19,8 @@ if [ -n "$cur" ] && [ "$cur" = "$prev" ] && git diff --cached --name-only | grep
   echo "ClAudit: auto-bumped version $cur -> $new"
   cur="$new"
 fi
-if [ -n "$cur" ] && [ -f README.md ] && ! grep -q "version-$cur-" README.md; then
-  sed -i -E "s/version-[0-9]+\.[0-9]+\.[0-9]+-/version-$cur-/" README.md
+if [ -n "$cur" ] && [ -f README.md ] && ! grep -q "^Current version: $cur\." README.md; then
+  sed -i -E "s/^Current version: [0-9]+\.[0-9]+\.[0-9]+\./Current version: $cur./" README.md
   git add README.md
-  echo "ClAudit: README version badge -> $cur"
+  echo "ClAudit: README version line -> $cur"
 fi

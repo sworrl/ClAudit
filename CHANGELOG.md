@@ -3,6 +3,15 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.6.0] — 2026-09-23
+**Plain-text pass on everything published, CI on all three desktops, packaging starters, and the open issues answered.**
+- README rewritten. Same facts, shorter, no badges, no emoji, no hook copy. The version now sits on a plain "Current version:" line, which CI, the pre-commit hook, and the tests check. The hourly poll and counter blocks the Action writes into the README were retoned to match (`scripts/render_poll.py`), as were the Pages site, CONTRIBUTING, the Claude Code skill, and the issue templates.
+- Issue templates: the bug report asks for `--doctor` output up front; a new "Block signature" template collects the exact block text and Request ID for issue #3-style reports; the poll is a contact link.
+- CI runs the test suite on macOS and Windows as well as Linux, and a new `gui-smoke` job installs PyQt6 on each of the three and builds the dialogs and the header meter offscreen (`tests/test_gui_smoke.py`, skipped where PyQt6 is missing). That covers the import-and-construct half of issue #1; the tray icon and notifications still need a person at a real desktop.
+- `packaging/`: a Homebrew head formula (`brew install --HEAD --formula ./packaging/homebrew/claudit.rb`) and an Arch `claudit-git` PKGBUILD, both for the CLI tools with the tray app via pipx. Neither has run on a clean machine yet; issue #2 says so.
+- Tray menu gains "Run doctor", the same check as `--doctor` in a dialog with a Copy button. `claudit_gui.py --version`.
+- GitHub Actions bumped to `checkout@v7`, `setup-python@v7`, `upload-artifact@v7` (Dependabot #8, #9, #10). Dependabot no longer watches pip: the Python dependencies are floors, and raising them to the newest release (#11, #12, #13) would only shut out older systems.
+
 ## [2.5.0] — 2026-09-23
 **Guard rails around the new usage meter, a one-command environment check, and the loose ends.**
 - **Usage guard.** ClAudit's `claude` calls share the plan the meter now reads, so the Settings tab gains a "Pause claude calls above" slider (config `usage_guard_pct`, default 90). Once the 5-hour or 7-day window reaches it, `claude` calls abstain (tandem and the gate already treat an abstaining engine as broken and fall back to templates), `agy` calls continue, and a stderr note is logged at most hourly. The tray warns at 80% and 95% of any window, once per crossing.

@@ -1,14 +1,14 @@
 name: Feature request
-description: Suggest an improvement to ClAudit
+description: Something ClAudit should do
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: What's the problem / use case?
+      label: What are you trying to do that it does not do
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed solution
+      label: How you would want it to work

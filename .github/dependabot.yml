@@ -1,11 +1,8 @@
+# Only GitHub Actions. The Python dependencies in pyproject.toml are floors (>=), not pins, so
+# Dependabot's "raise the floor to the latest release" PRs would only shut out older systems.
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
-    labels: [dependencies]
-  - package-ecosystem: pip
     directory: /
     schedule:
       interval: monthly

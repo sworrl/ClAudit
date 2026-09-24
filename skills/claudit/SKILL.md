@@ -1,13 +1,13 @@
 ---
 name: claudit
-description: Scan this machine's Claude Code sessions for false-positive safety / Usage-Policy / auto-mode-classifier blocks and file them as clean, PII-scrubbed GitHub issues on anthropics/claude-code. Use when the user wants to review, queue, or report the legitimate-but-blocked requests Claude Code has refused — or to vote in the community poll.
+description: Scan this machine's Claude Code sessions for false-positive safety / Usage-Policy / auto-mode-classifier blocks and file them as clean, PII-scrubbed GitHub issues on anthropics/claude-code. Use when the user wants to review, queue, or report the legitimate-but-blocked requests Claude Code has refused, or to vote in the community poll.
 ---
 
-# ClAudit — report false-positive Claude Code blocks
+# ClAudit: report false-positive Claude Code blocks
 
 ClAudit ([github.com/sworrl/ClAudit](https://github.com/sworrl/ClAudit)) turns the server-side blocks
-Claude Code hits during legitimate work into clean, deduplicated, **PII-scrubbed** GitHub issues so
-Anthropic can actually see and fix them. This skill drives its CLI (`claudit_scan.py`, also installed
+Claude Code hits during legitimate work into clean, deduplicated, PII-scrubbed GitHub issues so
+Anthropic can see and fix them. This skill drives its CLI (`claudit_scan.py`, also installed
 as `claudit-watch`).
 
 ## Before you do anything
@@ -24,7 +24,7 @@ also need the `claude` and/or `agy` (Antigravity) CLI on PATH.
 Pick the command that matches the intent. Run from a ClAudit checkout, or use the installed
 `claudit-watch` entry point.
 
-### 1. Review — what would be reported (safe, no posting)
+### 1. Review what would be reported (safe, no posting)
 ```
 python3 claudit_scan.py            # dry-run: list NEW false-positive findings, file nothing
 python3 claudit_scan.py --pending  # list blocks the background watcher has queued
@@ -32,29 +32,29 @@ python3 claudit_scan.py --pending  # list blocks the background watcher has queu
 Summarize the findings for the user (kind, project, the triggering prompt, Request IDs). Never paste
 raw transcript text you haven't confirmed is scrubbed.
 
-### 2. File the backlog (POSTS — confirm first)
+### 2. File the backlog (posts; confirm first)
 ```
 python3 claudit_scan.py --post              # review each in $EDITOR, then file
 python3 claudit_scan.py --post --no-review   # file without the editor step
 ```
-Add `--burn-tokens` to have Claude write each report (strongest PII defense), or `--limit N` to cap
-how many are filed this run.
+Add `--burn-tokens` to have the LLM write each report (strongest PII defense), or `--limit N` to cap
+how many are filed this run. `python3 claudit_scan.py --doctor` checks the environment first.
 
 ### 3. Watch continuously
 ```
 python3 claudit_scan.py --watch --auto --backfill   # auto-file new blocks + drip the backlog
 ```
-Mention that the **GUI** (`claudit-gui`) is the friendlier way to run this — tray app, live dashboard,
+Mention that the **GUI** (`claudit-gui`) is the friendlier way to run this: tray app, live dashboard,
 one-click poll voting.
 
-### 4. Defend an issue wrongly flagged as a duplicate (POSTS — confirm first)
+### 4. Defend an issue wrongly flagged as a duplicate (posts; confirm first)
 ```
 python3 claudit_scan.py --dedup-guard --apply
 ```
-👎s the dup-bot and posts a factual "not a duplicate" note **only** on issues judged genuinely
-distinct.
+Reacts thumbs-down on the dup-bot's comment and posts a factual "not a duplicate" note, only on
+issues judged genuinely distinct.
 
-### 5. Closures: see what the bots closed, and answer it (scan is safe; defend POSTS)
+### 5. Closures: see what the bots closed, and answer it (scan is safe; defend posts)
 ```
 python3 claudit_scan.py --sweep-scan          # classify your closed reports: swept / merged / closed; posts nothing
 python3 claudit_scan.py --defend-closures     # POSTS: still-relevant note on swept reports, fold merged request IDs
@@ -84,6 +84,6 @@ points at the umbrella issue (#86940 by default); `--since-days 0` walks the ful
 
 ## Community poll
 
-Users can vote on whether Anthropic will fix the over-blocking by reacting 👍 / 👎 / 👀 on the pinned
-poll issue: https://github.com/sworrl/ClAudit/issues/6 — live tally at
+Users can vote on whether Anthropic will fix the over-blocking by reacting +1, -1, or eyes on the pinned
+poll issue: https://github.com/sworrl/ClAudit/issues/6, live tally at
 https://sworrl.github.io/ClAudit/ and in the app.
