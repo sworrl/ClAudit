@@ -183,14 +183,22 @@ def _code_changed(a, b):
 
 class UpdateChecker(QtCore.QThread):
     """Off-thread: pull new commits from GitHub (if clean+behind), then flag if CODE moved. A pull
-    that only refreshes docs/counter/poll/trend updates the checkout but does not restart the app."""
+    that only refreshes docs/counter/poll/trend updates the checkout but does not restart the app.
+    A pip/wheel install has no .git to pull, so it checks the latest GitHub Release instead and
+    reports a newer version (the tray shows it once)."""
     updated = QtCore.pyqtSignal()
+    newer = QtCore.pyqtSignal(str)
 
     def __init__(self, launch_head):
         super().__init__()
         self.launch_head = launch_head
 
     def run(self):
+        if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+            latest = cs.latest_release_version()
+            if latest and cs.version_tuple(latest) > cs.version_tuple(cs.__version__):
+                self.newer.emit(latest)
+            return
         git_pull_if_behind()                 # auto-update from GitHub (stays current either way)
         cur = git_commit()
         if cur and self.launch_head and cur != self.launch_head and _code_changed(self.launch_head, cur):
@@ -1550,18 +1558,19 @@ class ClosureWorker(QtCore.QThread):
 class ScrubListDialog(QtWidgets.QDialog):
     """View / add / remove terms in the local PII denylist (~/.claude/claudit/scrub.txt)."""
     PATH = os.path.expanduser("~/.claude/claudit/scrub.txt")
+    TITLE = "PII denylist"
+    INFO = ("Names, orgs, hostnames, codenames — anything the regex can't know — are scrubbed from "
+            "<b>every</b> report before it's filed. Word-boundary, case-insensitive. This file is "
+            "<b>local only</b> and never committed.")
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PII denylist")
+        self.setWindowTitle(self.TITLE)
         self.resize(440, 480)
         if os.path.exists(cs.ICON):
             self.setWindowIcon(QtGui.QIcon(cs.ICON))
         v = QtWidgets.QVBoxLayout(self)
-        info = QtWidgets.QLabel(
-            "Names, orgs, hostnames, codenames — anything the regex can't know — are scrubbed from "
-            "<b>every</b> report before it's filed. Word-boundary, case-insensitive. This file is "
-            "<b>local only</b> and never committed.")
+        info = QtWidgets.QLabel(self.INFO)
         info.setObjectName("subtle")
         info.setWordWrap(True)
         v.addWidget(info)
@@ -1605,7 +1614,8 @@ class ScrubListDialog(QtWidgets.QDialog):
         os.makedirs(os.path.dirname(self.PATH), exist_ok=True)
         with open(self.PATH, "w") as fh:
             fh.write("\n".join(terms) + ("\n" if terms else ""))
-        claudit._EXTRA = None              # invalidate cache so the running watcher reloads it
+        if self.PATH == ScrubListDialog.PATH:
+            claudit._EXTRA = None          # invalidate cache so the running watcher reloads it
         self.count.setText(f"{len(terms)} term(s) · {self.PATH}")
 
     def _add(self):
@@ -1620,6 +1630,17 @@ class ScrubListDialog(QtWidgets.QDialog):
         for it in self.lst.selectedItems():
             self.lst.takeItem(self.lst.row(it))
         self._save()
+
+
+class MuteListDialog(ScrubListDialog):
+    """View / add / remove terms in the mute list (~/.claude/claudit/mute.txt). Scrub redacts and
+    still posts; a mute stops the report outright and keeps it away from every LLM CLI."""
+    PATH = cs.MUTE_FILE
+    TITLE = "Mute list"
+    INFO = ("Findings whose block text, prompt, conversation lead-up, or project path contain one of "
+            "these terms are <b>never filed, never composed, and never sent to any LLM</b>. Use it for "
+            "work that must not be described publicly even in redacted form (active litigation, "
+            "clients under NDA). Substring match, case-insensitive; picked up live, no restart.")
 
 
 class RepoStatsFetcher(QtCore.QThread):
@@ -2055,7 +2076,17 @@ class Main(QtWidgets.QMainWindow):
             return                             # a slow fetch is still going — skip this tick
         self._uc = UpdateChecker(self._head)
         self._uc.updated.connect(self._restart)
+        self._uc.newer.connect(self._on_newer_release)
         self._uc.start()
+
+    def _on_newer_release(self, latest):
+        if getattr(self, "_release_told", "") == latest:
+            return
+        self._release_told = latest
+        self.tray.showMessage("ClAudit", f"Version {latest} is out (you run {cs.__version__}). "
+                              f"pip install --upgrade \"claudit[gui] @ https://github.com/{cs.POLL_REPO}"
+                              f"/archive/refs/tags/v{latest}.tar.gz\"",
+                              QtWidgets.QSystemTrayIcon.MessageIcon.Information, 10000)
 
     def _restart(self):
         self.tray.showMessage("ClAudit", "Update detected — restarting with the new version…")
@@ -2096,9 +2127,22 @@ class Main(QtWidgets.QMainWindow):
         self._uf.got.connect(self._on_usage)
         self._uf.start()
 
+    USAGE_ALERTS = (80, 95)          # tray toast once per level per crossing (re-arms below 80)
+
     def _on_usage(self, u):
         if u:
             self._usage = u
+            peak = max(u["five_hour"]["pct"], u["seven_day"]["pct"])
+            level = max((lv for lv in self.USAGE_ALERTS if peak >= lv), default=0)
+            seen = getattr(self, "_usage_alerted", 0)
+            if level > seen:
+                guarded, why = claudit.usage_guarded(u)
+                self.tray.showMessage(
+                    "ClAudit · plan usage", f"Your Claude plan is at {peak:.0f}% of a window. "
+                    + (f"Usage guard active: {why}; claude calls are paused."
+                       if guarded else f"claude calls pause at {claudit.USAGE_GUARD_PCT}%."),
+                    QtWidgets.QSystemTrayIcon.MessageIcon.Warning, 8000)
+            self._usage_alerted = level if level else 0
         self._usage_dirty = True
 
     def _update_tokens(self):
@@ -2227,6 +2271,7 @@ class Main(QtWidgets.QMainWindow):
                            f"https://github.com/{self.repo}/issues/{cs.umbrella_num()}")))
         menu.addSeparator()
         menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
+        menu.addAction("🔇 Edit mute list…", self._edit_mute)
         menu.addAction("Show window", self._show_window)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -2257,6 +2302,9 @@ class Main(QtWidgets.QMainWindow):
 
     def _edit_scrub(self):
         ScrubListDialog(self).exec()
+
+    def _edit_mute(self):
+        MuteListDialog(self).exec()
 
     def _toggle_auto(self, on):
         if not self.watcher:
@@ -2593,6 +2641,14 @@ class Main(QtWidgets.QMainWindow):
         self.cmb_engine.currentIndexChanged.connect(
             lambda i: self._apply_setting("llm_engine", self._engine_opts[i][1]))
         mform.addRow("LLM Engine:", self.cmb_engine)
+        self._slider_row(mform, "Pause claude calls above", 50, 100, int(claudit.USAGE_GUARD_PCT or 100),
+                         "%", "usage_guard_pct", lambda s: s)
+        guard_note = QtWidgets.QLabel("Usage guard: once your 5-hour or 7-day plan window reaches this, "
+                                      "ClAudit stops making claude calls (agy calls continue) so it never "
+                                      "spends the last of a plan you need yourself. 100 = never pause.")
+        guard_note.setObjectName("subtle")
+        guard_note.setWordWrap(True)
+        mform.addRow("", guard_note)
         mv.addLayout(mform)
         # estimated weekly spend per model at YOUR current filing rate — selected model highlighted
         self.cost_bars = BreakdownBars()
@@ -2614,9 +2670,16 @@ class Main(QtWidgets.QMainWindow):
                          lambda s: s)
         v.addWidget(tbox)
 
+        prow = QtWidgets.QHBoxLayout()
         pii = QtWidgets.QPushButton("Edit PII denylist…")
         pii.clicked.connect(self._edit_scrub)
-        v.addWidget(pii)
+        mute = QtWidgets.QPushButton("Edit mute list…")
+        mute.setToolTip("Terms that stop a finding from being filed or sent to any LLM at all")
+        mute.clicked.connect(self._edit_mute)
+        prow.addWidget(pii)
+        prow.addWidget(mute)
+        prow.addStretch(1)
+        v.addLayout(prow)
         v.addStretch(1)
         area.setWidget(inner)
         return area
@@ -2712,6 +2775,8 @@ class Main(QtWidgets.QMainWindow):
             claudit.LLM_EFFORT = str(val)
         elif key == "llm_engine":
             claudit.LLM_ENGINE = str(val)
+        elif key == "usage_guard_pct":
+            claudit.USAGE_GUARD_PCT = int(val)
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
@@ -2791,8 +2856,12 @@ class Main(QtWidgets.QMainWindow):
         bscrub = QtWidgets.QPushButton("🔒 Edit PII denylist…")
         bscrub.setToolTip("Manage the local scrub.txt — names/orgs/hostnames redacted from every report")
         bscrub.clicked.connect(self._edit_scrub)
+        bmute = QtWidgets.QPushButton("🔇 Edit mute list…")
+        bmute.setToolTip("Manage the local mute.txt — findings containing these terms are never filed or sent to an LLM")
+        bmute.clicked.connect(self._edit_mute)
         brow.addWidget(b)
         brow.addWidget(bscrub)
+        brow.addWidget(bmute)
         brow.addStretch(1)
         v.addLayout(brow)
         return w
@@ -3493,6 +3562,8 @@ def main():
         claudit.AGY_PROJECT = str(cfg["agy_project"] or "")
     if "agy_review_model" in cfg:
         claudit.AGY_REVIEW_MODEL = str(cfg["agy_review_model"] or "")
+    if "usage_guard_pct" in cfg:
+        claudit.USAGE_GUARD_PCT = int(cfg["usage_guard_pct"])
     if not cs.acquire_singleton():
         QtWidgets.QMessageBox.warning(None, "ClAudit",
                                       "Another ClAudit watcher is already running.\nThis instance will exit.")

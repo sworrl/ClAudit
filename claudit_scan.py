@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -1846,6 +1846,12 @@ def defend_swept(repo, state, delay=3, on_done=None, limit=0, compose=False):
                            + f"\n\n{SWEPT_MARKER}")
                 defended[num] = f"noted:#{umb}"
         except subprocess.CalledProcessError as e:
+            if _issue_locked(repo, num):             # locked after the sweep: cannot be answered
+                defended[num] = "locked"
+                state.setdefault("__locked__", {})[num] = "swept"
+                save_state(state)
+                print(f"  - #{num} is locked; swept report recorded as unanswerable", file=sys.stderr)
+                continue
             print(f"  ! swept defense failed on #{num}: {e}", file=sys.stderr)
             continue                                  # not recorded -> retried next pass
         save_state(state)
@@ -1856,6 +1862,13 @@ def defend_swept(repo, state, delay=3, on_done=None, limit=0, compose=False):
             break
         time.sleep(delay)
     return done
+
+
+def _issue_locked(repo, num):
+    """True when the issue is locked (comments rejected for everyone but maintainers). `gh issue
+    view --json` has no `locked` field, so this reads REST; None on fetch failure."""
+    d = _gh_json(["api", f"repos/{repo}/issues/{num}", "--jq", "{locked: .locked}"])
+    return bool(d.get("locked")) if isinstance(d, dict) else None
 
 
 def fold_merged(repo, state, delay=3, on_done=None, limit=0):
@@ -1889,6 +1902,13 @@ def fold_merged(repo, state, delay=3, on_done=None, limit=0):
         try:
             gh_comment(repo, canon, fold_note_md(new))
         except subprocess.CalledProcessError as e:
+            if _issue_locked(repo, canon):           # maintainers locked it: nothing to retry
+                folded[canon] = sorted(set(folded[canon]) | {n for n, _ in new})
+                state.setdefault("__locked__", {})[canon] = "fold"
+                save_state(state)
+                print(f"  - #{canon} is locked; request IDs from {[n for n, _ in new]} stay "
+                      f"unfolded (recorded, not retried)", file=sys.stderr)
+                continue
             print(f"  ! fold note failed on #{canon}: {e}", file=sys.stderr)
             continue
         subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{canon}/reactions",
@@ -2008,6 +2028,156 @@ def load_issue_rows():
     return rows
 
 
+RELEASES_API = f"https://api.github.com/repos/{POLL_REPO}/releases/latest"
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).strip().lstrip("v").split(".")[:3])
+    except ValueError:
+        return ()
+
+
+def latest_release_version(timeout=10):
+    """Tag of the newest GitHub Release ('2.4.0'), or '' when offline / rate-limited."""
+    import urllib.request
+    req = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json",
+                                                        "User-Agent": "ClAudit"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return str((json.load(r) or {}).get("tag_name", "")).lstrip("v")
+    except Exception:
+        return ""
+
+
+def _list_count(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return sum(1 for ln in fh if ln.strip() and not ln.strip().startswith("#"))
+    except OSError:
+        return None
+
+
+def doctor_rows(fetch=True):
+    """Environment check as [(status, label, detail)], status in {'ok', 'warn', 'fail'}.
+    fetch=False skips everything that needs the network (tests, offline runs)."""
+    rows = []
+    ok = lambda label, detail="": rows.append(("ok", label, detail))
+    warn = lambda label, detail="": rows.append(("warn", label, detail))
+    fail = lambda label, detail="": rows.append(("fail", label, detail))
+
+    pv = sys.version_info
+    (ok if pv >= (3, 9) else fail)("Python", f"{pv.major}.{pv.minor}.{pv.micro} at {sys.executable}")
+
+    gh = shutil.which("gh")
+    if not gh:
+        fail("gh CLI", "not on PATH: https://cli.github.com/")
+    else:
+        detail = gh
+        if fetch:
+            r = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+            who = gh_login() if r.returncode == 0 else ""
+            (ok if who else fail)("gh CLI", f"{detail} · signed in as {who}" if who
+                                  else f"{detail} · not signed in (run: gh auth login)")
+        else:
+            ok("gh CLI", detail)
+
+    for name in ("claude", "agy"):
+        path = shutil.which(name)
+        ver = ""
+        if path and fetch:
+            try:
+                ver = subprocess.run([name, "--version"], capture_output=True, text=True,
+                                     timeout=20).stdout.strip().splitlines()[0][:40]
+            except Exception:
+                ver = ""
+        (ok if path else warn)(f"{name} CLI", f"{path} {ver}".strip() if path
+                               else "not installed (burn-tokens / LLM scrub / gate unavailable)")
+    eng = claudit.get_available_llm_engine()
+    (ok if eng else warn)("LLM engine", f"config '{claudit.LLM_ENGINE}' resolves to {eng}" if eng
+                          else f"config '{claudit.LLM_ENGINE}' matches nothing installed")
+
+    cred = claudit._oauth_credentials()
+    if cred.get("accessToken"):
+        u = claudit.plan_usage() if fetch else claudit.plan_usage(fetch=False)
+        if u:
+            ok("Claude plan usage", f"{u.get('plan') or 'plan'}: 5h {u['five_hour']['pct']:.0f}% · "
+                                   f"7d {u['seven_day']['pct']:.0f}% (usage guard at {claudit.USAGE_GUARD_PCT}%)")
+        else:
+            warn("Claude plan usage", "login found but the usage endpoint did not answer; meter shows estimates")
+    else:
+        warn("Claude plan usage", "no Claude Code login (~/.claude/.credentials.json); meter shows estimates")
+
+    try:
+        import PyQt6  # noqa: F401
+        ok("PyQt6 (GUI)", "importable")
+    except ImportError:
+        warn("PyQt6 (GUI)", "not installed; headless watcher only (pip install PyQt6)")
+
+    sysname = platform.system()
+    toast = shutil.which("notify-send") or (shutil.which("osascript") if sysname == "Darwin" else None) \
+        or (shutil.which("powershell") if sysname == "Windows" else None)
+    (ok if toast else warn)("Desktop notifications", toast or "no notify-send / osascript / powershell found")
+
+    (ok if os.path.isdir(PROJECTS) else fail)(
+        "Claude Code sessions", f"{PROJECTS} · {sum(len([f for f in fs if f.endswith('.jsonl')]) for _r, _d, fs in os.walk(PROJECTS))} transcripts"
+        if os.path.isdir(PROJECTS) else f"{PROJECTS} missing (has Claude Code run on this machine?)")
+
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        probe = os.path.join(STATE_DIR, ".doctor")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+        ok("State dir", STATE_DIR)
+    except OSError as e:
+        fail("State dir", f"{STATE_DIR} not writable: {e}")
+    try:
+        cfg = load_config()
+        ok("config.json", ", ".join(f"{k}={v}" for k, v in sorted(cfg.items())) or "(defaults)")
+    except Exception as e:
+        fail("config.json", f"unreadable: {e}")
+    n_scrub, n_mute = _list_count(os.path.join(STATE_DIR, "scrub.txt")), _list_count(MUTE_FILE)
+    (ok if n_scrub else warn)("scrub.txt", f"{n_scrub} term(s)" if n_scrub
+                              else "empty or missing: add org names, hostnames, codenames before filing")
+    ok("mute.txt", f"{n_mute or 0} term(s)")
+
+    lock_pid = None
+    try:
+        with open(LOCK_FILE) as fh:
+            lock_pid = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        pass
+    if lock_pid and _pid_alive(lock_pid):
+        ok("Watcher", f"running (pid {lock_pid})")
+    elif lock_pid:
+        warn("Watcher", f"stale lock for dead pid {lock_pid} (cleared automatically on next start)")
+    else:
+        ok("Watcher", "not running")
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isdir(os.path.join(here, ".git")) and shutil.which("git"):
+        st = subprocess.run(["git", "-C", here, "status", "-sb"], capture_output=True, text=True).stdout
+        head = (st.splitlines() or [""])[0]
+        dirty = len(st.splitlines()) > 1
+        (warn if ("behind" in head or "ahead" in head or dirty) else ok)(
+            "Git checkout", head + (" · uncommitted changes" if dirty else ""))
+    if fetch:
+        latest = latest_release_version()
+        if latest and version_tuple(latest) > version_tuple(__version__):
+            warn("Version", f"{__version__} installed, {latest} released: "
+                            f"https://github.com/{POLL_REPO}/releases/latest")
+        else:
+            ok("Version", f"{__version__}" + (f" (latest release {latest})" if latest else ""))
+    return rows
+
+
+def doctor_text(rows):
+    mark = {"ok": "✓", "warn": "!", "fail": "✗"}
+    width = max(len(r[1]) for r in rows) if rows else 10
+    return "\n".join(f"{mark[s]} {label:<{width}}  {detail}" for s, label, detail in rows)
+
+
 def pattern_report_md(rows):
     """Build the consolidated, PII-scrubbed root-cause report from filed-issue rows."""
     by_kind = collections.defaultdict(list)
@@ -2122,6 +2292,9 @@ def main():
                    help="also reopen issues a human maintainer closed as duplicate (default: bot only)")
     p.add_argument("--reopen-interval", dest="reopen_interval", type=float, default=3600,
                    help="with --watch --reopen: seconds between reopen sweeps (default 3600 = 1h)")
+    p.add_argument("--doctor", action="store_true",
+                   help="check the environment (gh, LLM CLIs, Claude login, PyQt6, notifications, state, "
+                        "version) and exit non-zero on a hard failure")
     p.add_argument("--usage", action="store_true",
                    help="print your live Claude plan usage (5-hour / 7-day windows) and ClAudit's own "
                         "LLM spend per engine, then exit")
@@ -2186,6 +2359,11 @@ def main():
         n = update_tracking(args.repo, args.update_tracking)
         print(f"Refreshed tracking issue #{args.update_tracking} from {n} reports.", file=sys.stderr)
         return
+
+    if args.doctor:
+        rows = doctor_rows()
+        print(doctor_text(rows))
+        sys.exit(1 if any(r[0] == 'fail' for r in rows) else 0)
 
     if args.usage:
         print(claudit.usage_summary(claudit.plan_usage()))

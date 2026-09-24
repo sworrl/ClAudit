@@ -958,3 +958,111 @@ def test_fmt_reset():
     assert claudit.fmt_reset("2026-09-27T06:00:00+00:00", now) == "in 3d 1h"
     assert claudit.fmt_reset("2026-09-24T04:00:00+00:00", now) == "resetting"
     assert claudit.fmt_reset("", now) == "" and claudit.fmt_reset("garbage", now) == ""
+
+
+def test_usage_guard_abstains_claude_calls_only(monkeypatch):
+    """Past the guard threshold, claude calls return '' (callers treat that as a broken engine and
+    fall back); agy calls are untouched; at 100 the guard is off."""
+    calls = []
+    monkeypatch.setattr(claudit, "_claude", lambda prompt, timeout, model=None: calls.append("claude") or "c")
+    monkeypatch.setattr(claudit, "_agy", lambda prompt, timeout, model=None: calls.append("agy") or "a")
+    monkeypatch.setattr(claudit, "available_engines", lambda: ["agy", "claude"])
+    snap = {"five_hour": {"pct": 20.0}, "seven_day": {"pct": 93.0}, "scoped": []}
+    monkeypatch.setattr(claudit, "plan_usage", lambda *a, **k: snap)
+    monkeypatch.setattr(claudit, "USAGE_GUARD_PCT", 90)
+    assert claudit.usage_guarded() == (True, "7-day window at 93% (guard 90%)")
+    assert claudit._run_llm("p", engine="claude") == ""
+    assert claudit._run_llm("p", engine="agy") == "a"
+    monkeypatch.setattr(claudit, "USAGE_GUARD_PCT", 100)
+    assert claudit.usage_guarded() == (False, "")
+    assert claudit._run_llm("p", engine="claude") == "c"
+    monkeypatch.setattr(claudit, "USAGE_GUARD_PCT", 90)
+    monkeypatch.setattr(claudit, "plan_usage", lambda *a, **k: None)   # no login: never guards
+    assert claudit._run_llm("p", engine="claude") == "c"
+    assert calls == ["agy", "claude", "claude"]
+
+
+def test_latest_release_and_version_tuple(monkeypatch):
+    class R:
+        def read(self):
+            return b'{"tag_name": "v9.1.0"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: R())
+    assert cs.latest_release_version() == "9.1.0"
+    assert cs.version_tuple("v2.10.3") == (2, 10, 3) > cs.version_tuple("2.9.99")
+    assert cs.version_tuple("garbage") == ()
+    def boom(req, timeout=0):
+        raise OSError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert cs.latest_release_version() == ""
+
+
+def test_doctor_rows_offline(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(cs, "LOCK_FILE", str(tmp_path / "state" / "watcher.lock"))
+    monkeypatch.setattr(cs, "CONFIG_FILE", str(tmp_path / "state" / "config.json"))
+    monkeypatch.setattr(cs, "MUTE_FILE", str(tmp_path / "state" / "mute.txt"))
+    monkeypatch.setattr(cs, "PROJECTS", str(tmp_path / "projects"))
+    monkeypatch.setattr(claudit, "CREDENTIALS_FILE", str(tmp_path / "nocreds.json"))
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    rows = cs.doctor_rows(fetch=False)
+    labels = [r[1] for r in rows]
+    assert {"Python", "gh CLI", "claude CLI", "agy CLI", "LLM engine", "Claude plan usage",
+            "PyQt6 (GUI)", "Desktop notifications", "Claude Code sessions", "State dir",
+            "config.json", "scrub.txt", "mute.txt", "Watcher"} <= set(labels)
+    assert all(r[0] in ("ok", "warn", "fail") for r in rows)
+    by = {r[1]: r for r in rows}
+    assert by["Claude Code sessions"][0] == "fail"                # no transcripts dir in tmp
+    assert by["Claude plan usage"][0] == "warn"                   # no login
+    assert by["State dir"][0] == "ok" and by["Watcher"] == ("ok", "Watcher", "not running")
+    text = cs.doctor_text(rows)
+    assert text.count("\n") == len(rows) - 1 and "✗ Claude Code sessions" in text
+
+
+def test_render_poll_helpers(tmp_path, monkeypatch):
+    """The hourly Action rewrites the README blocks and the trend SVG from these; a break here
+    silently stalls the public counter."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    import render_poll as rp
+    md = rp.render_md({"plus": 1, "minus": 3, "eyes": 0, "total": 4}, "2026-09-23 21:00")
+    assert md.startswith(rp.START) and md.rstrip().endswith(rp.END)
+    assert "| 👎 Claude Code stays broken | `████████░░` | **75%** (3) |" in md
+    assert "4 vote(s)" in md
+    monkeypatch.setattr(rp, "HISTORY_JSON", str(tmp_path / "hist.json"))
+    h = rp.append_history({"open_api": 5, "closed_api": 1, "harness": 0}, "2026-09-23 21:00 UTC")
+    h = rp.append_history({"open_api": 6, "closed_api": 1, "harness": 0}, "2026-09-23 21:40 UTC")
+    assert len(h) == 1 and h[0]["open_api"] == 6                  # same hour overwrites
+    h = rp.append_history({"open_api": 7, "closed_api": 2, "harness": 1}, "2026-09-23 22:05 UTC")
+    assert len(h) == 2 and json.load(open(tmp_path / "hist.json"))[-1]["harness"] == 1
+    svg = rp.render_trend_svg(h)
+    assert svg.startswith("<svg") and "open 7" in svg and "closed 2" in svg and "harness 1" in svg
+    assert rp._g({"open": 3}, "open_api") == 3                    # legacy key name still read
+    assert "trend builds hourly" in rp.render_trend_svg([])
+
+
+def test_fold_merged_records_locked_canonical_instead_of_retrying(monkeypatch):
+    """Maintainers locked three canonicals; every 15-minute pass re-ran `gh issue comment` on each
+    and logged a failure. A locked canonical is now recorded and left alone."""
+    import subprocess
+    state = {"__closures__": {"72091": {"kind": "merged", "into": 71888, "title": "t (req_A)"}}}
+    monkeypatch.setattr(cs, "_gh_json_wait", lambda args: {"comments": []})
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    attempts = []
+    def comment(repo, num, body):
+        attempts.append(num)
+        raise subprocess.CalledProcessError(1, ["gh", "issue", "comment"])
+    monkeypatch.setattr(cs, "gh_comment", comment)
+    monkeypatch.setattr(cs, "_issue_locked", lambda repo, num: True)
+    monkeypatch.setattr(cs, "save_state", lambda st: None)
+    assert cs.fold_merged("o/r", state, delay=0) == 0
+    assert state["__folded__"]["71888"] == [72091] and state["__locked__"] == {"71888": "fold"}
+    assert cs.fold_merged("o/r", state, delay=0) == 0 and attempts == ["71888"]   # no second try
+    # an unlocked failure is still retried next pass
+    state2 = {"__closures__": {"72091": {"kind": "merged", "into": 71888, "title": "t (req_A)"}}}
+    monkeypatch.setattr(cs, "_issue_locked", lambda repo, num: False)
+    cs.fold_merged("o/r", state2, delay=0)
+    assert state2["__folded__"].get("71888", []) == [] and len(attempts) == 2

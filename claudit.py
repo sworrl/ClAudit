@@ -192,6 +192,11 @@ def _record_tokens(usage, cost, engine="claude"):
 # The token never leaves the machine except to api.anthropic.com, exactly as Claude Code uses it,
 # and it is never logged or written anywhere by ClAudit. API-key-only setups get None (fallback
 # to the dollar estimate above).
+# Usage guard: once the 5-hour or 7-day window reaches this percent, ClAudit stops making
+# `claude` calls (they abstain; agy calls are unaffected) so it never spends the last of a plan
+# the user needs for their own work. 100 = never guard.
+USAGE_GUARD_PCT = 90
+_GUARD_LAST_NOTE = [0.0]
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_CACHE = os.path.expanduser("~/.claude/claudit/usage.json")
 USAGE_TTL = 300                     # seconds between live fetches (the GUI polls the cache)
@@ -297,6 +302,22 @@ def plan_usage(max_age=USAGE_TTL, fetch=True):
     except OSError:
         pass
     return out
+
+
+def usage_guarded(u=None):
+    """(guarded, reason): True when the plan's 5-hour or 7-day window is at or past USAGE_GUARD_PCT.
+    Reads the cached snapshot (a fetch at most every USAGE_TTL seconds); no snapshot = not guarded."""
+    pct = int(USAGE_GUARD_PCT or 0)
+    if pct <= 0 or pct >= 100:
+        return False, ""
+    u = plan_usage() if u is None else u
+    if not u:
+        return False, ""
+    for key, label in (("five_hour", "5-hour"), ("seven_day", "7-day")):
+        val = float((u.get(key) or {}).get("pct", 0.0) or 0.0)
+        if val >= pct:
+            return True, f"{label} window at {val:.0f}% (guard {pct}%)"
+    return False, ""
 
 
 def fmt_reset(iso, now=None):
@@ -440,6 +461,12 @@ def _run_llm(prompt, timeout=120, engine=None, model=None):
     if engine == "agy":
         return _agy(prompt, timeout, model) if model else _agy(prompt, timeout)
     if engine == "claude":
+        guarded, why = usage_guarded()
+        if guarded:                             # abstain: callers treat "" as a broken engine
+            if time.time() - _GUARD_LAST_NOTE[0] > 3600:
+                _GUARD_LAST_NOTE[0] = time.time()
+                print(f"claudit: usage guard: skipping claude call, {why}", file=sys.stderr)
+            return ""
         return _claude(prompt, timeout, model) if model else _claude(prompt, timeout)
     return ""
 

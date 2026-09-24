@@ -9,7 +9,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sworrl/ClAudit?label=release)](https://github.com/sworrl/ClAudit/releases)
-![Version](https://img.shields.io/badge/version-2.4.0-brightgreen)
+![Version](https://img.shields.io/badge/version-2.5.0-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -309,8 +309,9 @@ and sdist attached, so a pinned install without a clone is:
 pip install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/v2.3.0.tar.gz"
 ```
 
-(Note that the self-update described under [Auto-update](#auto-update--self-restart) only works from a
-git clone; a pip install stays on the version you installed.)
+(The self-update described under [Auto-update](#auto-update--self-restart) only works from a git
+clone. A pip install stays on the version you installed, but the tray tells you once when a newer
+release is published, with the upgrade command.)
 
 Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
 for the GUI, and, to actually use burn-tokens / LLM scrub, the **`claude`** and/or **`agy`**
@@ -467,6 +468,7 @@ Defend, reopen, and track:
 | `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (dry-run without `--apply`) |
 | `--sweep-scan` | Classify your closed issues (swept / merged / closed) and print the rollup; posts nothing |
 | `--usage` | Print your live Claude plan windows (5-hour / 7-day / per-model) and ClAudit's own per-engine spend, then exit |
+| `--doctor` | Check the environment: gh login, `claude`/`agy` CLIs, Claude login for the meter, PyQt6, notifications, transcripts dir, state files, watcher lock, git checkout, newest release. Exit 1 on a hard failure |
 | `--defend-closures` | One-shot: answer bot stale-sweeps + fold merged request IDs onto canonicals, refresh the umbrella |
 | `--update-umbrella` | Refresh the umbrella issue's body from recorded swept closures |
 | `--watch --closures` | Run the closure defender on a timer (default every 15 min) |
@@ -530,6 +532,12 @@ Lifetime across every session:
   agy       410 calls  109.0M tokens
 ```
 
+**Usage guard.** Because ClAudit's `claude` calls draw on the same plan as your own Claude Code work,
+the Settings tab's "Pause claude calls above" slider (default 90%) stops them once your 5-hour or 7-day
+window reaches that level: the calls abstain, tandem falls back to its deterministic templates, and
+`agy` calls carry on. The tray warns at 80% and again at 95% of any window. Set the slider to 100 to
+never pause.
+
 The same report is available headless with `python3 claudit_scan.py --usage`. Without a Claude Code
 login (API-key-only setups) the meter falls back to `🔥 est. $<spend>/wk · Pro N% · M5x N% · M20x N%`,
 an estimate of your `claude` spend against guessed per-plan weekly budgets; the tooltip says so.
@@ -565,10 +573,11 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `amplify`, `report_harness`, `interval`, `watchdog` |
+| `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage: input/output/cache tokens, calls, and USD per engine (`claude`, `agy`) across every session, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your live Claude plan windows (the header meter); safe to delete |
-| `scrub.txt` | Your local PII denylist (never committed) |
+| `scrub.txt` | Your local PII denylist (never committed); edit from the tray or Settings |
+| `mute.txt` | Terms that stop a finding from being filed or sent to any LLM at all (see 2.2.3); edit from the tray or Settings |
 | `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
 | `error-log.jsonl` | Every classified block, including the logged-only kinds |
@@ -623,6 +632,11 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 
 ## Troubleshooting
 
+Start with `python3 claudit_scan.py --doctor`. It checks every prerequisite in one pass (gh sign-in,
+the LLM CLIs and which engine your config resolves to, the Claude Code login the usage meter needs,
+PyQt6, desktop notifications, the transcripts directory, state files, the watcher lock, whether the
+git checkout is behind, and whether a newer release exists) and prints ✓ / ! / ✗ per line.
+
 - **Empty dashboard / nothing posts when launched from an icon:** `gh` wasn't on the desktop PATH.
   ClAudit now adds the interpreter's bin dir to PATH automatically; update to ≥1.5.1. On macOS the
   launchd agent from `install-macos.sh` records your shell's PATH at install time, so re-run it after
@@ -651,7 +665,7 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 | `claudit_scan.py` | Watcher: scan, classify, dedup, file/backfill, dedup-guard, single-instance lock |
 | `claudit_gui.py` | PyQt6 tray app + community dashboard |
 | `claudit.py` | Manual paste → scrub → file, and the shared PII scrubber + LLM helpers |
-| `scripts/gen-icon.py` | Regenerate `claudit_icon.png` |
+| `scripts/gen-icon.py` | Regenerate `claudit_icon.png` (and `claudit_icon.ico` for the Windows shortcut; `--ico-only` derives just the .ico) |
 | `scripts/install-linux.sh` | Linux: desktop launcher, optional XDG autostart |
 | `scripts/install-macos.sh` | macOS: launchd Login Item (hidden at login), `--uninstall` |
 | `scripts/install-windows.ps1` | Windows: Start Menu shortcut, `-Autostart` Startup entry |

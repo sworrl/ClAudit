@@ -9,6 +9,7 @@ S = 1024          # final size
 SS = 2            # supersample for smooth edges
 W = S * SS
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "claudit_icon.png")
+ICO = OUT[:-4] + ".ico"     # Windows shortcut icon (scripts/install-windows.ps1)
 
 
 def lerp(a, b, t):
@@ -57,7 +58,17 @@ def gen():
     img.save(OUT)
     img.resize((256, 256), Image.LANCZOS).save(OUT.replace(".png", "_256.png"))
     print("wrote", OUT)
+    ico()
+
+
+def ico():
+    """Derive the multi-size Windows .ico from the PNG (what the Windows shortcut points at)."""
+    img = Image.open(OUT).convert("RGBA")
+    sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+    img.save(ICO, format="ICO", sizes=sizes)
+    print("wrote", ICO)
 
 
 if __name__ == "__main__":
-    gen()
+    import sys
+    ico() if "--ico-only" in sys.argv else gen()
