@@ -15,7 +15,7 @@ dependencies = []                 # core is stdlib-only; gh + claude CLIs are ex
 
 [project.optional-dependencies]
 gui = ["PyQt6>=6.5"]
-icon = ["Pillow>=10.0"]
+icon = ["Pillow>=12.3.0"]
 dev = ["pytest", "ruff"]
 
 [project.urls]
