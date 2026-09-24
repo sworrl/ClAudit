@@ -35,17 +35,17 @@ is to wave off.
 <!-- COUNTER:START -->
 ### 200 open false-positive reports right now
 
-Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 447 closed by Anthropic. Updated 2026-09-24 04:18 UTC.
+Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 548 closed by Anthropic. Updated 2026-09-24 04:56 UTC.
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
-<sub>Three lines: open cyber/AUP false positives (cyan), closed by Anthropic (green), and the 153 harness reports ClAudit withdrew itself (muted), tracked separately and not counted as closed tickets.</sub>
+<sub>Three lines: open cyber/AUP false positives (cyan), closed by Anthropic (green), and the 252 harness reports ClAudit withdrew itself (muted), tracked separately and not counted as closed tickets.</sub>
 <!-- COUNTER:END -->
 
 <!-- POLL:START -->
 ### Community poll
 
-Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-24 04:18 UTC.
+Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-24 04:56 UTC.
 
 | Answer | | Share |
 |---|---:|---|
