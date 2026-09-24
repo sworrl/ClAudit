@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.6.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.6.1. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·

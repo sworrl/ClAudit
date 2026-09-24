@@ -839,11 +839,11 @@ def test_version_is_consistent_across_badge_changelog_and_package():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     v = cs.__version__
     assert re.fullmatch(r"\d+\.\d+\.\d+", v)
-    with open(os.path.join(root, "README.md")) as fh:
+    with open(os.path.join(root, "README.md"), encoding="utf-8") as fh:
         assert f"\nCurrent version: {v}." in fh.read()
-    with open(os.path.join(root, "CHANGELOG.md")) as fh:
+    with open(os.path.join(root, "CHANGELOG.md"), encoding="utf-8") as fh:
         assert f"## [{v}]" in fh.read()
-    with open(os.path.join(root, "pyproject.toml")) as fh:
+    with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
         assert 'version = { attr = "claudit_scan.__version__" }' in fh.read()
 
 

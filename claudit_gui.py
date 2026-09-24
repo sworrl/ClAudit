@@ -1612,7 +1612,7 @@ class ScrubListDialog(QtWidgets.QDialog):
     def _save(self):
         terms = self._terms()
         os.makedirs(os.path.dirname(self.PATH), exist_ok=True)
-        with open(self.PATH, "w") as fh:
+        with open(self.PATH, "w", encoding="utf-8") as fh:
             fh.write("\n".join(terms) + ("\n" if terms else ""))
         if self.PATH == ScrubListDialog.PATH:
             claudit._EXTRA = None          # invalidate cache so the running watcher reloads it

@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.6.1] — 2026-09-23
+- Fix: the first Windows CI run failed on a test that opened the README with the locale codec (cp1252). Every text-file open that can hold non-ASCII (the error log, the scrub and mute lists, the poll renderer's README and JSON, the tests) now says `encoding="utf-8"`. Lock and PID files stay as they were; they are digits.
+
 ## [2.6.0] — 2026-09-23
 **Plain-text pass on everything published, CI on all three desktops, packaging starters, and the open issues answered.**
 - README rewritten. Same facts, shorter, no badges, no emoji, no hook copy. The version now sits on a plain "Current version:" line, which CI, the pre-commit hook, and the tests check. The hourly poll and counter blocks the Action writes into the README were retoned to match (`scripts/render_poll.py`), as were the Pages site, CONTRIBUTING, the Claude Code skill, and the issue templates.

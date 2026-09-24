@@ -68,7 +68,7 @@ def append_history(point, when):
     hist = []
     if os.path.exists(HISTORY_JSON):
         try:
-            with open(HISTORY_JSON) as fh:
+            with open(HISTORY_JSON, encoding="utf-8") as fh:
                 hist = json.load(fh)
         except Exception:
             hist = []
@@ -78,7 +78,7 @@ def append_history(point, when):
     else:
         hist.append(point)
     hist = hist[-1440:]
-    with open(HISTORY_JSON, "w") as fh:
+    with open(HISTORY_JSON, "w", encoding="utf-8") as fh:
         json.dump(hist, fh)
     return hist
 
@@ -165,7 +165,7 @@ def main():
     counts = cs.poll_counts()
     when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
     os.makedirs(os.path.dirname(POLL_JSON), exist_ok=True)
-    with open(POLL_JSON, "w") as fh:
+    with open(POLL_JSON, "w", encoding="utf-8") as fh:
         json.dump({**counts, "updated": when + " UTC",
                    "issue": ISSUE_URL,
                    "options": [{"key": k, "emoji": e, "meaning": m} for k, _c, e, m in cs.POLL_OPTS]},
@@ -178,7 +178,7 @@ def main():
             json.dump({"schemaVersion": 1, "label": "open false-positive reports",
                        "message": f"{n}", "color": "red"}, fh, indent=2)
         hist = append_history(d, when + " UTC")
-        with open(TREND_SVG, "w") as fh:
+        with open(TREND_SVG, "w", encoding="utf-8") as fh:
             fh.write(render_trend_svg(hist))
         counter_block = (
             f"{CSTART}\n### {n} open false-positive reports right now\n\n"
@@ -191,7 +191,7 @@ def main():
             f"and not counted as closed tickets.</sub>\n{CEND}")
 
     block = render_md(counts, when)
-    with open(README) as fh:
+    with open(README, encoding="utf-8") as fh:
         text = fh.read()
     if START in text and END in text:
         pre, rest = text.split(START, 1)
@@ -205,7 +205,7 @@ def main():
         text = pre + counter_block + post
     elif n is not None:
         sys.stderr.write("WARN: COUNTER markers not found in README; skipping counter update\n")
-    with open(README, "w") as fh:
+    with open(README, "w", encoding="utf-8") as fh:
         fh.write(text)
     print(f"poll: 👍{counts['plus']} 👎{counts['minus']} 👀{counts['eyes']} (total {counts['total']}) "
           f"| open reports: {n}")
