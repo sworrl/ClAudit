@@ -6,18 +6,52 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  test:
+    name: test (py${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: Byte-compile (catches syntax errors)
-        run: python -m py_compile claudit.py claudit_scan.py claudit_gui.py scripts/gen-icon.py
+        run: python -m py_compile claudit.py claudit_scan.py claudit_gui.py scripts/gen-icon.py scripts/render_poll.py scripts/pattern_report.py
       - name: Install dev deps
         run: pip install ruff pytest
       - name: Ruff (lint for real errors only)
         run: ruff check --select E9,F63,F7,F82 .
       - name: Tests
         run: python -m pytest tests/ -q
+
+  package:
+    name: package (wheel + entry points)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          pip install build
+          python -m build
+          ls -l dist/
+      - name: Install the wheel and smoke-test the console scripts
+        run: |
+          pip install dist/*.whl
+          claudit-watch --version
+          claudit-watch --help > /dev/null
+          claudit --help > /dev/null
+      - name: Version badge matches __version__
+        run: |
+          v=$(python -c "import claudit_scan; print(claudit_scan.__version__)")
+          grep -q "version-$v-" README.md || { echo "::error::README badge does not say $v"; exit 1; }
+          grep -q "^## \[$v\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no [$v] section"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

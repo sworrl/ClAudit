@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.2.5"
+__version__ = "2.3.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -721,7 +721,7 @@ def poll_counts():
 def poll_vote(choice, me=None):
     """Cast/switch the user's vote. `choice` in {'plus','minus','eyes'}. Enforces one vote per
     user: add the chosen reaction, then remove that user's OTHER poll reactions. Returns counts."""
-    content = dict((o[0], o[1]) for o in POLL_OPTS)[choice]
+    content = {o[0]: o[1] for o in POLL_OPTS}[choice]
     me = me or gh_login()
     subprocess.run(["gh", "api", "-X", "POST",
                     f"/repos/{POLL_REPO}/issues/{POLL_ISSUE}/reactions", "-f", f"content={content}"],

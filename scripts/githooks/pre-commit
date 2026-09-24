@@ -2,6 +2,7 @@
 # Directive: every code change bumps __version__. This hook enforces it automatically —
 # it auto-increments the patch version on every commit UNLESS the version was already
 # changed in this commit (so manual minor/major bumps are respected, not double-bumped).
+# Either way it keeps the README version badge in step with __version__.
 #
 # Enable once per clone:   git config core.hooksPath scripts/githooks
 set -e
@@ -9,11 +10,17 @@ f="claudit_scan.py"
 [ -f "$f" ] || exit 0
 cur=$(grep -oE '__version__ = "[0-9]+\.[0-9]+\.[0-9]+"' "$f" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 prev=$(git show HEAD:"$f" 2>/dev/null | grep -oE '__version__ = "[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
+# only bump when a run-affecting file is actually staged (docs-only commits keep the version)
+if [ -n "$cur" ] && [ "$cur" = "$prev" ] && git diff --cached --name-only | grep -qE '\.py$|^requirements\.txt$|^pyproject\.toml$'; then
   IFS=. read -r a b c <<< "$cur"
   new="$a.$b.$((c + 1))"
   sed -i "s/__version__ = \"$cur\"/__version__ = \"$new\"/" "$f"
-  sed -i "s/version-$cur/version-$new/" README.md 2>/dev/null || true
-  git add "$f" README.md
+  git add "$f"
   echo "ClAudit: auto-bumped version $cur -> $new"
+  cur="$new"
+fi
+if [ -n "$cur" ] && [ -f README.md ] && ! grep -q "version-$cur-" README.md; then
+  sed -i -E "s/version-[0-9]+\.[0-9]+\.[0-9]+-/version-$cur-/" README.md
+  git add README.md
+  echo "ClAudit: README version badge -> $cur"
 fi

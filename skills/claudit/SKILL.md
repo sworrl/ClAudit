@@ -17,7 +17,7 @@ outward-facing action: **show the user what would be filed and get explicit conf
 command that posts.** Read-only/dry-run commands are safe to run without asking.
 
 Requirements: the `gh` CLI authenticated (`gh auth status`), and `python3`. Burn-tokens / gate modes
-also need the `claude` CLI on PATH.
+also need the `claude` and/or `agy` (Antigravity) CLI on PATH.
 
 ## How to use it
 
@@ -53,6 +53,24 @@ python3 claudit_scan.py --dedup-guard --apply
 ```
 👎s the dup-bot and posts a factual "not a duplicate" note **only** on issues judged genuinely
 distinct.
+
+### 5. Closures: see what the bots closed, and answer it (scan is safe; defend POSTS)
+```
+python3 claudit_scan.py --sweep-scan          # classify your closed reports: swept / merged / closed; posts nothing
+python3 claudit_scan.py --defend-closures     # POSTS: still-relevant note on swept reports, fold merged request IDs
+```
+The inactivity bot on anthropics/claude-code closes untriaged reports as "not planned", and an
+author cannot reopen a bot-closed issue. `--defend-closures` answers each swept report once and
+points at the umbrella issue (#86940 by default); `--since-days 0` walks the full history.
+
+### Engines and sensitive work
+- `--engine auto|claude|agy|tandem` picks which LLM CLI writes and reviews. `tandem` (the default
+  when both `claude` and `agy` are installed) has agy draft and claude review; `agy` alone still
+  cross-checks with a second agy model and spends no Claude quota.
+- `~/.claude/claudit/scrub.txt` redacts terms and still posts. `~/.claude/claudit/mute.txt` goes
+  further: any finding whose block text, prompt, leadup, or project path contains a listed term is
+  never filed, composed, or sent to any LLM. Suggest it when the user mentions litigation, client
+  names under NDA, or anything that must not be described publicly even in redacted form.
 
 ## Key principles to honor
 

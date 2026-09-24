@@ -1,6 +1,7 @@
 """Core tests for ClAudit — no network, no real gh/claude (all mocked/off)."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -62,7 +63,8 @@ def test_record_tokens_prunes_history_to_week(tmp_path, monkeypatch):
         {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "calls": 1,
          "cost": 2.0, "history": old}))
     claudit._record_tokens({"input_tokens": 10, "output_tokens": 5}, 0.4)
-    hist = json.load(open(claudit.TOKENS_FILE))["history"]
+    with open(claudit.TOKENS_FILE) as fh:
+        hist = json.load(fh)["history"]
     assert hist == [hist[0]] and len(hist) == 1                  # stale entry pruned, new one kept
     assert abs(claudit.weekly_cost() - 0.4) < 1e-9
 
@@ -829,3 +831,17 @@ def test_llm_redact_agy_only_runs_both_voices(monkeypatch):
     out = claudit.llm_redact("AcmeCorp ticket from jsmith")
     assert calls == [None, "gemini-3.1-pro-low"]            # two agy voices, zero claude calls
     assert "AcmeCorp" not in out and "jsmith" not in out    # findings unioned
+
+
+def test_version_is_consistent_across_badge_changelog_and_package():
+    """The README badge, the CHANGELOG, and pyproject's dynamic version all key off __version__;
+    2.0.111 sat on the badge through five releases before CI checked this."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    v = cs.__version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", v)
+    with open(os.path.join(root, "README.md")) as fh:
+        assert f"version-{v}-" in fh.read()
+    with open(os.path.join(root, "CHANGELOG.md")) as fh:
+        assert f"## [{v}]" in fh.read()
+    with open(os.path.join(root, "pyproject.toml")) as fh:
+        assert 'version = { attr = "claudit_scan.__version__" }' in fh.read()

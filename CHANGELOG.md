@@ -3,6 +3,16 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.3.0] — 2026-09-23
+**Shipped: the 2.2.x line reaches GitHub, plus releases, a real landing page, and autostart on every platform.** The six commits from 2.2.0 to 2.2.5 (tandem engines, closure intelligence, mute list, agy-only mode) sat unpushed for a month while the hourly counter bot kept committing; this release rebases them onto `main` and adds the delivery plumbing that was missing:
+- **Tag-driven releases.** Pushing a `vX.Y.Z` tag builds the sdist and wheel, takes that version's section of this file as the notes, and publishes a GitHub Release with the files attached (`.github/workflows/release.yml`). The tag must match `__version__` or the job fails. `v2.3.0` is the first one.
+- **CI actually covers what the README promises.** The test job now runs on Python 3.9, 3.12, and 3.13 (the floor is 3.9; it was only ever tested on 3.12), and a package job builds the wheel, installs it, and runs `claudit-watch --version` / `--help` so a broken entry point cannot ship. It also fails when the README version badge or this changelog disagrees with `__version__`, which is how 2.0.111 stayed on the badge through five releases.
+- **Cloud defend runs the closure defender.** The 20-minute GitHub Action now also answers inactivity-bot sweeps (one still-relevant note pointing at the umbrella issue) and folds maintainer-merged duplicates onto their canonical, the same two actions the desktop app has taken since 2.1.0. Both re-parse their own comment markers, so the stateless runner never posts twice. The umbrella body is still refreshed only by the desktop app, which holds the full swept history.
+- **Landing page.** `sworrl.github.io/ClAudit` showed only the poll. It now carries the live counter tiles (open, closed by Anthropic, harness withdrawn), the trend chart, the poll, the install snippet, and links to the umbrella issue and releases. The icon path was broken (`../` above the site root); it now loads from the repo.
+- **Autostart on macOS and Windows** (closes #4). `scripts/install-macos.sh` installs a launchd user agent that starts the tray app hidden at login, with the shell's PATH so `gh`/`claude`/`agy` resolve; `--uninstall` removes it. `scripts/install-windows.ps1` creates a Start Menu shortcut and, with `-Autostart`, a Startup-folder entry, using `pythonw` so no console window lingers.
+- **Pre-commit hook.** Docs-only commits no longer bump the version; the README badge is resynced on every commit, including manual minor/major bumps (it previously only followed auto-bumps).
+- Housekeeping: three `open()` calls without a context manager (trend/history reads in the GUI and the poll renderer) now close their handles; `claudit_gui.py` is executable like the other entry points; `build/` and `dist/` are ignored.
+
 ## [2.2.5] — 2026-08-22
 **agy-only mode keeps the cross-check, spends zero claude quota.** Tandem's claude/Haiku review calls were eating the user's weekly Claude plan (rolling 7-day: $11+ API-equivalent). With `llm_engine: "agy"`, the second voice is now agy itself on a different model (`agy_review_model`, default `gemini-3.1-pro-low`) instead of the claude CLI: PII passes still union two models, composed drafts still get a second-model slop/PII review, and the false-positive gate still takes two votes — all billed to Antigravity. Set `agy_review_model: ""` for a true single-voice run. `--engine tandem` still uses both CLIs for anyone who wants it.
 
@@ -60,7 +70,7 @@ version that submitted it (in the issue footer and in `~/.claude/claudit/issues.
 ## [2.0.105] — 2026-07-07
 - **Fix: dup-defense missed unlabeled flags.** The dup-bot now posts its "possible duplicate" comment without applying the `duplicate` label, so the label-only listing in `defend_all` / `reopen_dupe_closes` silently skipped those issues and they auto-closed undefended. Both sweeps now union the label listing with a comment-text search (`possible duplicate issues in:comments`), so every flagged issue is answered regardless of labeling.
 
-## [2.1.0] (2.0.1 – 2.0.32) — 2026-06-25
+## [2.0.1 – 2.0.32] — 2026-06-25
 Big feature batch (patch versions auto-bumped per commit; summarized here).
 
 **Community & dashboard**

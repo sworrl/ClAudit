@@ -1,0 +1,46 @@
+# Tag-driven release: push a tag like v2.3.0 and this builds the sdist + wheel, pulls that
+# version's CHANGELOG section for the notes, and publishes a GitHub Release with the files attached.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tag matches __version__
+        run: |
+          v=$(python -c "import claudit_scan; print(claudit_scan.__version__)")
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "::error::tag ${GITHUB_REF_NAME} but __version__ is $v"; exit 1; }
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+      - name: Release notes from CHANGELOG
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          # the section for this version: from its "## [v]" heading up to the next "## " heading
+          awk -v v="$v" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "See CHANGELOG.md." > notes.md; fi
+          printf '\n---\nInstall: `pip install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/%s.tar.gz"` or download the wheel below.\n' "${GITHUB_REF_NAME}" >> notes.md
+          cat notes.md
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "ClAudit ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --verify-tag

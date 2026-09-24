@@ -1,46 +1,98 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ClAudit — Will Anthropic fix it?</title>
+<title>ClAudit</title>
+<meta name="description" content="ClAudit watches Claude Code sessions for false-positive safety and policy blocks, scrubs the PII, and files clean GitHub issues. Live report counter, trend, and community poll.">
+<meta property="og:title" content="ClAudit">
+<meta property="og:description" content="False-positive Claude Code blocks, counted and reported. Live counter, trend, and community poll.">
+<meta property="og:image" content="https://raw.githubusercontent.com/sworrl/ClAudit/main/claudit_icon.png">
+<link rel="icon" href="https://raw.githubusercontent.com/sworrl/ClAudit/main/claudit_icon.png">
 <style>
-:root{--bg:#16181d;--card:#1e2128;--ink:#e8eaed;--muted:#9aa0a6;--accent:#8b5cf6;
-      --fix:#3fb950;--broken:#f85149;--soon:#4aa3ff}
+:root{--bg:#16181d;--card:#1e2128;--line:#2a2e37;--ink:#e8eaed;--muted:#9aa0a6;--accent:#8b5cf6;
+      --fix:#3fb950;--broken:#f85149;--soon:#4aa3ff;--harness:#b58a8a}
 *{box-sizing:border-box}
 body{margin:0;font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
-.wrap{max-width:720px;margin:0 auto;padding:32px 22px}
+.wrap{max-width:760px;margin:0 auto;padding:32px 16px 40px}
 a{color:var(--soon)}
-h1{font-size:26px;margin:0 0 6px}
-.sub{color:var(--muted);margin:0 0 26px}
-.card{background:var(--card);border:1px solid #2a2e37;border-radius:14px;padding:22px;margin:0 0 18px}
-.opt{margin:0 0 18px}
+h1{font-size:28px;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 14px;color:var(--ink)}
+.sub{color:var(--muted);margin:0}
+.head{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.head img{width:60px;height:60px;border-radius:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:0 0 16px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media (max-width:540px){.tiles{grid-template-columns:1fr}}
+.tile{background:#12141a;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.tile .n{font-size:32px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
+.tile .l{color:var(--muted);font-size:13px;margin-top:4px}
+.tile.open .n{color:var(--soon)} .tile.closed .n{color:var(--fix)} .tile.harness .n{color:var(--harness)}
+.trend{width:100%;height:auto;border-radius:12px;display:block;border:1px solid var(--line)}
+.note{color:var(--muted);font-size:13px;margin:10px 0 0}
+.opt{margin:0 0 16px}
 .opt .lab{display:flex;justify-content:space-between;margin-bottom:6px;font-weight:600}
-.opt .lab .pct{color:var(--muted);font-weight:600}
-.track{background:#12141a;border-radius:8px;height:26px;overflow:hidden;border:1px solid #2a2e37}
+.opt .lab .pct{color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
+.track{background:#12141a;border-radius:8px;height:24px;overflow:hidden;border:1px solid var(--line)}
 .fillbar{height:100%;border-radius:8px 0 0 8px;transition:width .6s ease;min-width:2px}
 .fix .fillbar{background:var(--fix)} .broken .fillbar{background:var(--broken)} .soon .fillbar{background:var(--soon)}
-.total{color:var(--muted);font-size:14px;text-align:center;margin-top:4px}
+.total{color:var(--muted);font-size:14px;text-align:center;margin-top:2px}
 .vote{display:block;text-align:center;background:var(--accent);color:#fff;text-decoration:none;
-      font-weight:700;padding:13px;border-radius:10px;margin-top:8px}
+      font-weight:700;padding:12px;border-radius:10px;margin-top:12px}
 .vote:hover{filter:brightness(1.12)}
-.foot{color:var(--muted);font-size:13px;text-align:center;margin-top:26px}
-.head{display:flex;align-items:center;gap:12px;margin-bottom:22px}
-.head img{width:54px;height:54px}
+pre{background:#12141a;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;
+    font-size:13.5px;line-height:1.5;margin:0 0 10px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+ul.links{margin:0;padding-left:18px}
+ul.links li{margin:4px 0}
+.foot{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
 </style></head>
 <body><div class="wrap">
-<div class="head"><img src="../claudit_icon.png" alt="ClAudit"
-     onerror="this.style.display='none'">
-  <div><h1>Will Anthropic fix it?</h1>
-  <p class="sub" style="margin:0">Does Anthropic fix Claude Code's false-positive blocking — or does it stay broken?</p></div>
+<div class="head">
+  <img src="https://raw.githubusercontent.com/sworrl/ClAudit/main/claudit_icon.png" alt="" onerror="this.style.display='none'">
+  <div><h1>ClAudit</h1>
+  <p class="sub">Catches false-positive Claude Code safety and policy blocks, scrubs the PII, and files clean GitHub issues on
+  <a href="https://github.com/anthropics/claude-code/issues?q=is%3Aissue+%22Filed+automatically+by+ClAudit%22">anthropics/claude-code</a>.</p></div>
 </div>
 
-<div class="card" id="poll"><p class="total">Loading the live tally…</p></div>
-<a class="vote" id="voteBtn" href="https://github.com/sworrl/ClAudit/issues/6" target="_blank" rel="noopener">🗳️ Cast your vote on GitHub →</a>
+<div class="card">
+  <h2>Reports across every ClAudit user</h2>
+  <div class="tiles">
+    <div class="tile open"><div class="n" id="nOpen">…</div><div class="l">open cyber/AUP false positives</div></div>
+    <div class="tile closed"><div class="n" id="nClosed">…</div><div class="l">closed by Anthropic</div></div>
+    <div class="tile harness"><div class="n" id="nHarness">…</div><div class="l">harness reports withdrawn by ClAudit</div></div>
+  </div>
+  <p class="note">Counted hourly from the issue list. "Closed by Anthropic" counts only cyber/AUP reports the maintainers or their bots closed. The withdrawn harness reports are ClAudit's own cleanup and are kept out of that number. <span id="cUpdated"></span></p>
+</div>
+
+<div class="card">
+  <h2>Open, closed, and withdrawn over time</h2>
+  <img class="trend" src="trend.svg" alt="Line chart of open, closed, and withdrawn ClAudit reports over the last 60 days">
+  <p class="note">Since 2026-08-09 the inactivity bot on anthropics/claude-code has closed hundreds of untriaged reports as "not planned". Authors cannot reopen an issue someone else closed, so the swept reports are collected in
+  <a href="https://github.com/anthropics/claude-code/issues/86940">umbrella issue #86940</a> with their request IDs.</p>
+</div>
+
+<div class="card">
+  <h2>Will Anthropic fix it?</h2>
+  <div id="poll"><p class="total">Loading the live tally…</p></div>
+  <a class="vote" href="https://github.com/sworrl/ClAudit/issues/6" target="_blank" rel="noopener">Cast your vote on GitHub</a>
+  <p class="note">One vote per GitHub account: react 👍 (Anthropic will fix it), 👎 (Claude Code stays broken), or 👀 (too soon to tell) on the pinned issue, or vote from inside the app.</p>
+</div>
+
+<div class="card">
+  <h2>Run it</h2>
+<pre><code>git clone https://github.com/sworrl/ClAudit.git &amp;&amp; cd ClAudit
+pip install ".[gui]"          # claudit, claudit-watch, claudit-gui
+gh auth login                 # the GitHub CLI must be signed in
+claudit-gui                   # tray app: notify-only until you turn on auto-file</code></pre>
+  <p class="note">Python 3.9 or newer, the <a href="https://cli.github.com/">gh</a> CLI, and PyQt6 for the tray app. Linux, macOS, and Windows. Nothing posts until you say so, and every report is scrubbed with regex, your own denylist, and an optional LLM pass first.</p>
+  <ul class="links">
+    <li><a href="https://github.com/sworrl/ClAudit#readme">README</a>: how it works, PII protection, every flag</li>
+    <li><a href="https://github.com/sworrl/ClAudit/releases">Releases</a> and the <a href="https://github.com/sworrl/ClAudit/blob/main/CHANGELOG.md">changelog</a></li>
+    <li><a href="https://github.com/sworrl/ClAudit/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22">Help wanted</a>: packaging, Windows and macOS testing, new block signatures</li>
+  </ul>
+</div>
 
 <p class="foot">
-  Live community poll from <a href="https://github.com/sworrl/ClAudit">ClAudit</a> ·
-  vote with a 👍 / 👎 / 👀 reaction on the
-  <a href="https://github.com/sworrl/ClAudit/issues/6">pinned issue</a> ·
-  <span id="updated"></span>
+  <a href="https://github.com/sworrl/ClAudit">sworrl/ClAudit</a> · GPL-3.0 · <span id="updated"></span>
 </p>
 
 <script>
@@ -50,27 +102,40 @@ const META = {
   minus: {cls:"broken", emoji:"👎", label:"Claude Code stays broken"},
   eyes:  {cls:"soon",   emoji:"👀", label:"Too soon to tell"},
 };
-function render(c, updated){
+const $ = id => document.getElementById(id);
+function renderPoll(c, updated){
   const total = (c.plus||0)+(c.minus||0)+(c.eyes||0);
   const t = total||1;
-  const order = ["plus","minus","eyes"];
-  document.getElementById("poll").innerHTML =
-    order.map(k=>{
+  $("poll").innerHTML =
+    ["plus","minus","eyes"].map(k=>{
       const n=c[k]||0, pct=Math.round(100*n/t), m=META[k];
       return `<div class="opt ${m.cls}">
         <div class="lab"><span>${m.emoji} ${m.label}</span><span class="pct">${pct}% · ${n}</span></div>
         <div class="track"><div class="fillbar" style="width:${pct}%"></div></div></div>`;
     }).join("") + `<div class="total">${total} vote${total===1?"":"s"}</div>`;
-  if(updated) document.getElementById("updated").textContent = "updated "+updated;
+  if(updated) $("updated").textContent = "poll updated "+updated;
 }
-// 1) instant paint from the Action-committed snapshot
+function renderCounter(p){
+  const fmt = v => (v==null ? "…" : Number(v).toLocaleString());
+  $("nOpen").textContent = fmt(p.open_api ?? p.open);
+  $("nClosed").textContent = fmt(p.closed_api ?? p.closed);
+  $("nHarness").textContent = fmt(p.harness);
+  if(p.t) $("cUpdated").textContent = "Updated " + p.t + ".";
+}
+// poll: instant paint from the Action-committed snapshot, then a live unauthenticated refresh
 fetch("poll.json",{cache:"no-store"}).then(r=>r.json())
-  .then(d=>render(d, d.updated)).catch(()=>{});
-// 2) then try a live (unauthenticated) refresh straight from GitHub
+  .then(d=>renderPoll(d, d.updated)).catch(()=>{});
 fetch(`https://api.github.com/repos/${REPO}/issues/${ISSUE}`,
       {headers:{Accept:"application/vnd.github+json"}})
   .then(r=>r.ok?r.json():Promise.reject())
-  .then(d=>render({plus:d.reactions["+1"],minus:d.reactions["-1"],eyes:d.reactions.eyes}, "just now"))
+  .then(d=>renderPoll({plus:d.reactions["+1"],minus:d.reactions["-1"],eyes:d.reactions.eyes}, "just now"))
   .catch(()=>{});
+// counter tiles: the last point of the hourly history the poll Action commits
+fetch("counter-history.json",{cache:"no-store"}).then(r=>r.json())
+  .then(h=>{ if(Array.isArray(h) && h.length) renderCounter(h[h.length-1]); })
+  .catch(()=>{
+    fetch("counter.json",{cache:"no-store"}).then(r=>r.json())
+      .then(d=>renderCounter({open_api:d.message})).catch(()=>{});
+  });
 </script>
 </div></body></html>

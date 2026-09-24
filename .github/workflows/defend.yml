@@ -1,7 +1,8 @@
 # Cloud dup-bot defense — runs 24/7 so flags never sit unanswered while the desktop app is off.
 # Context: anthropics/claude-code now BLOCKS issue authors from reopening bot-closed issues, so an
 # unanswered duplicate flag = a PERMANENT close. This sweep 👎s + answers every unanswered flag on
-# schedule, and posts a maintainer-reopen request on anything already closed.
+# schedule, posts a maintainer-reopen request on anything already closed, and answers the
+# inactivity bot's stale sweeps (one still-relevant note -> the umbrella issue).
 #
 # Needs a repo secret CLAUDIT_PAT: a fine-grained/classic PAT for the reporting account with
 # public_repo scope (the default GITHUB_TOKEN cannot react/comment on another org's repo).
@@ -58,8 +59,15 @@ jobs:
           d = cs.daily_recheck("anthropics/claude-code", {}, window_start=start, delay=3,
                                compose=False)
           r = cs.reopen_dupe_closes("anthropics/claude-code", {}, delay=3, limit=1000)
+          # closure defender (2.1.0): answer inactivity-bot sweeps with one still-relevant note
+          # pointing at the umbrella issue, and fold maintainer-merged dups' request IDs onto
+          # their canonical. Stateless here too: both re-parse their own comment markers, so a
+          # note is never posted twice. The umbrella body itself is only refreshed by the
+          # desktop app, which holds the full swept history.
+          c = cs.defend_closures("anthropics/claude-code", {}, delay=3, since_days=4,
+                                 compose=False)
           print(f"cloud-defend: answered {n} flags, rechecked-and-answered {d}, "
-                f"reopened/protested {r} closes")
+                f"reopened/protested {r} closes, closure actions {c}")
           # verification: the run only succeeds if NOTHING in the auto-close window is unanswered.
           bad = cs.undefended_flags("anthropics/claude-code")
           if bad:

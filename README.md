@@ -8,7 +8,8 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.111-brightgreen)
+[![Release](https://img.shields.io/github/v/release/sworrl/ClAudit?label=release)](https://github.com/sworrl/ClAudit/releases)
+![Version](https://img.shields.io/badge/version-2.3.0-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -301,6 +302,16 @@ pip install ".[gui]"        # or: pipx install ".[gui]"
 # gives you: claudit (manual filing) · claudit-watch (watcher) · claudit-gui (tray app)
 ```
 
+Tagged versions are on the [releases page](https://github.com/sworrl/ClAudit/releases) with a wheel
+and sdist attached, so a pinned install without a clone is:
+
+```bash
+pip install "claudit[gui] @ https://github.com/sworrl/ClAudit/archive/refs/tags/v2.3.0.tar.gz"
+```
+
+(Note that the self-update described under [Auto-update](#auto-update--self-restart) only works from a
+git clone; a pip install stays on the version you installed.)
+
 Requirements: **Python 3.9+**, the **[`gh`](https://cli.github.com/) CLI** (authenticated), **PyQt6**
 for the GUI, and, to actually use burn-tokens / LLM scrub, the **`claude`** and/or **`agy`**
 (Antigravity) CLI on your PATH — with both installed they run in tandem, cross-checking each other.
@@ -574,9 +585,19 @@ when the GUI actually dies.
 
 ## Autostart
 
-- **Linux:** `./scripts/install-linux.sh` (add `--autostart` to start on login).
-- **Windows:** put a shortcut to `pythonw claudit_gui.py` in `shell:startup`.
-- **macOS:** add `claudit_gui.py` as a Login Item.
+Each installer detects the Python interpreter and the checkout path at install time, so nothing
+machine-specific lives in the repo. All three start the tray app notify-only; add `--auto` to the
+generated launcher if you want auto-filing at login.
+
+- **Linux:** `./scripts/install-linux.sh` installs a start-menu launcher; add `--autostart` to also
+  start on login (an XDG autostart entry).
+- **macOS:** `./scripts/install-macos.sh` installs a launchd user agent
+  (`~/Library/LaunchAgents/com.sworrl.claudit.plist`) that starts the app hidden at login, carrying
+  your shell's `PATH` so `gh`, `claude`, and `agy` resolve. Logs go to `~/Library/Logs/ClAudit/`.
+  `--uninstall` removes it.
+- **Windows:** `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1` creates a Start
+  Menu shortcut (`pythonw`, so no console window); add `-Autostart` for a Startup-folder entry that
+  launches hidden, `-Uninstall` to remove both.
 
 ## Local data & state
 
@@ -595,7 +616,9 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 ## Troubleshooting
 
 - **Empty dashboard / nothing posts when launched from an icon:** `gh` wasn't on the desktop PATH.
-  ClAudit now adds the interpreter's bin dir to PATH automatically; update to ≥1.5.1.
+  ClAudit now adds the interpreter's bin dir to PATH automatically; update to ≥1.5.1. On macOS the
+  launchd agent from `install-macos.sh` records your shell's PATH at install time, so re-run it after
+  moving Homebrew or installing `gh` somewhere new.
 - **Titles show `[REDACTED]`:** that was an old over-redaction bug; update and use burn-tokens for
   bespoke titles.
 - **Backfill looks frozen:** check the progress bar's pace, it backs off when GitHub rate-limits.
@@ -618,8 +641,13 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
 | `claudit_gui.py` | PyQt6 tray app + community dashboard |
 | `claudit.py` | Manual paste → scrub → file, and the shared PII scrubber + LLM helpers |
 | `scripts/gen-icon.py` | Regenerate `claudit_icon.png` |
-| `scripts/install-linux.sh` | Install desktop launcher / autostart |
-| `scripts/githooks/pre-commit` | Auto-bump the version on every commit |
+| `scripts/install-linux.sh` | Linux: desktop launcher, optional XDG autostart |
+| `scripts/install-macos.sh` | macOS: launchd Login Item (hidden at login), `--uninstall` |
+| `scripts/install-windows.ps1` | Windows: Start Menu shortcut, `-Autostart` Startup entry |
+| `scripts/render_poll.py` | Hourly Action: poll tally, report counter, trend SVG, README blocks |
+| `scripts/githooks/pre-commit` | Auto-bump the version on code commits, keep the README badge in sync |
+| `docs/` | GitHub Pages site (`sworrl.github.io/ClAudit`): live counter, trend, poll |
+| `.github/workflows/` | `ci.yml` (tests on 3.9/3.12/3.13 + wheel smoke), `release.yml` (tag → GitHub Release), `poll.yml`, `defend.yml` (cloud defender) |
 
 ## Help wanted (good first issues)
 
@@ -631,8 +659,9 @@ New here? These are the best places to jump in, all tagged **good first issue / 
   installable without `git clone`.
 - **[Add new block-classification signatures](https://github.com/sworrl/ClAudit/issues/3)**, teach
   `classify()` about block phrasings it doesn't recognize yet.
-- **[Autostart helpers for macOS & Windows](https://github.com/sworrl/ClAudit/issues/4)**, Login Item
-  / Startup equivalents of the Linux installer.
+- **Try the new macOS and Windows autostart installers** (`scripts/install-macos.sh`,
+  `scripts/install-windows.ps1`, added in 2.3.0). They were written against the platform docs, not
+  a Mac or a Windows box; report anything that misbehaves on [#4](https://github.com/sworrl/ClAudit/issues/4).
 
 ## Contributing
 

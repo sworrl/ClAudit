@@ -2779,7 +2779,8 @@ class Main(QtWidgets.QMainWindow):
             hist = []
             hp = os.path.join(REPO_DIR, "docs", "counter-history.json")
             if os.path.exists(hp):
-                hist = json.load(open(hp))
+                with open(hp) as fh:
+                    hist = json.load(fh)
             if self.community:                       # per-kind current point from the board
                 oa = ca = har = 0
                 for it in self.community:
@@ -2796,7 +2797,10 @@ class Main(QtWidgets.QMainWindow):
                 svg = _rp.render_trend_svg(hist).encode()
             else:                                    # fallback: the committed SVG
                 sp = os.path.join(REPO_DIR, "docs", "trend.svg")
-                svg = open(sp, "rb").read() if os.path.exists(sp) else b""
+                svg = b""
+                if os.path.exists(sp):
+                    with open(sp, "rb") as fh:
+                        svg = fh.read()
             if svg:
                 self.trend_svg.load(QtCore.QByteArray(svg))
         except Exception as e:

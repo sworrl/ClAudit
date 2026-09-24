@@ -68,7 +68,8 @@ def append_history(point, when):
     hist = []
     if os.path.exists(HISTORY_JSON):
         try:
-            hist = json.load(open(HISTORY_JSON))
+            with open(HISTORY_JSON) as fh:
+                hist = json.load(fh)
         except Exception:
             hist = []
     point = {"t": when, **point}

@@ -28,11 +28,27 @@ hack on. State lives in `~/.claude/claudit/`; delete it to reset.
 
 - Keep changes focused; match the existing style (stdlib-first, no heavy deps in the core).
 - The core (`claudit_scan.py`, `claudit.py`) must stay importable without PyQt6.
-- CI runs `py_compile` + `ruff check --select E9,F63,F7,F82` + `pytest tests/`. Run them locally
+- CI runs `py_compile` + `ruff check --select E9,F63,F7,F82` + `pytest tests/` on Python 3.9, 3.12,
+  and 3.13, then builds the wheel and smoke-tests the console scripts. Run the fast part locally
   before pushing: `pip install ruff pytest && ruff check --select E9,F63,F7,F82 . && pytest tests/ -q`.
   Add a test for any behavior change (the suite mocks `gh`/`claude` and never touches the network).
 - **Bump `__version__` (in `claudit_scan.py`) on every code change** — no exceptions — and add a
-  matching `CHANGELOG.md` line + update the README version badge.
+  matching `CHANGELOG.md` section. CI fails if the README badge or the changelog disagrees with
+  `__version__`; the pre-commit hook (`git config core.hooksPath scripts/githooks`) keeps the badge
+  in step and auto-bumps the patch number when you forget.
+- Python 3.9 is the floor: no `match`, no `X | Y` type unions, no `str.removeprefix`-era assumptions
+  beyond 3.9.
+
+## Releasing
+
+Releases are tag-driven. Set `__version__`, add the `CHANGELOG.md` section, commit, then:
+
+```bash
+git tag v2.3.0 && git push origin main v2.3.0
+```
+
+`.github/workflows/release.yml` checks the tag against `__version__`, builds the sdist and wheel,
+takes that version's changelog section as the notes, and publishes the GitHub Release.
 
 ## Ground rules
 
