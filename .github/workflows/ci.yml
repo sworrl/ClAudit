@@ -51,7 +51,7 @@ jobs:
           v=$(python -c "import claudit_scan; print(claudit_scan.__version__)")
           grep -q "version-$v-" README.md || { echo "::error::README badge does not say $v"; exit 1; }
           grep -q "^## \[$v\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no [$v] section"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
