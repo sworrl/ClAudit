@@ -1,5 +1,5 @@
 # GUI (tray + window). Required only for claudit_gui.py.
-PyQt6>=6.5
+PyQt6>=6.11.0
 # Icon (re)generation only — scripts/gen-icon.py. Not needed at runtime.
 Pillow>=10.0
 #
