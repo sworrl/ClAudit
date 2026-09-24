@@ -1827,6 +1827,19 @@ class IssueDetailDialog(QtWidgets.QDialog):
         self._load()               # re-fetch -> timeline shows the new 'defended' event, button -> ✓
 
 
+class UsageFetcher(QtCore.QThread):
+    """Off-thread: refresh the live plan usage snapshot (Anthropic's OAuth usage endpoint, the same
+    numbers Claude Code's /usage shows). Emits the parsed dict, or {} when there is no login."""
+    got = QtCore.pyqtSignal(dict)
+
+    def run(self):
+        try:
+            self.got.emit(claudit.plan_usage() or {})
+        except Exception as e:
+            print("usage fetch failed:", e, file=sys.stderr)
+            self.got.emit({})
+
+
 # --------------------------------- main window --------------------------------
 class Main(QtWidgets.QMainWindow):
     COLS = ["", "Issue", "Author", "Created", "Title"]
@@ -1926,7 +1939,9 @@ class Main(QtWidgets.QMainWindow):
         self.spark = Sparkline()                 # 30-day reports trend, right in the header
         hl.addWidget(self.spark)
         hl.addSpacing(8)
-        self.tok_label = QtWidgets.QLabel("")    # lifetime burn-tokens meter (alarming when burn mode is on)
+        self.tok_label = QtWidgets.QLabel("")    # usage meter: live plan windows + ClAudit's own spend
+        self._usage = claudit.plan_usage(fetch=False) or {}   # disk cache only; the fetcher refreshes it
+        self._usage_dirty = True
         self.tok_label.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
         hl.addWidget(self.tok_label)
         hl.addSpacing(8)
@@ -2073,20 +2088,37 @@ class Main(QtWidgets.QMainWindow):
             return f"{n / 1_000:.1f}K"
         return str(int(n))
 
+    def _refresh_usage(self):
+        """Kick an off-thread fetch of the live plan usage (no-op while one is running)."""
+        if getattr(self, "_uf", None) and self._uf.isRunning():
+            return
+        self._uf = UsageFetcher()
+        self._uf.got.connect(self._on_usage)
+        self._uf.start()
+
+    def _on_usage(self, u):
+        if u:
+            self._usage = u
+        self._usage_dirty = True
+
     def _update_tokens(self):
-        # this runs every second off bf_timer — only re-read/re-render when tokens.json actually
-        # changed or the burn flag flipped (the idle cost is then a single stat() call)
+        # runs every second off bf_timer — only re-read/re-render when tokens.json changed, the
+        # burn flag flipped, or a fresh usage snapshot landed (idle cost is one stat() call)
         try:
             mt = os.stat(claudit.TOKENS_FILE).st_mtime
         except OSError:
             mt = 0.0
         burn = bool(claudit.BURN_TOKENS)
         self._tok_tick = getattr(self, "_tok_tick", 0) + 1
-        stale = self._tok_tick % 300 == 0         # refresh every ~5 min anyway (weekly window decays)
-        if (mt, burn) == getattr(self, "_tok_seen", None) and not burn and not stale:
-            return                                # unchanged and not pulsing -> nothing to repaint
-        redraw = stale or (mt, burn) != getattr(self, "_tok_seen", None)
+        if self._tok_tick == 2 or self._tok_tick % claudit.USAGE_TTL == 0:
+            self._refresh_usage()                 # at startup, then every USAGE_TTL seconds
+        stale = self._tok_tick % 60 == 0          # reset countdowns tick down once a minute
+        changed = (mt, burn) != getattr(self, "_tok_seen", None) or self._usage_dirty
+        if not changed and not burn and not stale:
+            return
+        redraw = stale or changed
         self._tok_seen = (mt, burn)
+        self._usage_dirty = False
         if not redraw:                            # burn mode: still pulse the colors each tick
             self._tok_pulse = not getattr(self, "_tok_pulse", False)
             col = "#ff3b30" if self._tok_pulse else "#ff9f0a"
@@ -2094,31 +2126,33 @@ class Main(QtWidgets.QMainWindow):
                 f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
             return
         t = claudit.load_tokens()
-        wk, plans = claudit.plan_estimates(t)
-        pct = "  ".join(f"{n.replace('Max ', 'M')} {p:.0f}%" for n, p in plans.items())
-        self.tok_label.setText(f"🔥 ${wk:.2f}/wk · {pct}")
-        plan_lines = "\n".join(
-            f"  {n:<7} {p:5.1f}%   (est. cap ${claudit.PLAN_WEEKLY_USD[n]:.0f}/wk)"
-            for n, p in plans.items())
+        u = self._usage or None
+        if u:
+            # the real thing: the same 5-hour / 7-day windows Claude Code's /usage shows, plus any
+            # model-scoped weekly limit that is currently the binding one
+            parts = [f"5h {u['five_hour']['pct']:.0f}%", f"7d {u['seven_day']['pct']:.0f}%"]
+            parts += [f"{s['name']} {s['pct']:.0f}%" for s in u.get("scoped", []) if s.get("active")]
+            age = time.time() - float(u.get("fetched", 0) or 0)
+            self.tok_label.setText("🔥 " + " · ".join(parts) + (" · stale" if age > 3 * claudit.USAGE_TTL else ""))
+            frac = min(claudit.usage_peak(u) / 100.0, 1.0)
+        else:
+            wk, plans = claudit.plan_estimates(t)
+            pct = "  ".join(f"{n.replace('Max ', 'M')} {p:.0f}%" for n, p in plans.items())
+            self.tok_label.setText(f"🔥 est. ${wk:.2f}/wk · {pct}")
+            frac = min(plans.get("Pro", 0.0) / 100.0, 1.0)
         self.tok_label.setToolTip(
-            f"Rolling 7-day spend: ${wk:.2f}  →  estimated share of each plan's weekly cap\n"
-            f"{plan_lines}\n"
-            "  (estimates — Anthropic caps are usage-window based, not $-metered)\n\n"
-            "Lifetime across every session:\n"
-            f"  {self._fmt_tok(t['total'])} tokens  ·  {t['calls']:,} claude calls  ·  ${t['cost']:.2f}\n"
-            f"  input {t['input']:,}  ·  output {t['output']:,}  ·  "
-            f"cache {t['cache_read'] + t['cache_creation']:,}"
-            + ("\n\n🔥 BURN-TOKENS MODE IS ON — Claude writes every report." if burn
-               else "\n\nBurn-tokens mode is off (counter still tracks)."))
+            claudit.usage_summary(u, t)
+            + ("\n\n🔥 BURN-TOKENS MODE IS ON — the LLM writes every report." if burn
+               else "\n\nBurn-tokens mode is off (the meter still tracks).")
+            + ("" if u else "\n\nSign in to Claude Code (`claude`) to show your real plan windows here."))
         if burn:                                  # alarming red⇄orange pulse while burning
             self._tok_pulse = not getattr(self, "_tok_pulse", False)
             col = "#ff3b30" if self._tok_pulse else "#ff9f0a"
             self.tok_label.setStyleSheet(
                 f"color:#fff; background:{col}; border-radius:8px; padding:2px 10px; font-weight:800;")
         else:
-            # quiet mode: the pill quietly FILLS left-to-right with your Pro-plan weekly usage —
+            # quiet mode: the pill FILLS left-to-right with the highest plan window in use —
             # green under 50%, amber under 80%, red beyond (severity at a glance, no reading needed)
-            frac = min(plans.get("Pro", 0.0) / 100.0, 1.0)
             col = "#2f6b3f" if frac < 0.5 else ("#7a5c22" if frac < 0.8 else "#7a2e2e")
             f1, f2 = max(frac, 0.001), min(max(frac, 0.001) + 0.001, 1.0)
             self.tok_label.setStyleSheet(

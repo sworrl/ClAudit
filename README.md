@@ -9,7 +9,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml/badge.svg)](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sworrl/ClAudit?label=release)](https://github.com/sworrl/ClAudit/releases)
-![Version](https://img.shields.io/badge/version-2.3.0-brightgreen)
+![Version](https://img.shields.io/badge/version-2.4.0-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![Open false-positive reports](https://img.shields.io/endpoint?url=https://sworrl.github.io/ClAudit/counter.json)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
@@ -337,10 +337,11 @@ title.
 
 - **Animated header** with a live **stats bar**: open / closed counts, per-kind totals
   (cyber / aup / harness), how many you have defended and reopened, and how many you filed today , 
-  plus a **30-day sparkline** of reports-over-time and the **🔥 token meter**: rolling 7-day LLM
-  spend as an estimated share of each Anthropic plan's weekly cap (see
+  plus a **30-day sparkline** of reports-over-time and the **🔥 usage meter**: your real Claude plan
+  windows (5-hour, 7-day, and any per-model weekly cap), read from the same endpoint Claude Code's
+  `/usage` uses, with ClAudit's own per-engine spend in the tooltip (see
   [Burn-tokens mode](#burn-tokens-mode)). In quiet mode the meter pill **fills left-to-right** with
-  your weekly plan usage (green → amber → red); in burn mode it pulses an alarming red⇄orange.
+  the fullest window (green → amber → red); in burn mode it pulses an alarming red⇄orange.
 - **Live tray badge:** the tray icon carries the current open false-positive count, updated as
   reports file and close, the tally is visible without opening the window.
 - **Filters:** Mine / All, Open / Closed, **by kind** (cyber / aup), **defended /
@@ -465,6 +466,7 @@ Defend, reopen, and track:
 | `--reopen-humans` | Also reopen issues a human maintainer closed as duplicate (default: bot only) |
 | `--dedup-guard [--apply]` | LLM-judge dup-bot-flagged issues (dry-run without `--apply`) |
 | `--sweep-scan` | Classify your closed issues (swept / merged / closed) and print the rollup; posts nothing |
+| `--usage` | Print your live Claude plan windows (5-hour / 7-day / per-model) and ClAudit's own per-engine spend, then exit |
 | `--defend-closures` | One-shot: answer bot stale-sweeps + fold merged request IDs onto canonicals, refresh the umbrella |
 | `--update-umbrella` | Refresh the umbrella issue's body from recorded swept closures |
 | `--watch --closures` | Run the closure defender on a timer (default every 15 min) |
@@ -499,33 +501,38 @@ strongest PII protection**, the report is composed generically instead of echoin
 It's slower and uses tokens (hence the name); it's the recommended mode for anyone who cares about
 either report quality or PII. Set it once in your config and forget it.
 
-**Token meter.** Every `claude` call ClAudit makes, compose, scrub, gate, dedup verdict, is run in
-JSON mode and its usage (input / output / cache tokens + USD cost) tallied into
-`~/.claude/claudit/tokens.json`, accumulated across every session with a rolling 7-day cost history.
+**Usage meter.** The window header shows **🔥 5h N% · 7d N% · <model> N%**: your real Claude plan
+utilization, the same 5-hour and 7-day windows (plus any per-model weekly cap that is currently the
+binding one) that Claude Code's `/usage` command shows. ClAudit reads them from Anthropic's usage
+endpoint with the Claude Code login already on your machine (`~/.claude/.credentials.json`, the macOS
+keychain, or `$CLAUDE_CODE_OAUTH_TOKEN`), refreshed every five minutes and cached in
+`~/.claude/claudit/usage.json`. The token goes nowhere except api.anthropic.com, exactly as Claude Code
+sends it, and never appears in logs or issues. The pill fills with the fullest window and turns
+amber past 50% and red past 80%; `· stale` means the last three refreshes failed and you are looking
+at an old snapshot.
 
-The window header shows a **🔥 `$<spend>`/wk · Pro N% · M5x N% · M20x N%** meter: your **rolling
-7-day** spend converted to an estimated share of each subscription plan's weekly cap (Pro, Max 5x,
-Max 20x). Hover it for the full per-plan breakdown plus the lifetime tokens / calls / cost:
+Hover it for the reset countdowns and ClAudit's own spend, which is tallied per engine from every
+`claude` and `agy` call (compose, scrub, gate, dedup verdict) into `~/.claude/claudit/tokens.json`.
+`claude` calls carry a USD figure from the CLI; `agy` calls report tokens only:
 
 ```
-Rolling 7-day spend: $4.20  →  estimated share of each plan's weekly cap
-  Pro     14.0%   (est. cap $30/wk)
-  Max 5x   2.8%   (est. cap $150/wk)
-  Max 20x  0.7%   (est. cap $600/wk)
-  (estimates, Anthropic caps are usage-window based, not $-metered)
+Claude plan usage (max), live from Anthropic:
+  5-hour window    17.0%   resets in 4h 13m
+  7-day window     39.0%   resets in 2h 23m
+  7-day Fable      62.0%   resets in 2h 23m   (active limit)
+  fetched 0 min ago
 
+ClAudit's own calls, trailing 7 days:
+  claude     12 calls    1.1M tokens  $1.20
+  agy        40 calls   18.4M tokens
 Lifetime across every session:
-  5.60M tokens  ·  152 claude calls  ·  $21.52
+  claude    152 calls    5.6M tokens  $21.52
+  agy       410 calls  109.0M tokens
 ```
 
-While burn-tokens mode is **on** the meter pulses in an alarming red⇄orange, so you always know how
-hard ClAudit is leaning on your plan; with burn-tokens off it stays muted grey but keeps counting.
-
-> The plan percentages are **estimates**. Anthropic's subscription limits are usage-window based, not
-> dollar-metered, so ClAudit compares your 7-day API-equivalent spend against per-plan weekly budgets
-> defined in `PLAN_WEEKLY_USD` (in `claudit.py`): Pro **$30/wk**, Max 5x **$150/wk**, Max 20x
-> **$600/wk**, anchored to the plans' own 5×/20× branding relative to Pro. Edit those constants to
-> match your own experience.
+The same report is available headless with `python3 claudit_scan.py --usage`. Without a Claude Code
+login (API-key-only setups) the meter falls back to `🔥 est. $<spend>/wk · Pro N% · M5x N% · M20x N%`,
+an estimate of your `claude` spend against guessed per-plan weekly budgets; the tooltip says so.
 
 ## Dedup guard
 
@@ -559,7 +566,8 @@ State and config live in `~/.claude/claudit/`:
 | File | Purpose |
 |------|---------|
 | `config.json` | Saved prefs (all live-toggleable in the Settings tab): `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `amplify`, `report_harness`, `interval`, `watchdog` |
-| `tokens.json` | Token meter: cumulative input/output/cache tokens, call count, and USD cost across every session, plus a rolling 7-day cost history for the per-plan weekly estimate |
+| `tokens.json` | ClAudit's own LLM usage: input/output/cache tokens, calls, and USD per engine (`claude`, `agy`) across every session, plus a rolling 7-day per-call history |
+| `usage.json` | Five-minute cache of your live Claude plan windows (the header meter); safe to delete |
 | `scrub.txt` | Your local PII denylist (never committed) |
 | `filed.json` | Dedup state: filed/baselined findings, dwell holds, and the per-session chains |
 | `issues.jsonl` | Local record of every issue filed (with leadup, for your reference) |
@@ -630,6 +638,9 @@ Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversatio
   cleared automatically when the dead PID is detected, or delete it by hand.
 - **Running but no window:** click the tray icon once (it raises + focuses the window, including on
   Wayland/GNOME) or use the tray menu's **Show window**.
+- **The 🔥 meter shows `est.` instead of your plan windows:** no Claude Code login was found. Run
+  `claude` once and sign in (it writes `~/.claude/.credentials.json`), or export
+  `CLAUDE_CODE_OAUTH_TOKEN`; the meter picks it up within five minutes.
 - **Worried about token spend:** watch the header's 🔥 meter, at idle ClAudit makes **zero** `claude`
   calls; tokens are only spent filing, judging, or defending.
 

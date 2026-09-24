@@ -845,3 +845,116 @@ def test_version_is_consistent_across_badge_changelog_and_package():
         assert f"## [{v}]" in fh.read()
     with open(os.path.join(root, "pyproject.toml")) as fh:
         assert 'version = { attr = "claudit_scan.__version__" }' in fh.read()
+
+
+SAMPLE_USAGE = {
+    "five_hour": {"utilization": 16.0, "resets_at": "2099-01-01T07:50:00.370022+00:00"},
+    "seven_day": {"utilization": 38.0, "resets_at": "2099-01-03T06:00:00.370043+00:00"},
+    "limits": [
+        {"kind": "session", "group": "session", "percent": 16, "is_active": False},
+        {"kind": "weekly_all", "group": "weekly", "percent": 38, "is_active": False},
+        {"kind": "weekly_scoped", "group": "weekly", "percent": 62, "is_active": True,
+         "resets_at": "2099-01-03T06:00:00.370251+00:00",
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+    ],
+    "extra_usage": {"is_enabled": False},
+}
+
+
+def _fake_urlopen(payload, calls):
+    class R:
+        def __init__(self):
+            self._b = json.dumps(payload).encode()
+        def read(self):
+            return self._b
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    def urlopen(req, timeout=0):
+        calls.append(req)
+        assert req.full_url == claudit.USAGE_URL
+        assert req.get_header("Authorization") == "Bearer tok123"
+        return R()
+    return urlopen
+
+
+def test_plan_usage_reads_login_parses_windows_and_caches(tmp_path, monkeypatch):
+    """The meter shows the REAL 5h/7d windows (what Claude Code's /usage shows), read with the
+    machine's own Claude Code login; one fetch per USAGE_TTL, served from the disk cache between."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    cred = tmp_path / "creds.json"
+    cred.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok123", "subscriptionType": "max"}}))
+    monkeypatch.setattr(claudit, "CREDENTIALS_FILE", str(cred))
+    monkeypatch.setattr(claudit, "USAGE_CACHE", str(tmp_path / "usage.json"))
+    calls = []
+    monkeypatch.setattr(claudit.urllib.request, "urlopen", _fake_urlopen(SAMPLE_USAGE, calls))
+    u = claudit.plan_usage()
+    assert u["plan"] == "max"
+    assert (u["five_hour"]["pct"], u["seven_day"]["pct"]) == (16.0, 38.0)
+    assert u["scoped"] == [{"name": "Fable", "pct": 62.0, "active": True,
+                            "resets_at": "2099-01-03T06:00:00.370251+00:00"}]
+    assert claudit.usage_peak(u) == 62.0
+    assert len(calls) == 1
+    # second call inside the TTL: cache only, no network; fetch=False never touches the network
+    assert claudit.plan_usage()["seven_day"]["pct"] == 38.0
+    assert claudit.plan_usage(fetch=False)["fetched"] == u["fetched"]
+    assert len(calls) == 1
+    # expired cache -> refetch
+    assert claudit.plan_usage(max_age=0)["plan"] == "max"
+    assert len(calls) == 2
+    text = claudit.usage_summary(u, claudit.load_tokens())
+    assert "7-day window     38.0%" in text and "Fable" in text and "(active limit)" in text
+    assert "tok123" not in text                                 # the token never appears in output
+
+
+def test_plan_usage_without_login_is_none_and_fetch_failure_keeps_snapshot(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(claudit, "CREDENTIALS_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(claudit, "USAGE_CACHE", str(tmp_path / "usage.json"))
+    monkeypatch.setattr(claudit.sys, "platform", "linux")
+    calls = []
+    monkeypatch.setattr(claudit.urllib.request, "urlopen", _fake_urlopen(SAMPLE_USAGE, calls))
+    assert claudit.plan_usage() is None and calls == []         # API-key user: estimate fallback
+    assert "Live plan usage unavailable" in claudit.usage_summary(None, claudit.load_tokens())
+    # env token works, then a failed refresh keeps the last snapshot instead of blanking the meter
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok123")
+    assert claudit.plan_usage()["seven_day"]["pct"] == 38.0
+    def boom(req, timeout=0):
+        raise claudit.urllib.error.URLError("offline")
+    monkeypatch.setattr(claudit.urllib.request, "urlopen", boom)
+    assert claudit.plan_usage(max_age=0)["seven_day"]["pct"] == 38.0
+
+
+def test_record_tokens_per_engine_and_weekly_usage(tmp_path, monkeypatch):
+    """agy calls carry no dollar figure, which used to leave the weekly history empty (the meter
+    read $0 / 0% forever in agy mode). Every call now lands in history with its engine and token
+    count, and the tallies are kept per engine as well as in the legacy totals."""
+    import time
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    now = time.time()
+    legacy = {"input": 10, "output": 5, "cache_read": 0, "cache_creation": 0, "calls": 1, "cost": 1.0,
+              "history": [[int(now - 3600), 1.0], [int(now - 10 * 86400), 9.0]]}   # old 2-field shape
+    (tmp_path / "tokens.json").write_text(json.dumps(legacy))
+    claudit._record_tokens({"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 20},
+                           cost=None, engine="agy")
+    claudit._record_tokens({"input_tokens": 30, "output_tokens": 10}, 0.25, engine="claude")
+    t = claudit.load_tokens()
+    assert t["calls"] == 3 and t["total"] == 15 + 170 + 40
+    assert t["engines"]["agy"] == {"input": 100, "output": 50, "cache_read": 20, "cache_creation": 0,
+                                   "calls": 1, "cost": 0.0, "total": 170}
+    assert t["engines"]["claude"]["calls"] == 1 and abs(t["engines"]["claude"]["cost"] - 0.25) < 1e-9
+    wk = claudit.weekly_usage(t)
+    assert wk["agy"] == {"calls": 1, "tokens": 170, "cost": 0.0}
+    assert wk["claude"]["calls"] == 2 and abs(wk["claude"]["cost"] - 1.25) < 1e-9   # legacy entry counted
+    assert abs(claudit.weekly_cost(t) - 1.25) < 1e-9
+    assert all(len(e) == 4 for e in t["history"][1:]) and len(t["history"]) == 3     # 10-day-old pruned
+
+
+def test_fmt_reset():
+    import calendar, time
+    now = calendar.timegm(time.strptime("2026-09-24T05:00:00", "%Y-%m-%dT%H:%M:%S"))
+    assert claudit.fmt_reset("2026-09-24T07:50:00.370022+00:00", now) == "in 2h 50m"
+    assert claudit.fmt_reset("2026-09-27T06:00:00+00:00", now) == "in 3d 1h"
+    assert claudit.fmt_reset("2026-09-24T04:00:00+00:00", now) == "resetting"
+    assert claudit.fmt_reset("", now) == "" and claudit.fmt_reset("garbage", now) == ""

@@ -20,6 +20,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 
 DEFAULT_REPO = "anthropics/claude-code"
 LLM_SCRUB = False    # opt-in: use the LLM CLI to catch PII regex can't (names/orgs/hosts)
@@ -73,9 +75,14 @@ def get_available_llm_engine():
     return engines[0] if len(engines) == 1 else "tandem"
 
 
+ENGINE_NAMES = ("claude", "agy")
+
+
 def load_tokens():
-    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost.
-    Also carries `history` (recent [epoch, cost] pairs) for the rolling weekly estimate."""
+    """Lifetime token tally across every session: input/output/cache tokens, calls, and USD cost,
+    plus the same per engine under `engines` (claude has a USD cost; agy reports tokens only).
+    Also carries `history`: recent [epoch, cost, engine, tokens] entries for the rolling week
+    (older files hold [epoch, cost] pairs; both shapes are read)."""
     try:
         with open(TOKENS_FILE, encoding="utf-8") as fh:
             d = json.load(fh)
@@ -85,26 +92,68 @@ def load_tokens():
         d[k] = int(d.get(k, 0) or 0)
     d["cost"] = float(d.get("cost", 0.0) or 0.0)
     d.setdefault("history", [])
+    engines = d.get("engines") if isinstance(d.get("engines"), dict) else {}
+    for name in ENGINE_NAMES:
+        e = engines.get(name) if isinstance(engines.get(name), dict) else {}
+        engines[name] = {k: int(e.get(k, 0) or 0) for k in _TOK_KEYS}
+        engines[name]["cost"] = float(e.get("cost", 0.0) or 0.0)
+        engines[name]["total"] = sum(engines[name][k] for k in _TOK_KEYS if k != "calls")
+    d["engines"] = engines
     d["total"] = d["input"] + d["output"] + d["cache_read"] + d["cache_creation"]
     return d
 
 
+def _hist_entry(e):
+    """(epoch, cost, engine, tokens) from either history shape."""
+    try:
+        t, c = float(e[0]), float(e[1] or 0.0)
+    except (TypeError, ValueError, IndexError):
+        return None
+    engine = e[2] if len(e) > 2 and e[2] else "claude"
+    tokens = int(e[3] or 0) if len(e) > 3 else 0
+    return t, c, engine, tokens
+
+
 def weekly_cost(d=None):
-    """USD spent in the trailing 7 days (rolling), from the per-call history."""
+    """USD spent in the trailing 7 days (rolling), from the per-call history. Only claude calls
+    carry a dollar figure; agy calls count in weekly_usage() by tokens."""
     d = d or load_tokens()
     now = time.time()
-    return sum(float(c) for t, c in d.get("history", []) if now - float(t) <= _WEEK)
+    total = 0.0
+    for e in d.get("history", []):
+        h = _hist_entry(e)
+        if h and now - h[0] <= _WEEK:
+            total += h[1]
+    return total
+
+
+def weekly_usage(d=None):
+    """Per-engine calls / tokens / USD in the trailing 7 days: {engine: {calls, tokens, cost}}."""
+    d = d or load_tokens()
+    now = time.time()
+    out = {name: {"calls": 0, "tokens": 0, "cost": 0.0} for name in ENGINE_NAMES}
+    for e in d.get("history", []):
+        h = _hist_entry(e)
+        if not h or now - h[0] > _WEEK:
+            continue
+        slot = out.setdefault(h[2], {"calls": 0, "tokens": 0, "cost": 0.0})
+        slot["calls"] += 1
+        slot["tokens"] += h[3]
+        slot["cost"] += h[1]
+    return out
 
 
 def plan_estimates(d=None):
-    """(weekly_usd, {plan: percent-of-weekly-cap}) — a rough read on how hard you're leaning on a plan."""
+    """(weekly_usd, {plan: percent-of-weekly-cap}) — the FALLBACK read when the live plan usage
+    (plan_usage) is unavailable, e.g. API-key users with no Claude Code login."""
     wk = weekly_cost(d)
     return wk, {name: (wk / cap * 100.0 if cap else 0.0) for name, cap in PLAN_WEEKLY_USD.items()}
 
 
-def _record_tokens(usage, cost):
+def _record_tokens(usage, cost, engine="claude"):
     if not usage:
         return
+    engine = engine if engine in ENGINE_NAMES else "claude"
     with _TOK_LOCK:
         d = load_tokens()
         in_tok = usage.get("input_tokens", 0) or usage.get("input", 0) or 0
@@ -113,18 +162,21 @@ def _record_tokens(usage, cost):
                    or usage.get("cache_read", 0) or 0)
         cache_c = (usage.get("cache_creation_tokens", 0) or usage.get("cache_creation_input_tokens", 0)
                    or usage.get("cache_creation", 0) or 0)
-        d["input"] += int(in_tok)
-        d["output"] += int(out_tok)
-        d["cache_read"] += int(cache_r)
-        d["cache_creation"] += int(cache_c)
+        add = {"input": int(in_tok), "output": int(out_tok), "cache_read": int(cache_r),
+               "cache_creation": int(cache_c), "calls": 1}
+        for k, v in add.items():
+            d[k] += v
+            d["engines"][engine][k] += v
         d["cost"] += float(cost or 0.0)
-        d["calls"] += 1
+        d["engines"][engine]["cost"] += float(cost or 0.0)
         now = time.time()
         hist = d.get("history", [])
-        if cost:
-            hist.append([int(now), round(float(cost), 6)])
-        d["history"] = [e for e in hist if e and now - float(e[0]) <= _WEEK]   # prune to the rolling week
+        tokens = add["input"] + add["output"] + add["cache_read"] + add["cache_creation"]
+        hist.append([int(now), round(float(cost or 0.0), 6), engine, tokens])
+        d["history"] = [e for e in hist if _hist_entry(e) and now - _hist_entry(e)[0] <= _WEEK]
         d.pop("total", None)
+        for e in d["engines"].values():
+            e.pop("total", None)
         try:
             os.makedirs(os.path.dirname(TOKENS_FILE), exist_ok=True)
             tmp = TOKENS_FILE + ".tmp"
@@ -133,6 +185,182 @@ def _record_tokens(usage, cost):
             os.replace(tmp, TOKENS_FILE)
         except OSError:
             pass
+
+
+# ---- live plan usage: the real 5-hour / 7-day utilization Claude Code itself shows in /usage ----
+# Read from Anthropic's OAuth usage endpoint with the Claude Code login already on this machine.
+# The token never leaves the machine except to api.anthropic.com, exactly as Claude Code uses it,
+# and it is never logged or written anywhere by ClAudit. API-key-only setups get None (fallback
+# to the dollar estimate above).
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_CACHE = os.path.expanduser("~/.claude/claudit/usage.json")
+USAGE_TTL = 300                     # seconds between live fetches (the GUI polls the cache)
+CREDENTIALS_FILE = os.path.expanduser("~/.claude/.credentials.json")
+
+
+def _oauth_credentials():
+    """Claude Code's OAuth session: $CLAUDE_CODE_OAUTH_TOKEN, else ~/.claude/.credentials.json
+    (Linux / Windows), else the macOS keychain item Claude Code writes. {} when signed out."""
+    tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if tok:
+        return {"accessToken": tok, "subscriptionType": ""}
+    try:
+        with open(CREDENTIALS_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+        if isinstance(d, dict) and isinstance(d.get("claudeAiOauth"), dict):
+            return d["claudeAiOauth"]
+    except (OSError, ValueError):
+        pass
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials",
+                                "-w"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                d = json.loads(r.stdout)
+                if isinstance(d, dict) and isinstance(d.get("claudeAiOauth"), dict):
+                    return d["claudeAiOauth"]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return {}
+
+
+def _parse_usage(data, plan=""):
+    """Normalize the endpoint payload to what the meter shows: the 5-hour and 7-day windows plus
+    any model-scoped weekly limits (e.g. a per-model cap that is the active constraint)."""
+    def window(key):
+        w = data.get(key) if isinstance(data.get(key), dict) else {}
+        return {"pct": float(w.get("utilization") or 0.0), "resets_at": w.get("resets_at") or ""}
+    out = {"plan": plan or "", "five_hour": window("five_hour"), "seven_day": window("seven_day"),
+           "scoped": []}
+    for lim in data.get("limits") or []:
+        if not isinstance(lim, dict) or lim.get("kind") != "weekly_scoped":
+            continue
+        model = ((lim.get("scope") or {}).get("model") or {})
+        out["scoped"].append({"name": model.get("display_name") or model.get("id") or "model",
+                              "pct": float(lim.get("percent") or 0.0),
+                              "resets_at": lim.get("resets_at") or "",
+                              "active": bool(lim.get("is_active"))})
+    extra = data.get("extra_usage") if isinstance(data.get("extra_usage"), dict) else {}
+    out["extra_usage"] = bool(extra.get("is_enabled"))
+    return out
+
+
+def usage_peak(u):
+    """The highest utilization across every window (what the fill/color should react to)."""
+    if not u:
+        return 0.0
+    return max([u.get("five_hour", {}).get("pct", 0.0), u.get("seven_day", {}).get("pct", 0.0)]
+               + [s.get("pct", 0.0) for s in u.get("scoped", [])])
+
+
+def plan_usage(max_age=USAGE_TTL, fetch=True):
+    """The real plan utilization, cached on disk for `max_age` seconds. Returns the parsed dict
+    (with `fetched` epoch) or None when there is no Claude Code login. A failed fetch keeps the
+    previous snapshot (its `fetched` age tells the UI it is stale) rather than blanking the meter.
+    fetch=False only reads the cache (safe on a UI thread)."""
+    now = time.time()
+    cached = None
+    try:
+        with open(USAGE_CACHE, encoding="utf-8") as fh:
+            cached = json.load(fh)
+        if not isinstance(cached, dict) or "seven_day" not in cached:
+            cached = None
+    except (OSError, ValueError):
+        cached = None
+    if cached and now - float(cached.get("fetched", 0) or 0) < max_age:
+        return cached
+    if not fetch:
+        return cached
+    cred = _oauth_credentials()
+    tok = cred.get("accessToken")
+    if not tok:
+        return cached
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {tok}", "anthropic-beta": "oauth-2025-04-20",
+        "Accept": "application/json", "User-Agent": "ClAudit"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print(f"claudit: plan usage fetch failed: {e}", file=sys.stderr)
+        return cached
+    if not isinstance(data, dict):
+        return cached
+    out = _parse_usage(data, cred.get("subscriptionType") or "")
+    out["fetched"] = int(now)
+    try:
+        os.makedirs(os.path.dirname(USAGE_CACHE), exist_ok=True)
+        tmp = USAGE_CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(out, fh)
+        os.replace(tmp, USAGE_CACHE)
+    except OSError:
+        pass
+    return out
+
+
+def fmt_reset(iso, now=None):
+    """'in 2h 05m' / 'in 3d 4h' from an ISO reset timestamp; '' when unknown."""
+    if not iso:
+        return ""
+    try:
+        t = time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")
+        import calendar
+        secs = calendar.timegm(t) - (now or time.time())
+    except ValueError:
+        return ""
+    if secs <= 0:
+        return "resetting"
+    d, rem = divmod(int(secs), 86400)
+    h, m = divmod(rem, 3600)
+    m //= 60
+    return f"in {d}d {h}h" if d else f"in {h}h {m:02d}m"
+
+
+def usage_summary(u=None, t=None):
+    """Plain-text usage report for the CLI (--usage) and the GUI tooltip."""
+    u = plan_usage(fetch=False) if u is None else u
+    t = t or load_tokens()
+    wk = weekly_usage(t)
+    L = []
+    if u:
+        plan = u.get("plan") or "Claude"
+        L.append(f"Claude plan usage ({plan}), live from Anthropic:")
+        L.append(f"  5-hour window   {u['five_hour']['pct']:5.1f}%   resets {fmt_reset(u['five_hour']['resets_at'])}")
+        L.append(f"  7-day window    {u['seven_day']['pct']:5.1f}%   resets {fmt_reset(u['seven_day']['resets_at'])}")
+        for s in u.get("scoped", []):
+            L.append(f"  7-day {s['name']:<9} {s['pct']:5.1f}%   resets {fmt_reset(s['resets_at'])}"
+                     + ("   (active limit)" if s.get("active") else ""))
+        age = time.time() - float(u.get("fetched", 0) or 0)
+        L.append(f"  fetched {int(age // 60)} min ago" + ("  (stale)" if age > 3 * USAGE_TTL else ""))
+    else:
+        wkc, plans = plan_estimates(t)
+        L.append("Live plan usage unavailable (no Claude Code login found; run `claude` and sign in).")
+        L.append(f"Estimated from ClAudit's own claude spend, ${wkc:.2f} this week:")
+        for n, pct in plans.items():
+            L.append(f"  {n:<7} {pct:5.1f}%   (est. cap ${PLAN_WEEKLY_USD[n]:.0f}/wk)")
+    L.append("")
+    L.append("ClAudit's own calls, trailing 7 days:")
+    L.append(f"  claude  {wk['claude']['calls']:>5} calls  {_fmt_tokens(wk['claude']['tokens']):>8} tokens  ${wk['claude']['cost']:.2f}")
+    L.append(f"  agy     {wk['agy']['calls']:>5} calls  {_fmt_tokens(wk['agy']['tokens']):>8} tokens")
+    L.append("Lifetime across every session:")
+    for name in ENGINE_NAMES:
+        e = t["engines"][name]
+        L.append(f"  {name:<7} {e['calls']:>5} calls  {_fmt_tokens(e['total']):>8} tokens"
+                 + (f"  ${e['cost']:.2f}" if name == "claude" else ""))
+    legacy = t["total"] - sum(t["engines"][n]["total"] for n in ENGINE_NAMES)
+    if legacy > 0:
+        L.append(f"  (+{_fmt_tokens(legacy)} tokens recorded before per-engine tallies existed)")
+    return "\n".join(L)
+
+
+def _fmt_tokens(n):
+    n = float(n or 0)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(int(n))
 
 
 def _claude(prompt, timeout, model=None):
@@ -158,7 +386,7 @@ def _claude(prompt, timeout, model=None):
     res = next((it for it in reversed(items) if isinstance(it, dict) and it.get("type") == "result"),
                items[-1] if items else {})
     if isinstance(res, dict):
-        _record_tokens(res.get("usage"), res.get("total_cost_usd"))
+        _record_tokens(res.get("usage"), res.get("total_cost_usd"), engine="claude")
         return (res.get("result") or "").strip()
     return ""
 
@@ -188,7 +416,7 @@ def _agy(prompt, timeout, model=None):
         return raw
     if isinstance(data, dict):
         if data.get("usage"):
-            _record_tokens(data.get("usage"), cost=None)
+            _record_tokens(data.get("usage"), cost=None, engine="agy")
         return (data.get("response") or "").strip()
     return ""
 

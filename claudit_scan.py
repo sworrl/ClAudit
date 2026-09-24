@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -2122,6 +2122,9 @@ def main():
                    help="also reopen issues a human maintainer closed as duplicate (default: bot only)")
     p.add_argument("--reopen-interval", dest="reopen_interval", type=float, default=3600,
                    help="with --watch --reopen: seconds between reopen sweeps (default 3600 = 1h)")
+    p.add_argument("--usage", action="store_true",
+                   help="print your live Claude plan usage (5-hour / 7-day windows) and ClAudit's own "
+                        "LLM spend per engine, then exit")
     p.add_argument("--sweep-scan", dest="sweep_scan", action="store_true",
                    help="classify your closed issues (swept / merged / closed) and print the rollup; posts nothing")
     p.add_argument("--defend-closures", dest="defend_closures", action="store_true",
@@ -2182,6 +2185,10 @@ def main():
     if args.update_tracking:
         n = update_tracking(args.repo, args.update_tracking)
         print(f"Refreshed tracking issue #{args.update_tracking} from {n} reports.", file=sys.stderr)
+        return
+
+    if args.usage:
+        print(claudit.usage_summary(claudit.plan_usage()))
         return
 
     if args.sweep_scan:

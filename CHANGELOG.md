@@ -3,6 +3,14 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.4.0] — 2026-09-23
+**Usage meter overhaul: real plan windows instead of a dead estimate.** The header 🔥 meter was fed only by the `claude` CLI's per-call USD figure and turned that into a guessed share of a guessed weekly budget. With `llm_engine: "agy"` (the recommended setting since 2.2.5) no call ever carried a dollar figure, the rolling history stayed empty, and the pill read `$0.00/wk · Pro 0%` while the account was at 39% of its weekly window and 62% of its Fable cap.
+- **Live plan usage.** `claudit.plan_usage()` reads the 5-hour window, the 7-day window, and any model-scoped weekly limit from Anthropic's usage endpoint, the one Claude Code's `/usage` shows, using the Claude Code login already on the machine (`~/.claude/.credentials.json`, the macOS keychain, or `$CLAUDE_CODE_OAUTH_TOKEN`). Fetched off the UI thread every five minutes, cached in `~/.claude/claudit/usage.json`; a failed refresh keeps the last snapshot and the pill says `· stale` after three misses. No login: the old estimate remains as a labelled fallback (`est.`).
+- **The pill now reads `🔥 5h 17% · 7d 39% · Fable 62%`** and fills with the fullest window (amber past 50%, red past 80%). The tooltip carries reset countdowns, ClAudit's own trailing-week calls per engine, and lifetime totals.
+- **Per-engine tallies.** `tokens.json` keeps `engines.claude` and `engines.agy` alongside the legacy totals, and every call (agy included, cost or not) lands in the weekly history with its engine and token count, so `weekly_usage()` can report agy's token volume. Old two-field history entries still read.
+- **CLI:** `claudit_scan.py --usage` prints the same report headless.
+- Tests: endpoint parsing and caching with a mocked login, the no-login and offline paths, per-engine accounting with a legacy file, reset-countdown formatting.
+
 ## [2.3.0] — 2026-09-23
 **Shipped: the 2.2.x line reaches GitHub, plus releases, a real landing page, and autostart on every platform.** The six commits from 2.2.0 to 2.2.5 (tandem engines, closure intelligence, mute list, agy-only mode) sat unpushed for a month while the hourly counter bot kept committing; this release rebases them onto `main` and adds the delivery plumbing that was missing:
 - **Tag-driven releases.** Pushing a `vX.Y.Z` tag builds the sdist and wheel, takes that version's section of this file as the notes, and publishes a GitHub Release with the files attached (`.github/workflows/release.yml`). The tag must match `__version__` or the job fails. `v2.3.0` is the first one.
