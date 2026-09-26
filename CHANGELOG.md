@@ -3,6 +3,16 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.8.0] — 2026-09-26
+**Current block wording, the silent model fallback, Message IDs, and a live-filing window.** A pass over the transcripts on the reference machine (244 sessions) against what `classify()` and the GUI knew:
+- **Silent model fallback is now detected and filed.** Since September Claude Code answers a safeguards refusal by re-running the request on a weaker model and leaving only a `system` entry (`subtype: model_refusal_fallback`, "Opus 5.5's safeguards flagged this session ... Opus 4.8 is answering instead"). The entry carries the refused call's Request ID, the API refusal category, both model IDs, and the uuid of the refused user message. `fallback_event()` reads it; the finding is keyed like any other block (category `cyber`, anything else `aup`), the prompt is looked up by that uuid rather than "the last thing typed", and the report gets a "Model fallback" section plus a triage note. 106 such events sat unseen on the reference machine.
+- **`Details: [cyber]` decides the kind.** Every block message now ends with the API's refusal category in that tag; `classify()` trusts it before any wording heuristic, so the next rewording of the prose cannot silently drop blocks to `other` again. The current wording ("intentionally broad safeguards ... Cyber Verification Program ... real-time-cyber-safeguards") is matched explicitly as well.
+- **Message IDs.** Blocks carry `Message ID: msg_...` next to the Request ID. Captured per occurrence, printed on the ID lines of the report, and protected from every scrub layer the same way `req_` is.
+- **Plan-cap messages are `limit`, not `other`:** "You've reached your Fable limit. Run /usage-credits ...", "hit your session limit", "hit your weekly limit".
+- **Live-filing window.** Newly detected blocks older than 7 days (config `max_live_age_days`, `--max-live-age N`, 0 = off) are parked in the backlog instead of live-posted, in both the dwell and the auto path. A detector improvement like this one would otherwise post weeks of history in one burst; on the reference machine that was 37 fallback reports from August. They are counted in the backfill bar and drip out only if backfill is on.
+- **Models.** The Settings picker lists Haiku 4.5, Sonnet 5, Opus 5.5, and Fable 5.1 (a saved older id is kept as its own entry); the per-call cost table knows the new ids; `model_label()` turns `claude-opus-5-5` into "Opus 5.5" for reports. The Issues tab's "Fable 5" filter became one "model: X" entry per flagging model seen on the board.
+- Tests: 12 new (current wordings, tag precedence, Message ID capture and protection, the fallback event end to end, the live window on both paths, model labels). 111 total.
+
 ## [2.7.1] — 2026-09-23
 - Fix: the PyPI publish job never ran, because a GitHub Release created by the workflow token cannot trigger another workflow. It is now a second job inside `release.yml`, after the release is published, marked continue-on-error until the pending publisher exists on pypi.org.
 

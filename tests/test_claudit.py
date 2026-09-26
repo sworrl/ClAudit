@@ -253,9 +253,14 @@ def test_file_one_files_once(monkeypatch):
 
 
 # ---------------- the honesty gate ----------------
-def _multi(sig, kind, reqs, proj="-h-u-Documents-GitHub-x"):
+def _now_iso(age_s=0):
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_s))
+
+
+def _multi(sig, kind, reqs, proj="-h-u-Documents-GitHub-x", age_s=60):
     return {"sig": sig, "kind": kind, "prompt": "scan my host",
-            "occ": [{"req": r, "ts": "2026-06-27T00:00:00Z", "session": "s", "proj": proj} for r in reqs],
+            "occ": [{"req": r, "ts": _now_iso(age_s), "session": "s", "proj": proj} for r in reqs],
             "block_text": f"{kind} block", "leadup": [("user", "in-scope work")]}
 
 
@@ -1076,3 +1081,134 @@ def test_umbrella_title_counts_reports_and_sweep_days():
     assert cs.umbrella_title(swept) == ("Inactivity bot has closed 3 ClAudit false-positive reports "
                                         "since 2026-08-15 (2 sweep days)")
     assert cs.umbrella_title([(9, {"kind": "swept", "at": "2026-09-01T00:00:00Z"})]).endswith("(1 sweep day)")
+
+
+# ---------------- 2026-09 block wording: Details tag, Message ID, plan caps, model fallback ----------------
+CUR_CYBER = ("API Error: Opus 4.8's safeguards flagged this message. Our intentionally broad safeguards "
+             "allow us to deliver more capabilities faster, but can sometimes flag legitimate cybersecurity "
+             "work. Apply to the Cyber Verification Program to reduce these interruptions. Send feedback with "
+             "/feedback or learn more: https://support.claude.com/en/articles/14604842-real-time-cyber-"
+             "safeguards-on-claude Details: `[cyber]` Request ID: req_011CfSipSx1kG2aqbdmtL7AA "
+             "Message ID: msg_011CfSipSx1kG2aqbdmtL7BG")
+
+
+@pytest.mark.parametrize("text,kind", [
+    (CUR_CYBER, "cyber"),
+    ("API Error: Sonnet 5's safeguards flagged this message. Details: `[aup]` Request ID: req_X", "aup"),
+    ("Something new we have never seen Details: `[cyber]`", "cyber"),            # the tag wins
+    ("You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.", "limit"),
+    ("You've hit your session limit · resets 5:20pm (America/Denver)", "limit"),
+    ("Login expired · Please run /login", "other"),
+    ("API Error: Connection lost mid-response. The response above may be incomplete.", "other"),
+])
+def test_classify_2026_09_wordings(text, kind):
+    assert cs.classify(text) == kind
+
+
+def test_flag_model_and_model_label_current_family():
+    assert cs.flag_model("API Error: Opus 5.5's safeguards flagged this message.") == "Opus 5.5"
+    assert cs.flag_model("Fable 5.1's safeguards flagged this session.") == "Fable 5.1"
+    assert cs.model_label("claude-opus-5-5") == "Opus 5.5"
+    assert cs.model_label("claude-fable-5-1") == "Fable 5.1"
+    assert cs.model_label("claude-haiku-4-5-20251001") == "Haiku 4.5"
+    assert cs.model_label("gemini-3.1-pro-low") == "gemini-3.1-pro-low"
+
+
+def test_message_id_captured_reported_and_never_scrubbed(tmp_path):
+    f = tmp_path / "s.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in [
+        {"type": "user", "uuid": "u1", "message": {"content": "harden sshd on my own box"}},
+        {"isApiErrorMessage": True, "timestamp": "2026-09-26T20:00:00Z", "message": {"content": CUR_CYBER}}]))
+    findings = cs._parse_file(str(f), "s.jsonl", str(tmp_path))[0]
+    assert len(findings) == 1 and findings[0]["kind"] == "cyber"
+    occ = findings[0]["occ"][0]
+    assert occ["req"] == "req_011CfSipSx1kG2aqbdmtL7AA" and occ["msg"] == "msg_011CfSipSx1kG2aqbdmtL7BG"
+    title, body = cs.build_issue(findings[0], "")
+    assert "req_011CfSipSx1kG2aqbdmtL7AA" in title
+    assert "message `msg_011CfSipSx1kG2aqbdmtL7BG`" in body
+    assert "Model fallback" not in body
+    assert claudit.scrub("see msg_011CfSipSx1kG2aqbdmtL7BG and req_011CfSipSx1kG2aqbdmtL7AA")[0] \
+        == "see msg_011CfSipSx1kG2aqbdmtL7BG and req_011CfSipSx1kG2aqbdmtL7AA"
+
+
+FALLBACK_EVENT = {
+    "type": "system", "subtype": "model_refusal_fallback", "level": "warning", "trigger": "refusal",
+    "direction": "retry", "scope": "session", "originalModel": "claude-opus-5-5",
+    "fallbackModel": "claude-opus-4-8", "requestId": "req_011CfSiWphx32CAUHsK9CYi1",
+    "apiRefusalCategory": "cyber",
+    "apiRefusalExplanation": "This request triggered restrictions on violative cyber content and was "
+                             "blocked under Anthropic's Usage Policy.",
+    "content": "Opus 5.5's safeguards flagged this session. You may be seeing this for the first time on "
+               "an Opus model: Opus 5.5 is more capable and has stronger safeguards as a result, which can "
+               "sometimes flag non-cybersecurity work. Opus 4.8 is answering instead, or you can edit and "
+               "retry with Opus 5.5. Details: `[cyber]`",
+    "refusedUserMessageUuid": "u-refused", "uuid": "sys-1", "timestamp": "2026-09-26T20:55:01Z",
+}
+
+
+def test_silent_model_fallback_is_detected_filed_with_its_request_id(tmp_path):
+    """2026-09: when a model's safeguards refuse, Claude Code re-runs the request on a weaker model
+    and only leaves a `system` entry. It carries the refused call's Request ID, so it is a filable
+    cyber/aup block, and the report says the downgrade happened."""
+    f = tmp_path / "fb.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in [
+        {"type": "user", "uuid": "u-refused", "message": {"content": "review my own nginx hardening"}},
+        {"type": "user", "uuid": "u-later", "message": {"content": "also format the README"}},
+        FALLBACK_EVENT]))
+    findings, log_lines, counts = cs._parse_file(str(f), "fb.jsonl", str(tmp_path))
+    assert len(findings) == 1
+    fnd = findings[0]
+    assert fnd["kind"] == "cyber" and fnd["prompt"] == "review my own nginx hardening"   # by uuid, not last
+    assert fnd["fallback"] == {"from": "claude-opus-5-5", "to": "claude-opus-4-8", "scope": "session",
+                               "category": "cyber"}
+    assert fnd["occ"][0]["req"] == "req_011CfSiWphx32CAUHsK9CYi1"
+    assert fnd["occ"][0]["fallback"] == "Opus 5.5 -> Opus 4.8"
+    assert cs.should_file(fnd) is True
+    assert json.loads(log_lines[0])["fallback"] == "claude-opus-5-5>claude-opus-4-8"
+    assert cs.flag_model(fnd["block_text"]) == "Opus 5.5"
+    title, body = cs.build_issue(fnd, "")
+    assert title.startswith("[Bug][cyber]") and "req_011CfSiWphx32CAUHsK9CYi1" in title
+    assert "### Model fallback" in body and "`claude-opus-4-8` without asking" in body
+    assert "answered by Opus 4.8 instead" in body
+    assert "silent fallback to `Opus 4.8`" in body
+    # a non-cyber refusal category files as aup; an unknown subtype is ignored
+    other = dict(FALLBACK_EVENT, apiRefusalCategory="harmful_content")
+    assert cs.fallback_event(other)["kind"] == "aup"
+    assert cs.fallback_event(dict(FALLBACK_EVENT, subtype="something_else")) is None
+    assert counts["harness"] == 0
+
+
+def test_stale_blocks_go_to_backlog_not_live(monkeypatch):
+    """A detector that just learned a wording surfaces weeks-old blocks at once. Anything older
+    than MAX_LIVE_AGE_DAYS is parked as a backlog record (visible in the backfill bar, filed only
+    by backfill) instead of being live-posted in a burst. 0 disables the window."""
+    findings = [({}, {})]
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: findings[0])
+    posted = []
+    monkeypatch.setattr(cs, "gh_create", lambda r, t, b: posted.append(t) or f"https://github.com/{r}/issues/{len(posted)}")
+    monkeypatch.setattr(cs, "gh_comment", lambda *a: None)
+    monkeypatch.setattr(cs, "log_issue", lambda *a: None)
+    monkeypatch.setattr(cs, "save_state", lambda st: None)
+    monkeypatch.setattr(claudit, "llm_is_false_positive", lambda *a: (True, ""))
+    monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 7)
+    # dwell path
+    state = {}
+    cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0)              # baseline pass
+    findings[0] = ({"old": _multi("old", "cyber", ["OLD1", "OLD2"], age_s=20 * 86400),
+                    "new": _multi("new", "cyber", ["NEW1"], age_s=120)}, {})
+    assert cs.dwell_cycle(state, "o/r", 0, lambda *a: None, dwell=0) == 1
+    assert posted == [posted[0]] and "NEW1" in posted[0]
+    assert state["old"] == {"issue": None, "url": None, "kind": "cyber", "reqs": ["OLD1", "OLD2"], "stale": True}
+    assert {"OLD1", "OLD2", "NEW1"} <= set(state["__dwell_seen__"]) and "OLD1" not in state["__dwell_hold__"]
+    assert cs.backlog_size(state) == 1                                      # the parked one, ready for backfill
+    # auto path
+    posted.clear()
+    state2 = {"__baselined__": True}
+    assert cs.auto_cycle(state2, "o/r", 0, lambda *a: None) == 1
+    assert state2["old"]["stale"] is True and state2["new"]["issue"] == "1"
+    # window off: the old one is live-filed too
+    monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 0)
+    posted.clear()
+    assert cs.auto_cycle({"__baselined__": True}, "o/r", 0, lambda *a: None) == 2
+    monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 7)
+    assert cs._ts_epoch("garbage") == 0 and cs._too_old_to_live_file("") is True   # no timestamp = stale

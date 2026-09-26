@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.7.1"
+__version__ = "2.8.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -60,6 +60,10 @@ REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY b
 GATE = False   # opt-in: pre-judge "correct block vs false positive" and drop the former.
                # OFF by default — that classification is the unreliable thing ClAudit exists to
                # surface, so the filer shouldn't pre-judge it. Enable with --gate / config gate:true.
+# Live filing only covers blocks younger than this. Older ones (a detector that just learned a new
+# wording, weeks with the app off) are baselined into the backlog instead: recorded, counted in
+# the GUI's backfill bar, filed only if backfill is on. 0 = no cutoff. Config: max_live_age_days.
+MAX_LIVE_AGE_DAYS = 7
 DWELL_SECONDS = 300   # dwell-auto-file: hold a new Request ID this long (5 min; repeats accrete as
                       # their own linked issues) before the LLM judges + composes + files. Config: dwell_seconds.
 # ClAudit's OWN `claude -p` calls (compose / scrub / gate / dup-defense). When one is blocked it lands
@@ -95,8 +99,26 @@ WHY = {
 }
 
 
+DETAILS_TAG = re.compile(r"details:\s*`?\[([a-z_\- ]+)\]`?", re.IGNORECASE)
+MSG_ID = re.compile(r"msg_[A-Za-z0-9]+")
+
+
 def classify(text):
     t = text.lower()
+    # 2026-09: every safeguards block now ends with "Details: `[cyber]`" (the API's refusal
+    # category). Trust that tag before any wording heuristic; the prose around it keeps changing.
+    m = DETAILS_TAG.search(t)
+    if m:
+        tag = m.group(1).strip()
+        if tag == "cyber":
+            return "cyber"
+        if tag in ("aup", "usage_policy", "usage policy", "policy", "harmful", "violative"):
+            return "aup"
+    # 2026-09 wording: "<Model>'s safeguards flagged this message. Our intentionally broad
+    # safeguards ... can sometimes flag legitimate cybersecurity work. Apply to the Cyber
+    # Verification Program ..." (the old "apply for an exemption" form is gone).
+    if "cyber verification program" in t or "real-time-cyber-safeguards" in t:
+        return "cyber"
     # cyber = the cybersecurity-topic classifier flagged it. Match the flagging signature, not one
     # exact sentence — Anthropic reworded it from "safety measures" to "Opus 4.8's safeguards" and
     # the old fixed strings stopped matching, silently dropping real cyber blocks to 'other'.
@@ -126,8 +148,10 @@ def classify(text):
         return "aup"
     if "overloaded" in t or "temporarily limiting" in t or "529" in t:
         return "overloaded"
-    if "hit your limit" in t or "rate limit" in t or "429" in t or "· resets" in t:
-        return "limit"
+    if ("hit your limit" in t or "rate limit" in t or "429" in t or "· resets" in t
+            or ("reached your" in t and "limit" in t) or "usage-credits" in t
+            or "hit your session limit" in t or "hit your weekly limit" in t):
+        return "limit"          # plan caps: "You've reached your Fable limit. Run /usage-credits..."
     return "other"
 
 
@@ -136,6 +160,34 @@ def flag_model(text):
     safeguards flagged…'). '' when the wording doesn't name one."""
     m = re.search(r"([A-Z][A-Za-z0-9 .()]{1,30}?)['’]s safeguards", text or "")
     return m.group(1).strip() if m else ""
+
+
+def fallback_event(entry):
+    """Claude Code's silent model downgrade (2026-09): when a model's safeguards refuse, the CLI
+    retries on a weaker model and records a `system` entry with subtype `model_refusal_fallback`
+    carrying the API's refusal category, both model IDs, and the Request ID of the refused call.
+    Returns {'kind','req','text','from','to','scope','refused_uuid','explanation'} or None."""
+    if entry.get("type") != "system" or entry.get("subtype") != "model_refusal_fallback":
+        return None
+    cat = str(entry.get("apiRefusalCategory") or "").lower()
+    kind = "cyber" if cat == "cyber" else "aup"        # every other category is a Usage Policy refusal
+    content = entry.get("content")
+    if isinstance(content, list):
+        content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+    text = str(content or "").strip()
+    expl = str(entry.get("apiRefusalExplanation") or "").strip()
+    return {"kind": kind, "req": entry.get("requestId") or None, "text": text,
+            "from": str(entry.get("originalModel") or ""), "to": str(entry.get("fallbackModel") or ""),
+            "scope": str(entry.get("scope") or ""), "refused_uuid": entry.get("refusedUserMessageUuid"),
+            "explanation": expl, "category": cat}
+
+
+def model_label(model_id):
+    """'claude-opus-5-5' -> 'Opus 5.5'; unknown strings pass through."""
+    m = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d+))?", model_id or "")
+    if not m:
+        return model_id or ""
+    return m.group(1).capitalize() + " " + m.group(2) + (f".{m.group(3)}" if m.group(3) else "")
 
 
 def human_text(entry):
@@ -276,6 +328,7 @@ def _parse_file(path, name, root):
     findings, log_lines = {}, []
     counts = {"overloaded": 0, "limit": 0, "other": 0, "harness": 0}
     last_prompt, recent = None, collections.deque(maxlen=6)
+    by_uuid = collections.OrderedDict()          # recent user messages by uuid (fallback events name one)
     try:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -287,6 +340,29 @@ def _parse_file(path, name, root):
                 if hp:
                     last_prompt = hp
                     recent.append(("user", hp[:300]))
+                    if entry.get("uuid"):
+                        by_uuid[entry["uuid"]] = hp
+                        while len(by_uuid) > 64:
+                            by_uuid.popitem(last=False)
+                    continue
+                fb = fallback_event(entry)
+                if fb:
+                    ts = entry.get("timestamp", "")
+                    prompt = by_uuid.get(fb["refused_uuid"]) or last_prompt
+                    log_lines.append(json.dumps({"kind": fb["kind"], "ts": ts, "session": name,
+                                                 "req": fb["req"], "fallback": f"{fb['from']}>{fb['to']}"}))
+                    if prompt and any(mk in prompt for mk in INTERNAL_PROMPTS):
+                        continue
+                    block = fb["text"] + (f"\n{fb['explanation']}" if fb["explanation"] else "")
+                    s = sig(fb["kind"], prompt or "(triggering prompt not recoverable)")
+                    f = findings.setdefault(s, {"sig": s, "kind": fb["kind"],
+                                                "prompt": prompt or "(triggering prompt not recoverable)",
+                                                "occ": [], "block_text": block, "leadup": list(recent)})
+                    f.setdefault("fallback", {"from": fb["from"], "to": fb["to"], "scope": fb["scope"],
+                                              "category": fb["category"]})
+                    f["occ"].append({"req": fb["req"], "ts": ts, "session": name,
+                                     "proj": os.path.basename(root), "msg": None,
+                                     "fallback": f"{model_label(fb['from'])} -> {model_label(fb['to'])}"})
                     continue
                 hd = harness_denial(entry)
                 if hd:
@@ -313,6 +389,8 @@ def _parse_file(path, name, root):
                 ts = entry.get("timestamp", "")
                 m = REQ_ID.search(err)
                 req = m.group(0) if m else None
+                mm = MSG_ID.search(err)
+                msg = mm.group(0) if mm else None      # 2026-09: blocks also carry a Message ID
                 log_lines.append(json.dumps({"kind": kind, "ts": ts, "session": name, "req": req}))
                 if kind not in FILE_KINDS:
                     counts[kind] = counts.get(kind, 0) + 1
@@ -321,7 +399,8 @@ def _parse_file(path, name, root):
                 s = sig(kind, prompt)
                 f = findings.setdefault(s, {"sig": s, "kind": kind, "prompt": prompt,
                                             "occ": [], "block_text": err, "leadup": list(recent)})
-                f["occ"].append({"req": req, "ts": ts, "session": name, "proj": os.path.basename(root)})
+                f["occ"].append({"req": req, "ts": ts, "session": name, "proj": os.path.basename(root),
+                                 "msg": msg})
     except OSError:
         pass
     return list(findings.values()), log_lines, counts
@@ -524,7 +603,19 @@ def build_issue(f, note, crossref=""):
         frag = scrub(re.sub(r"\s+", " ", f.get("prompt", "") or ""))[0].strip()[:60]
         what = f" while: “{frag}…”" if frag else f" in {proj}"
         title = f"[Bug][{f['kind']}] ClAudit false-positive{what} ({lead})"
-    req_lines = "\n".join(f"- `{o['req']}`  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
+    req_lines = "\n".join(
+        f"- `{o['req']}`" + (f" · message `{o['msg']}`" if o.get("msg") else "")
+        + (f" · answered by {o['fallback'].split(' -> ')[-1]} instead" if o.get("fallback") else "")
+        + f"  ({o['ts']})" for o in reqs) or "- (no Request ID captured)"
+    fb = f.get("fallback") or {}
+    fallback_block = ""
+    if fb.get("from") or fb.get("to"):
+        fallback_block = (
+            "\n### Model fallback\n"
+            f"Claude Code did not surface this block. `{fb.get('from')}` refused the request "
+            f"(API refusal category `{fb.get('category') or f['kind']}`, scope `{fb.get('scope') or 'message'}`) "
+            f"and the CLI re-ran it on `{fb.get('to')}` without asking. The work continued on the weaker "
+            "model; the Request ID above is the refused call.\n")
     note_clean, _ = scrub(note or DEFAULT_NOTE)
     # Full PII scrub on the block message (was token-only — leaked IPs/hosts/paths).
     block_clean = scrub(TOKEN.sub("token=[SCRUBBED]", f["block_text"]))[0].strip()[:500]
@@ -607,6 +698,7 @@ def build_issue(f, note, crossref=""):
     mdl = flag_model(f.get("block_text", ""))
     triage = (f"**Triage:** kind `{f['kind']}` · domain `{categorize(f)}` · "
               + (f"flagging model `{mdl}` · " if mdl else "")
+              + (f"silent fallback to `{model_label(fb.get('to'))}` · " if fb.get("to") else "")
               + f"severity **session-halted** (blocked authorized work) · reproducible: {repro}")
     body = f"""{triage}
 
@@ -615,7 +707,7 @@ def build_issue(f, note, crossref=""):
 {why_block}
 
 {reqs_block}
-{note_block}
+{fallback_block}{note_block}
 ### Block message
 > {block_clean}
 
@@ -883,6 +975,10 @@ def auto_cycle(state, repo, delay, on_event):
     findings, _ = scan(ttl=8)
     acted = 0
     for f in findings.values():
+        if f["sig"] not in state and should_file(f) and _too_old_to_live_file(_latest_ts(f)):
+            _baseline_one(state, f)        # older than the live window: backlog, not a live post
+            save_state(state)
+            continue
         if f["sig"] not in state and (not should_file(f) or not passes_gate(f, state)):
             continue          # only file NEW cyber/aup blocks that carry a Request ID
         try:
@@ -977,11 +1073,22 @@ def dwell_cycle(state, repo, delay, on_event, dwell=None):
                         seen.append(req)
         state["__pending__"] = []
         save_state(state)
-    # Register genuinely new Request IDs into the dwell hold.
-    for req in current:
+    # Register genuinely new Request IDs into the dwell hold. Ones older than the live window
+    # (a detector that just learned a wording, the app off for weeks) are parked in the backlog.
+    occ_ts = {o["req"]: o.get("ts", "") for f in current.values() for o in f["occ"] if o.get("req")}
+    parked = 0
+    for req, f in current.items():
         if req not in seen_set and req not in filed_set and req not in skip_set:
-            hold.setdefault(req, now)
             seen.append(req)
+            if _too_old_to_live_file(occ_ts.get(req, ""), now):
+                _baseline_one(state, f)
+                parked += 1
+                continue
+            hold.setdefault(req, now)
+    if parked:
+        save_state(state)
+        print(f"  dwell: {parked} Request ID(s) older than {MAX_LIVE_AGE_DAYS}d parked in the backlog "
+              f"(turn on backfill to drip them)", file=sys.stderr)
     # A create that keeps failing must NOT re-judge+re-compose every 30s tick (that's the only path
     # that could burn tokens "like crazy" at idle) — back a failed Request ID off for FAIL_COOLDOWN.
     fails = state.setdefault("__dwell_fail__", {})       # req -> last failed-create epoch
@@ -1133,6 +1240,26 @@ def newest_transient_ts():
 
 def _latest_ts(f):
     return max((o["ts"] for o in f["occ"] if o["ts"]), default="")
+
+
+def _ts_epoch(ts):
+    """ISO transcript timestamp -> epoch seconds; 0 when missing/unparseable (treated as stale)."""
+    try:
+        import calendar
+        return calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _too_old_to_live_file(ts, now=None):
+    days = int(MAX_LIVE_AGE_DAYS or 0)
+    return bool(days) and (now or time.time()) - _ts_epoch(ts) > days * 86400
+
+
+def _baseline_one(state, f):
+    """Park one finding in the backlog (same record baseline() writes) without filing it."""
+    state.setdefault(f["sig"], {"issue": None, "url": None, "kind": f["kind"],
+                                "reqs": [o["req"] for o in reqs_of(f)], "stale": True})
 
 
 RATE_LIMIT_HINTS = ("rate limit", "secondary", "abuse", "retry-after",
@@ -2250,6 +2377,7 @@ def update_tracking(repo, num):
 
 
 def main():
+    global MAX_LIVE_AGE_DAYS
     p = argparse.ArgumentParser(description="Watch Claude Code sessions for safety/AUP blocks.")
     p.add_argument("--version", action="version", version=f"ClAudit {__version__}")
     p.add_argument("--baseline", action="store_true", help="mark all current findings seen, file nothing")
@@ -2319,6 +2447,9 @@ def main():
                    help="with --watch: periodically run the closure defender (sweeps + merges)")
     p.add_argument("--closure-interval", dest="closure_interval", type=float, default=900,
                    help="with --watch --closures: seconds between closure sweeps (default 900 = 15m)")
+    p.add_argument("--max-live-age", dest="max_live_age", type=int, default=None,
+                   help="only live-file blocks younger than N days; older ones go to the backlog "
+                        "(default 7; 0 = no cutoff)")
     p.add_argument("--since-days", dest="since_days", type=float, default=7,
                    help="closure scans look back this many days of updates (0 = full backfill; default 7)")
     p.add_argument("--prune-backlog", dest="prune_backlog", action="store_true",
@@ -2330,6 +2461,10 @@ def main():
                    help="use LLM composition during --defend-all or --reopen-dupes")
     args = p.parse_args()
     cfg = load_config()
+    if args.max_live_age is not None:
+        MAX_LIVE_AGE_DAYS = int(args.max_live_age)
+    elif "max_live_age_days" in cfg:
+        MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
     if args.engine:
         claudit.LLM_ENGINE = str(args.engine)
     elif cfg.get("llm_engine"):

@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.7.1. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.8.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -19,9 +19,16 @@ If you use Claude Code for security work, or for anything that touches computers
 this: an in-scope request gets stopped by a server-side block.
 
 ```
-API Error: Opus has safety measures that flagged this message for a cybersecurity topic.
-API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy.
+API Error: Opus 4.8's safeguards flagged this message. Our intentionally broad safeguards allow us to
+deliver more capabilities faster, but can sometimes flag legitimate cybersecurity work. Apply to the
+Cyber Verification Program to reduce these interruptions. [...] Details: `[cyber]`
+Request ID: req_011Cf...  Message ID: msg_011Cf...
 ```
+
+Since September 2026 there is a quieter variant: a model's safeguards refuse, and Claude Code
+re-runs the request on a weaker model without asking ("Opus 5.5's safeguards flagged this session
+... Opus 4.8 is answering instead"). Nothing is shown as an error; the only trace is a system entry
+in the transcript. ClAudit reads that entry too.
 
 Every one of those carries a Request ID that Anthropic can look up server-side, so each one is a
 bug report they can act on. Nobody hand-files dozens of them, so ClAudit does it. You keep working;
@@ -115,6 +122,7 @@ ClAudit is conservative about what reaches a public tracker. For every block it 
 |---|---|---|
 | `cyber` (cybersecurity safety filter) | yes | Filed as a GitHub issue |
 | `aup` (Usage Policy) | yes | Filed as a GitHub issue |
+| model fallback (`system` entry, subtype `model_refusal_fallback`) | yes | Filed as `cyber` or `aup` from the API's refusal category, with a "Model fallback" section naming the refusing and answering models |
 | `cyber` or `aup` | no | Skipped. Without a Request ID Anthropic cannot look it up, so the report would go nowhere |
 | `harness` (auto-mode classifier denial) | n/a | Logged only. A local permission decision, not an API block, and often a correct stop. Opt in with `--report-harness` |
 | overloaded, rate limit, usage cap, connection error | n/a | Logged only. Transient noise, not a bug |
@@ -129,6 +137,13 @@ Two rules sit behind that table:
 - One issue per incident. Findings are keyed by the triggering prompt. A retry of the same request
   folds its new Request IDs into the existing issue as a comment. A distinct block becomes its own
   issue. There are no aggregate or "tracking" issues.
+- Live filing covers the last 7 days. A block older than that (the app was off, or a detector
+  just learned a wording and surfaced weeks of history at once) is parked in the backlog: recorded,
+  counted in the backfill bar, filed only if backfill is on. `max_live_age_days` in config or
+  `--max-live-age N` changes the window; 0 turns it off.
+- Since 2026-09 block messages carry a `Details: [cyber]` tag and a Message ID. The tag decides
+  the kind before any wording heuristic; the Message ID is reported next to the Request ID and,
+  like it, never redacted.
 
 How a block gets from a transcript to an issue:
 
@@ -224,8 +239,8 @@ layers, strongest last:
    calls. With `agy` alone, the second voice is `agy` on a different model, so the cross-check
    survives without spending any Claude quota.
 
-Request IDs and the words Claude, Anthropic, ClAudit, and GitHub are never redacted, so reports stay
-actionable.
+Request IDs, Message IDs, and the words Claude, Anthropic, ClAudit, and GitHub are never redacted, so
+reports stay actionable.
 
 By default a public report contains: the block type and a work-domain tag, a short "why this is a
 false positive", the Request IDs, your in-scope note, and the block message. The raw conversation
@@ -296,8 +311,9 @@ window that shows every ClAudit-filed issue on the repo, all authors, open and c
   many you filed today, a 30-day sparkline, and the usage meter (see
   [the usage meter](#burn-tokens-mode-and-the-usage-meter)).
 - Tray badge with the current open count.
-- Filters: mine or all, open or closed, by kind, defended or not, and a search on title or
-  `#number`. Harness reports are never listed; they stay a separate tally in the stats bar.
+- Filters: mine or all, open or closed, by kind or by the model whose safeguards flagged it (one
+  entry per model seen on the board), defended or not, and a search on title or `#number`. Harness
+  reports are never listed; they stay a separate tally in the stats bar.
 - Your issues in purple, other users' in teal, newest first.
 - Double-click a row for the detail panel: status, close reason, kind, Request IDs, and a timeline
   (filed, flagged, defended, closed by whom and why, reopened) built from the live GitHub timeline,
@@ -358,6 +374,7 @@ Filing and detection:
 | `--report-harness` | Also file harness denials (default: log only) |
 | `--gate` | Opt-in LLM pre-filter that skips blocks it deems clearly correct |
 | `--limit N` | Cap findings handled this run (0 = all) |
+| `--max-live-age N` | Live-file only blocks younger than N days; older ones go to the backlog (default 7; 0 = no cutoff) |
 
 Backfill:
 
@@ -475,7 +492,7 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `agy_project`, `agy_review_model`, `umbrella_issue` |
+| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage per engine, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your plan windows. Safe to delete |
 | `scrub.txt` | Your PII denylist. Never committed |

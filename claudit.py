@@ -484,9 +484,9 @@ STYLE_RULES = (
 def _redact_terms(text, terms):
     """Deterministically redact `terms` out of `text`, protecting Request IDs and tool/vendor
     names the reports depend on. Shared by llm_redact and the tandem compose review."""
-    protect = re.compile(r"^(req_[A-Za-z0-9]+|claudit|claude|anthropic|github|sworrl)$", re.IGNORECASE)
+    protect = re.compile(r"^((?:req|msg)_[A-Za-z0-9]+|claudit|claude|anthropic|github|sworrl)$", re.IGNORECASE)
     for t in sorted({str(x).strip() for x in terms if isinstance(x, str)}, key=len, reverse=True):
-        if len(t) < 2 or protect.match(t) or t.lower().startswith("req_"):
+        if len(t) < 2 or protect.match(t) or t.lower().startswith(("req_", "msg_")):
             continue
         text = re.sub(_deny_regex(t), "[REDACTED]", text, flags=re.IGNORECASE)
     return text
@@ -638,7 +638,7 @@ def _identify_pii_terms(text, engine, model=None):
         "substrings that are identifying: real people's names, initials that stand for a name, "
         "company/org/client names AND their abbreviations, tenant/domain names, internal hostnames, "
         "project codenames, emails, IPs, secrets. "
-        "Do NOT include: Request IDs (anything starting with 'req_'), or the words Claude, Anthropic, "
+        "Do NOT include: Request IDs or Message IDs (anything starting with 'req_' or 'msg_'), or the words Claude, Anthropic, "
         "ClAudit, GitHub — those must stay. No commentary, just the JSON array.\n\nTEXT:\n" + text[:8000])
     out = _run_llm(prompt, timeout=90, engine=engine, model=model)
     m = re.search(r"\[.*\]", out, re.DOTALL)
@@ -725,7 +725,7 @@ def scrub(text: str):
         reqs.append(m.group(0))
         return f"\x00REQ{len(reqs) - 1}\x00"
 
-    text = re.sub(r"req_[A-Za-z0-9]+", _hold, text)
+    text = re.sub(r"(?:req|msg)_[A-Za-z0-9]+", _hold, text)
     for term in _extra_terms():
         text, n = re.subn(_deny_regex(term), "[REDACTED]", text, flags=re.IGNORECASE)
         if n:

@@ -58,7 +58,8 @@ class Main(QtWidgets.QMainWindow):
         self.f_state = QtWidgets.QComboBox()
         self.f_state.addItems(["Open + Closed", "Open only", "Closed only"])
         self.f_kind = QtWidgets.QComboBox()
-        self.f_kind.addItems(["All kinds", "cyber", "aup", "Fable 5"])   # harness is excluded
+        self.f_kind.addItems(["All kinds", "cyber", "aup"])   # harness is excluded; models added live
+        self._kind_models = []                                 # flagging models seen on the board
         self.f_dedup = QtWidgets.QComboBox()
         self.f_dedup.addItems(["Any", "Defended", "Not defended", "Swept", "Merged"])
         self.f_search = QtWidgets.QLineEdit()
@@ -801,14 +802,16 @@ class Main(QtWidgets.QMainWindow):
         mv = QtWidgets.QVBoxLayout(mbox)
         mform = QtWidgets.QFormLayout()
         self.cmb_model = QtWidgets.QComboBox()
-        self._model_opts = [("Haiku 4.5 — fast + cheapest (recommended)", "claude-haiku-4-5-20251001"),
-                            ("Sonnet 5 — quality/cost balance", "claude-sonnet-5"),
-                            ("Opus 4.8 — high", "claude-opus-4-8"),
-                            ("Fable 5 — top tier, priciest", "claude-fable-5"),
+        self._model_opts = [("Haiku 4.5: fast, cheapest (recommended)", "claude-haiku-4-5-20251001"),
+                            ("Sonnet 5: quality/cost balance", "claude-sonnet-5"),
+                            ("Opus 5.5: high", "claude-opus-5-5"),
+                            ("Fable 5.1: top tier, priciest", "claude-fable-5-1"),
                             ("Session default", "")]
+        cur = claudit.LLM_MODEL
+        if cur and cur not in {v for _l, v in self._model_opts}:     # older saved id (e.g. claude-opus-4-8)
+            self._model_opts.insert(-1, (f"{cs.model_label(cur)} (saved: {cur})", cur))
         for label, _v in self._model_opts:
             self.cmb_model.addItem(label)
-        cur = claudit.LLM_MODEL
         self.cmb_model.setCurrentIndex(next((i for i, (_l, v) in enumerate(self._model_opts)
                                              if v == cur), 0))
         self.cmb_model.currentIndexChanged.connect(
@@ -879,7 +882,8 @@ class Main(QtWidgets.QMainWindow):
     # empirical per-call ballparks (USD) from the token meter — cache state makes exact figures
     # noisy, so these are labeled estimates in the UI, not quotes
     MODEL_CALL_USD = {"claude-haiku-4-5-20251001": 0.03, "claude-sonnet-5": 0.05,
-                      "claude-opus-4-8": 0.09, "claude-fable-5": 0.14, "": 0.14}
+                      "claude-opus-4-8": 0.09, "claude-opus-5-5": 0.10,
+                      "claude-fable-5": 0.14, "claude-fable-5-1": 0.15, "": 0.15}
 
     def _refresh_llm_cost(self):
         """Estimated $/week per model at the CURRENT filing rate (reports in the last 7 days from
@@ -1262,6 +1266,18 @@ class Main(QtWidgets.QMainWindow):
         chain_of = self._chain_map()    # issue number -> work-session chain key (for the graph gutter)
         model_of = {str(rec.get("issue")): rec.get("model", "")
                     for rec in cs.load_issue_rows() if rec.get("issue")}   # which model flagged it
+        seen_models = sorted({m for m in model_of.values() if m})
+        if seen_models != self._kind_models:
+            keep = self.f_kind.currentText()
+            self.f_kind.blockSignals(True)
+            while self.f_kind.count() > 3:
+                self.f_kind.removeItem(3)
+            for m in seen_models:
+                self.f_kind.addItem(f"model: {m}")
+            idx = self.f_kind.findText(keep)
+            self.f_kind.setCurrentIndex(idx if idx >= 0 else 0)
+            self.f_kind.blockSignals(False)
+            self._kind_models = seen_models
 
         rows = []   # (sort_ts, state, label, author, created, title, url, why, chain_key)
         pend = set(cs.pending_sigs(self.state))
@@ -1328,10 +1344,9 @@ class Main(QtWidgets.QMainWindow):
                 continue
             if statef == "Closed only" and st != "closed":
                 continue
-            mdl = model_of.get(str(it.get("number")), "") or (
-                "Fable 5" if "fable 5" in title.lower() else "")
-            if kindf == "Fable 5":
-                if "fable" not in mdl.lower():
+            mdl = model_of.get(str(it.get("number")), "")
+            if kindf.startswith("model: "):
+                if mdl != kindf[len("model: "):]:
                     continue
             elif kindf != "All kinds" and f"[{kindf}]" not in title.lower():
                 continue
