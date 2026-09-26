@@ -35,7 +35,7 @@ is to wave off.
 <!-- COUNTER:START -->
 ### 200 open false-positive reports right now
 
-Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 548 closed by Anthropic. Updated 2026-09-25 22:23 UTC.
+Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 548 closed by Anthropic. Updated 2026-09-26 01:36 UTC.
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
@@ -45,7 +45,7 @@ Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthr
 <!-- POLL:START -->
 ### Community poll
 
-Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-25 22:23 UTC.
+Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-26 01:36 UTC.
 
 | Answer | | Share |
 |---|---:|---|
