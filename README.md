@@ -47,9 +47,9 @@ is to wave off.
 *Rephrase it, reword it, tiptoe around the words. Every dev running the classifier knows the drill.*
 
 <!-- COUNTER:START -->
-### 201 open false-positive reports right now
+### 203 open false-positive reports right now
 
-Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 547 closed by Anthropic. Updated 2026-09-27 01:30 UTC.
+Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 545 closed by Anthropic. Updated 2026-09-27 08:14 UTC.
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
@@ -59,7 +59,7 @@ Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthr
 <!-- POLL:START -->
 ### Community poll
 
-Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-27 01:30 UTC.
+Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-09-27 08:14 UTC.
 
 | Answer | | Share |
 |---|---:|---|
@@ -74,11 +74,11 @@ Vote by reacting on [the pinned issue](https://github.com/sworrl/ClAudit/issues/
 ### Installs
 
 Running right now (anonymous heartbeat): **1** node(s), 0 gone quiet and 1 stopped cleanly in the last 24 h, 2 seen in 7 days.
-Versions running: 2.10.0 (1).
+Versions running: 2.11.0 (1).
 Opt-in GitHub heartbeats ([#14](https://github.com/sworrl/ClAudit/issues/14)): 1 active, 0 quiet.
-Reporters seen in filed issues: 1 accounts, 1 active in 30 days, 1 in 7. Latest version per reporter: 2.8.0 (1).
+Reporters seen in filed issues: 1 accounts, 1 active in 30 days, 1 in 7. Latest version per reporter: 2.12.0 (1).
 
-_Updated 2026-09-27 01:30 UTC. What each number means and what is sent: [Census](#census)._
+_Updated 2026-09-27 08:15 UTC. What each number means and what is sent: [Census](#census)._
 <!-- NODES:END -->
 
 ## Screenshots

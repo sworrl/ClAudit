@@ -1,13 +1,13 @@
 {
- "updated": "2026-09-27 01:30 UTC",
+ "updated": "2026-09-27 08:15 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 1,
   "active_30d": 1,
   "by_latest_version": {
-   "2.8.0": 1
+   "2.12.0": 1
   },
-  "issues": 1470
+  "issues": 1472
  },
  "github": {
   "nodes": 1,
@@ -29,7 +29,7 @@
   ]
  },
  "anon": {
-  "generated": "2026-09-27T01:13:10.958Z",
+  "generated": "2026-09-27T01:46:57.318Z",
   "active_window_min": 30,
   "retain_days": 8,
   "active": 1,
@@ -38,7 +38,7 @@
   "seen_24h": 2,
   "seen_7d": 2,
   "versions": {
-   "2.10.0": 1
+   "2.11.0": 1
   },
   "os": {
    "linux": 1
@@ -47,7 +47,7 @@
    "git": 1
   },
   "versions_24h": {
-   "2.10.0": 1,
+   "2.11.0": 1,
    "2.9.0": 1
   }
  }
