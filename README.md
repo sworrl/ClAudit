@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.8.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.9.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -104,7 +104,7 @@ button, mirrored in the tray menu.
 - [Dedup guard](#dedup-guard)
 - [Manual filing](#manual-filing)
 - [Configuration](#configuration)
-- [Auto-update](#auto-update)
+- [Updates](#updates)
 - [Autostart](#autostart)
 - [Local data](#local-data)
 - [Responsible use](#responsible-use)
@@ -277,9 +277,7 @@ Homebrew: `brew tap sworrl/claudit && brew install --HEAD claudit` (the tap mirr
 tools; the tray app still wants PyQt6 from pip. Flatpak is still open in
 [#2](https://github.com/sworrl/ClAudit/issues/2).
 
-The self-update under [Auto-update](#auto-update) only works from a git clone. A pip install stays on
-the version you installed, but the tray tells you once when a newer release is out, with the upgrade
-command.
+Both install styles update from inside the app; see [Updates](#updates).
 
 Requirements: Python 3.9 or newer, the [gh](https://cli.github.com/) CLI signed in, PyQt6 for the
 GUI, and for burn-tokens, LLM scrub, or the gate, the `claude` or `agy` CLI on your PATH.
@@ -307,8 +305,9 @@ A native system-tray icon (Qt StatusNotifier, renders on KDE, GNOME, Windows, an
 window that shows every ClAudit-filed issue on the repo, all authors, open and closed. It keys on the
 "Filed automatically by ClAudit" marker in each issue body.
 
-- Header: open and closed counts, per-kind totals, how many you have defended and reopened, how
-  many you filed today, a 30-day sparkline, and the usage meter (see
+- Header: version and commit, an update pill when GitHub is ahead (see [Updates](#updates)), open
+  and closed counts, per-kind totals, how many you have defended and reopened, how many you filed
+  today, a 30-day sparkline, and the usage meter (see
   [the usage meter](#burn-tokens-mode-and-the-usage-meter)).
 - Tray badge with the current open count.
 - Filters: mine or all, open or closed, by kind or by the model whose safeguards flagged it (one
@@ -335,7 +334,8 @@ window that shows every ClAudit-filed issue on the repo, all authors, open and c
   Dependencies cascade: dwell turns scrubbing on.
 - Watchdog (opt-in). A detached supervisor relaunches the GUI if it crashes. A normal Quit still
   quits.
-- Tray menu: the same toggles, the two list editors, Run doctor, Show window, Refresh, and links.
+- Tray menu: the same toggles, the two list editors, Run doctor, Check for updates, Show window,
+  Refresh, and links.
 
 Closing the window keeps it in the tray. The single-instance lock stops a second copy from starting.
 The animated header is software-rendered (`QPainter`); a GLSL version sits behind `CLAUDIT_GL=1`
@@ -492,7 +492,7 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `agy_project`, `agy_review_model`, `umbrella_issue` |
+| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage per engine, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your plan windows. Safe to delete |
 | `scrub.txt` | Your PII denylist. Never committed |
@@ -504,14 +504,27 @@ State and config live in `~/.claude/claudit/`:
 `dwell_autofile: true` turns on the dwell auto-filer; `dwell_seconds` overrides the 300-second dwell.
 Both are off by default.
 
-## Auto-update
+## Updates
 
-A running GUI fetches origin every three minutes. If the checkout is strictly behind the remote and
-the working tree is clean, it fast-forward pulls. It only ever fast-forwards, so a dirty or diverged
-checkout is never touched. It relaunches only when the pull changed source (a `.py` file or a
-dependency manifest); the hourly counter and poll commits update the checkout silently. A manual
-`git pull` with code changes is picked up the same way. If the watchdog is on, it rides through the
-restart.
+The app watches GitHub for you. Every three minutes it checks what is running against what is
+published, and shows the result in three places: an amber pill in the header ("Update available:
+2.9.0 (3 commits)") that appears only when there is something to do, an Updates panel at the bottom
+of the Settings tab with the release notes or the waiting commits, and "Check for updates" in the
+tray menu. Updating happens from inside the app: the pill or the panel's "Update now" opens a
+dialog that shows the notes, applies the update, streams the log, and restarts the window on the
+new code when the change touched code (a docs-only pull does not restart anything).
+
+What "update" means depends on how ClAudit was installed:
+
+- Git clone: the monitor fetches origin and compares. "Update now" is a fast-forward pull. It never
+  touches a checkout with local commits or uncommitted changes; the panel says why and what to do.
+  With the "Auto-update" toggle on (the default), a clean checkout that is behind is pulled on its
+  own and the window restarts itself when code changed, the same behavior as before. Off, the app
+  only tells you and waits for you to press the button.
+- pip or wheel install: the monitor compares `__version__` with the latest GitHub Release. "Update
+  now" runs pip against that release's tarball in the same interpreter, then restarts.
+
+`auto_update` in config is the toggle. The watchdog, if on, rides through the restart.
 
 ## Autostart
 
@@ -573,7 +586,7 @@ prerequisite in one pass and prints one line per check.
 |------|---------|
 | `claudit_scan.py` | Watcher: scan, classify, dedup, file, backfill, defend, closures, doctor, single-instance lock |
 | `claudit_gui.py` | Entry point for the tray app; re-exports the package below so older imports keep working |
-| `claudit_ui/` | The PyQt6 app as a package: `common` (paths, git, watchdog, style), `widgets` (banner, charts, delegates, 3D timeline), `workers` (every QThread), `dialogs`, `main_window`, `app` |
+| `claudit_ui/` | The PyQt6 app as a package: `common` (paths, git, watchdog, style), `widgets` (banner, charts, delegates, 3D timeline), `workers` (every QThread), `updater` (the update monitor, no Qt), `dialogs`, `main_window`, `app` |
 | `claudit.py` | Manual filing, the shared PII scrubber, the LLM helpers, the usage meter |
 | `scripts/gen-icon.py` | Regenerate `claudit_icon.png` and `claudit_icon.ico` (`--ico-only` derives just the .ico) |
 | `scripts/install-linux.sh` | Linux launcher and XDG autostart |

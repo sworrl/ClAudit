@@ -5,6 +5,7 @@ import sys
 from PyQt6 import QtGui, QtWidgets
 import claudit
 import claudit_scan as cs
+from . import updater
 from .common import STYLE, run_watchdog, spawn_watchdog
 from .main_window import Main
 
@@ -95,6 +96,8 @@ def main():
         claudit.USAGE_GUARD_PCT = int(cfg["usage_guard_pct"])
     if "max_live_age_days" in cfg:
         cs.MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
+    if "auto_update" in cfg:
+        updater.AUTO_UPDATE = bool(cfg["auto_update"])
     if args.screenshot:
         Main.SCREENSHOT_DIR = args.screenshot
     elif not cs.acquire_singleton():

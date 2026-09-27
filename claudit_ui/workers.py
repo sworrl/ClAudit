@@ -1,20 +1,22 @@
 """ClAudit GUI: workers (split out of claudit_gui.py; see that file for the entry point)."""
 import json
-import os
 import subprocess
 import sys
 import time
 from PyQt6 import QtCore
 import claudit
 import claudit_scan as cs
-from .common import REPO_DIR, STATE_LOCK, _code_changed, git_commit, git_pull_if_behind
+from . import updater
+from .common import STATE_LOCK, _code_changed, git_commit
 
 
 class UpdateChecker(QtCore.QThread):
-    """Off-thread: pull new commits from GitHub (if clean+behind), then flag if CODE moved. A pull
-    that only refreshes docs/counter/poll/trend updates the checkout but does not restart the app.
-    A pip/wheel install has no .git to pull, so it checks the latest GitHub Release instead and
-    reports a newer version (the tray shows it once)."""
+    """Off-thread update monitor. Every run emits `checked(info)` (see updater.check) so the header
+    pill and the Settings panel stay current. For a git clone with auto-update on, a clean checkout
+    that is behind is fast-forward pulled here, and `updated` fires when the pulled commits changed
+    code (the window restarts itself). A pip install never updates on its own; `newer` fires once
+    per new release so the tray can say so."""
+    checked = QtCore.pyqtSignal(dict)
     updated = QtCore.pyqtSignal()
     newer = QtCore.pyqtSignal(str)
 
@@ -23,15 +25,39 @@ class UpdateChecker(QtCore.QThread):
         self.launch_head = launch_head
 
     def run(self):
-        if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
-            latest = cs.latest_release_version()
-            if latest and cs.version_tuple(latest) > cs.version_tuple(cs.__version__):
-                self.newer.emit(latest)
+        try:
+            info = updater.check()
+        except Exception as e:
+            print("update check failed:", e, file=sys.stderr)
+            info = {"error": str(e)}
+        if info.get("mode") == "git":
+            if updater.AUTO_UPDATE and info.get("available") and not info.get("blocked"):
+                ok, _log = updater.apply_update(info)
+                if ok:
+                    info = updater.check(fetch=False)
+            cur = git_commit()
+            self.checked.emit(info)
+            if cur and self.launch_head and cur != self.launch_head and _code_changed(self.launch_head, cur):
+                self.updated.emit()              # restart only when real code changed
             return
-        git_pull_if_behind()                 # auto-update from GitHub (stays current either way)
-        cur = git_commit()
-        if cur and self.launch_head and cur != self.launch_head and _code_changed(self.launch_head, cur):
-            self.updated.emit()              # restart only when real code changed
+        self.checked.emit(info)
+        if info.get("available") and info.get("latest"):
+            self.newer.emit(info["latest"])
+
+
+class UpdateApplier(QtCore.QThread):
+    """Off-thread `updater.apply_update`; streams log lines, then emits (ok, log)."""
+    line = QtCore.pyqtSignal(str)
+    done = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, info):
+        super().__init__()
+        self.info = info
+
+    def run(self):
+        ok, log = updater.apply_update(self.info, on_line=self.line.emit)
+        self.done.emit(ok, log)
+
 
 # ----------------------------- background workers -----------------------------
 class Watcher(QtCore.QThread):

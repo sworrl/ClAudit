@@ -3,6 +3,14 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.9.0] — 2026-09-26
+**Update monitor with in-app updates.** Until now a git clone updated itself silently and a pip install got one tray toast with a command to paste. Both now go through one monitor (`claudit_ui/updater.py`, pure stdlib so it tests without Qt):
+- Every three minutes the app compares what runs with what GitHub has: for a clone, commits behind/ahead of `origin/<branch>`, the version on the remote branch, whether the tree is dirty, and whether the waiting commits touch code; for a pip install, the latest GitHub Release. Release notes are shown when the remote version has a release; otherwise the waiting commit subjects (poll-bot commits filtered out).
+- Header: an amber pill ("Update available: 2.9.0 (3 commits)", or "Update 2.9.0 waiting: the working tree has uncommitted changes") that is hidden when there is nothing to do. Settings: an Updates panel with the status lines, the notes, Check now, Update now, and an Auto-update toggle (config `auto_update`, default on, git clones only). Tray: Check for updates.
+- Update now opens a dialog: notes, Release page, Check again, and the update itself with its log streamed live. A git clone fast-forward pulls; a pip install runs pip against the release tarball in the same interpreter. The window restarts on the new code when the change touched code; a docs-only pull just refreshes the panel. Dirty or diverged checkouts are never touched; the panel says why.
+- The old auto behavior is unchanged with the toggle on. Off, the app only reports and waits.
+- Tests: check() in git mode (behind, clean, blocked by dirty tree or local commits, up to date), pip mode, the pip command, the release cache and offline path. Verified end to end on a scratch clone set three commits behind. 115 tests.
+
 ## [2.8.0] — 2026-09-26
 **Current block wording, the silent model fallback, Message IDs, and a live-filing window.** A pass over the transcripts on the reference machine (244 sessions) against what `classify()` and the GUI knew:
 - **Silent model fallback is now detected and filed.** Since September Claude Code answers a safeguards refusal by re-running the request on a weaker model and leaving only a `system` entry (`subtype: model_refusal_fallback`, "Opus 5.5's safeguards flagged this session ... Opus 4.8 is answering instead"). The entry carries the refused call's Request ID, the API refusal category, both model IDs, and the uuid of the refused user message. `fallback_event()` reads it; the finding is keyed like any other block (category `cyber`, anything else `aup`), the prompt is looked up by that uuid rather than "the last thing typed", and the report gets a "Model fallback" section plus a triage note. 106 such events sat unseen on the reference machine.

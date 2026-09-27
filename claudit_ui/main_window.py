@@ -11,7 +11,8 @@ import claudit_scan as cs
 from .common import QSvgWidget, QUIT_FLAG, REPO_DIR, STATE_LOCK, _HAVE_SVG, _iso_epoch, _rp, _snap, chain_color, fmt_ts, git_commit, spawn_watchdog
 from .dialogs import IssueDetailDialog, MuteListDialog, ScrubListDialog
 from .widgets import BreakdownBars, ChainGraphDelegate, ChronoLine, DwellRingDelegate, Sparkline, TitleChipDelegate, ToggleSwitch, make_banner
-from .workers import ClosureWorker, CommunityFetcher, DedupWorker, DefendAllWorker, NotifyWatcher, PollWorker, ReopenOneWorker, RepoStatsFetcher, Reporter, UpdateChecker, UsageFetcher, Watcher
+from . import updater
+from .workers import ClosureWorker, CommunityFetcher, DedupWorker, DefendAllWorker, NotifyWatcher, PollWorker, ReopenOneWorker, RepoStatsFetcher, Reporter, UpdateApplier, UpdateChecker, UsageFetcher, Watcher
 
 
 # --------------------------------- main window --------------------------------
@@ -111,6 +112,18 @@ class Main(QtWidgets.QMainWindow):
         hl.addWidget(brand)
         hl.addSpacing(8)
         hl.addWidget(sub)
+        self.upd_btn = QtWidgets.QPushButton("")       # update monitor pill: hidden until GitHub is ahead
+        self.upd_btn.setObjectName("updbtn")
+        self.upd_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.upd_btn.setStyleSheet("QPushButton#updbtn { color:#1b1e25; background:#e3b341; border:none; "
+                                   "border-radius:8px; padding:2px 10px; font-weight:700; }"
+                                   "QPushButton#updbtn:hover { background:#f0c95a; }")
+        self.upd_btn.clicked.connect(self._show_update_dialog)
+        self.upd_btn.hide()
+        self._upd = {}
+        self._upd_manual = False
+        hl.addSpacing(8)
+        hl.addWidget(self.upd_btn)
         hl.addStretch(1)
         self.spark = Sparkline()                 # 30-day reports trend, right in the header
         hl.addWidget(self.spark)
@@ -226,14 +239,159 @@ class Main(QtWidgets.QMainWindow):
                                   f"{repo}\n{title}", icon)
             self._log(f"💬 {reason} · {repo}: {title}")
 
-    def _check_updates(self):
-        # fetch + ff-pull from GitHub off the UI thread; restart if HEAD moved
+    def _check_updates(self, manual=False):
+        # fetch (and, for an auto-updating clone, ff-pull) off the UI thread; restart if code moved
+        if manual:
+            self._upd_manual = True
         if getattr(self, "_uc", None) and self._uc.isRunning():
             return                             # a slow fetch is still going — skip this tick
         self._uc = UpdateChecker(self._head)
+        self._uc.checked.connect(self._on_update_info)
         self._uc.updated.connect(self._restart)
         self._uc.newer.connect(self._on_newer_release)
         self._uc.start()
+
+    def _on_update_info(self, info):
+        """Fresh snapshot from the monitor: header pill, Settings panel, and (if asked) the dialog."""
+        self._upd = info or {}
+        text = updater.summary(self._upd)
+        self.upd_btn.setText(text)
+        self.upd_btn.setVisible(bool(text))
+        self._refresh_update_panel()
+        if self._upd_manual:
+            self._upd_manual = False
+            self._show_update_dialog()
+
+    def _update_lines(self):
+        """Human lines for the Settings panel and the dialog."""
+        u = self._upd or {}
+        mode = u.get("mode") or updater.install_mode()
+        run = f"v{cs.__version__}" + (f" at commit {u.get('head')}" if u.get("head") else "")
+        L = [f"Running: {run} ({'git clone' if mode == 'git' else 'pip install'})"]
+        if not u:
+            L.append("Not checked yet.")
+            return L
+        if mode == "git":
+            tgt = f"origin/{u.get('branch') or 'main'}"
+            if u.get("behind"):
+                L.append(f"GitHub: {tgt} is {u['behind']} commit(s) ahead"
+                         + (f", version {u['remote_version']}" if u.get("remote_version") else "")
+                         + (f" at {u['remote_head']}" if u.get("remote_head") else "")
+                         + ("; code changed, a restart follows the update" if u.get("code_changed")
+                            else "; docs or data only, no restart needed"))
+            else:
+                L.append(f"GitHub: up to date with {tgt}" + (f" at {u['remote_head']}" if u.get("remote_head") else ""))
+            if u.get("ahead"):
+                L.append(f"Local: {u['ahead']} commit(s) not on GitHub")
+            if u.get("dirty"):
+                L.append("Local: uncommitted changes in the working tree")
+        else:
+            if u.get("latest"):
+                L.append(f"Latest release: {u['latest']}" + (f" ({u['published']})" if u.get("published") else "")
+                         + ("" if u.get("available") else ", which is what you run"))
+            else:
+                L.append("Latest release: unknown (offline or rate-limited)")
+        if u.get("blocked"):
+            L.append(f"Update blocked: {u['blocked']}")
+        elif u.get("available"):
+            L.append("An update can be applied from here.")
+        if u.get("error"):
+            L.append(f"Last check error: {u['error']}")
+        if u.get("checked"):
+            L.append("Checked " + time.strftime("%H:%M:%S", time.localtime(u["checked"]))
+                     + (" · auto-update on" if (mode == "git" and updater.AUTO_UPDATE) else
+                        (" · auto-update off" if mode == "git" else "")))
+        return L
+
+    def _refresh_update_panel(self):
+        if not getattr(self, "upd_status", None):
+            return
+        self.upd_status.setText("\n".join(self._update_lines()))
+        self.upd_notes.setPlainText((self._upd or {}).get("notes") or "")
+        can = bool((self._upd or {}).get("available")) and not (self._upd or {}).get("blocked")
+        self.upd_apply.setEnabled(can)
+        self.upd_apply.setText("Update now" if can else "Up to date" if self._upd and not self._upd.get("available")
+                               else "Update now")
+
+    def _show_update_dialog(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("ClAudit updates")
+        dlg.resize(680, 480)
+        if os.path.exists(cs.ICON):
+            dlg.setWindowIcon(QtGui.QIcon(cs.ICON))
+        v = QtWidgets.QVBoxLayout(dlg)
+        status = QtWidgets.QLabel("\n".join(self._update_lines()))
+        status.setWordWrap(True)
+        v.addWidget(status)
+        notes = QtWidgets.QPlainTextEdit((self._upd or {}).get("notes") or "(no notes)")
+        notes.setReadOnly(True)
+        v.addWidget(notes, 1)
+        log = QtWidgets.QPlainTextEdit()
+        log.setReadOnly(True)
+        log.setMaximumHeight(120)
+        log.hide()
+        v.addWidget(log)
+        row = QtWidgets.QHBoxLayout()
+        bcheck = QtWidgets.QPushButton("Check again")
+        bapply = QtWidgets.QPushButton("Update now")
+        bapply.setObjectName("primary")
+        bclose = QtWidgets.QPushButton("Close")
+        can = bool((self._upd or {}).get("available")) and not (self._upd or {}).get("blocked")
+        bapply.setEnabled(can)
+        if (self._upd or {}).get("release_url"):
+            brel = QtWidgets.QPushButton("Release page")
+            brel.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._upd["release_url"])))
+            row.addWidget(brel)
+        row.addStretch(1)
+        row.addWidget(bcheck)
+        row.addWidget(bapply)
+        row.addWidget(bclose)
+        v.addLayout(row)
+        bclose.clicked.connect(dlg.accept)
+
+        def recheck():
+            bcheck.setEnabled(False)
+            status.setText("Checking GitHub…")
+            self._upd_manual = False
+            uc = UpdateChecker(self._head)
+
+            def got(info):
+                self._on_update_info(info)
+                status.setText("\n".join(self._update_lines()))
+                notes.setPlainText((self._upd or {}).get("notes") or "(no notes)")
+                bapply.setEnabled(bool(self._upd.get("available")) and not self._upd.get("blocked"))
+                bcheck.setEnabled(True)
+            uc.checked.connect(got)
+            uc.updated.connect(self._restart)
+            dlg._uc = uc
+            uc.start()
+
+        def do_apply():
+            bapply.setEnabled(False)
+            bcheck.setEnabled(False)
+            log.show()
+            log.setPlainText("")
+            ap = UpdateApplier(dict(self._upd))
+            ap.line.connect(lambda ln: log.appendPlainText(ln))
+
+            def finished(ok, _text):
+                if not ok:
+                    status.setText("The update failed; nothing was changed. The log above has the reason.")
+                    bcheck.setEnabled(True)
+                    return
+                needs_restart = self._upd.get("mode") != "git" or self._upd.get("code_changed")
+                if needs_restart:
+                    status.setText("Updated. Restarting on the new version in a moment…")
+                    QtCore.QTimer.singleShot(1500, self._restart)
+                else:
+                    status.setText("Updated (docs or data only). No restart needed.")
+                    recheck()
+            ap.done.connect(finished)
+            dlg._ap = ap
+            ap.start()
+        bcheck.clicked.connect(recheck)
+        bapply.clicked.connect(do_apply)
+        dlg.exec()
 
     def _on_newer_release(self, latest):
         if getattr(self, "_release_told", "") == latest:
@@ -429,6 +587,7 @@ class Main(QtWidgets.QMainWindow):
         menu.addAction("🔒 Edit PII denylist…", self._edit_scrub)
         menu.addAction("🔇 Edit mute list…", self._edit_mute)
         menu.addAction("🩺 Run doctor…", self._run_doctor)
+        menu.addAction("Check for updates…", lambda: self._check_updates(manual=True))
         menu.addAction("Show window", self._show_window)
         menu.addAction("Refresh", self.refresh)
         menu.addAction("Open repo issues",
@@ -865,6 +1024,39 @@ class Main(QtWidgets.QMainWindow):
                          lambda s: s)
         v.addWidget(tbox)
 
+        ubox = QtWidgets.QGroupBox("Updates")
+        uv = QtWidgets.QVBoxLayout(ubox)
+        self.upd_status = QtWidgets.QLabel("Not checked yet.")
+        self.upd_status.setWordWrap(True)
+        uv.addWidget(self.upd_status)
+        self.upd_notes = QtWidgets.QPlainTextEdit()
+        self.upd_notes.setReadOnly(True)
+        self.upd_notes.setPlaceholderText("Release notes or the commits waiting on GitHub appear here.")
+        self.upd_notes.setMaximumHeight(110)
+        uv.addWidget(self.upd_notes)
+        urow = QtWidgets.QHBoxLayout()
+        ucheck = QtWidgets.QPushButton("Check now")
+        ucheck.clicked.connect(lambda: self._check_updates(manual=False))
+        self.upd_apply = QtWidgets.QPushButton("Update now")
+        self.upd_apply.setObjectName("primary")
+        self.upd_apply.setEnabled(False)
+        self.upd_apply.clicked.connect(self._show_update_dialog)
+        urow.addWidget(ucheck)
+        urow.addWidget(self.upd_apply)
+        urow.addStretch(1)
+        auto_lbl = QtWidgets.QLabel("Auto-update (git clones)")
+        auto_lbl.setToolTip("Pull and restart on your own when GitHub is ahead and the checkout is clean. "
+                            "Off: only show that an update is waiting; you apply it from here.")
+        self.upd_auto = ToggleSwitch()
+        self.upd_auto.set_silent(bool(updater.AUTO_UPDATE))
+        self.upd_auto.toggled.connect(lambda val: self._apply_setting("auto_update", val))
+        self._toggles["auto_update"] = self.upd_auto
+        urow.addWidget(auto_lbl)
+        urow.addWidget(self.upd_auto)
+        uv.addLayout(urow)
+        v.addWidget(ubox)
+        self._refresh_update_panel()
+
         prow = QtWidgets.QHBoxLayout()
         pii = QtWidgets.QPushButton("Edit PII denylist…")
         pii.clicked.connect(self._edit_scrub)
@@ -973,6 +1165,9 @@ class Main(QtWidgets.QMainWindow):
             claudit.LLM_ENGINE = str(val)
         elif key == "usage_guard_pct":
             claudit.USAGE_GUARD_PCT = int(val)
+        elif key == "auto_update":
+            updater.AUTO_UPDATE = bool(val)
+            self._refresh_update_panel()
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
