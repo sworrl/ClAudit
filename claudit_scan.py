@@ -52,7 +52,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.12.2"
+__version__ = "2.13.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -3043,6 +3043,8 @@ def main():
         FILE_DRAFTS = bool(cfg["file_drafts"])
     if "feedback_mirror" in cfg:
         FEEDBACK_MIRROR = bool(cfg["feedback_mirror"])
+    if "usage_interval" in cfg:
+        claudit.USAGE_TTL = max(30, int(cfg["usage_interval"]))
     if args.engine:
         claudit.LLM_ENGINE = str(args.engine)
     elif cfg.get("llm_engine"):

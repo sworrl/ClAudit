@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.12.2. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.13.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -343,7 +343,8 @@ window that shows every ClAudit-filed issue on the repo, all authors, open and c
   and closed counts, per-kind totals, how many you have defended and reopened, how many you filed
   today, a 30-day sparkline, and the usage meter (see
   [the usage meter](#burn-tokens-mode-and-the-usage-meter)).
-- Tray badge with the current open count.
+- Tray badge with the current open count. Hovering the tray icon shows the watcher state and one
+  line per plan window with its percent and reset time.
 - Filters: mine or all, open or closed, by kind or by the model whose safeguards flagged it (one
   entry per model seen on the board), defended or not, and a search on title or `#number`. Harness
   reports are never listed; they stay a separate tally in the stats bar.
@@ -357,8 +358,9 @@ window that shows every ClAudit-filed issue on the repo, all authors, open and c
   one issue per Request ID, cross-linked to its siblings. Held rows show a countdown ring.
 - Activity tab: the 3D timeline described under Screenshots, plus a live feed of everything the
   watcher does, newest first.
-- Project tab: reports over time, breakdown bars, stars and who starred, forks, watchers, the poll
-  with one-click voting, and the denylist and mute-list editors.
+- Project tab: your Claude plan usage as bars (5-hour, 7-day, each per-model weekly cap, extra
+  usage if enabled) with reset countdowns, then reports over time, breakdown bars, stars and who
+  starred, forks, watchers, the poll with one-click voting, and the denylist and mute-list editors.
 - Comment and mention toasts. The GUI polls GitHub notifications every 2.5 minutes and toasts new
   comments and mentions on the ClAudit repos.
 - Backfill progress bar: filed, total, next-drip countdown, current pace.
@@ -469,8 +471,9 @@ composed rather than copied. Set it once and forget it.
 The header meter shows your real Claude plan utilization, the same 5-hour and 7-day windows (and any
 per-model weekly cap that is currently the binding one) that Claude Code's `/usage` shows. ClAudit
 reads them from Anthropic's usage endpoint with the Claude Code login already on your machine
-(`~/.claude/.credentials.json`, the macOS keychain, or `$CLAUDE_CODE_OAUTH_TOKEN`), every five
-minutes, cached in `~/.claude/claudit/usage.json`. The token goes nowhere except api.anthropic.com,
+(`~/.claude/.credentials.json`, the macOS keychain, or `$CLAUDE_CODE_OAUTH_TOKEN`), every 60
+seconds (Settings, "Usage meter refresh", config `usage_interval`, 30 to 600) and again right after
+any `claude` call ClAudit makes, cached in `~/.claude/claudit/usage.json`. The token goes nowhere except api.anthropic.com,
 the same place Claude Code sends it, and never appears in logs or issues. The pill fills with the
 fullest window, amber past 50%, red past 80%. "stale" means the last three refreshes failed.
 
@@ -529,7 +532,7 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `census_anon`, `census_github`, `census_url`, `send_drafts`, `file_drafts`, `feedback_mirror`, `agy_project`, `agy_review_model`, `umbrella_issue` |
+| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `usage_interval`, `max_live_age_days`, `auto_update`, `census_anon`, `census_github`, `census_url`, `send_drafts`, `file_drafts`, `feedback_mirror`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage per engine, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your plan windows. Safe to delete |
 | `node_id` | This install's random census id. Delete it to become a new node |

@@ -96,6 +96,8 @@ def main():
         claudit.AGY_REVIEW_MODEL = str(cfg["agy_review_model"] or "")
     if "usage_guard_pct" in cfg:
         claudit.USAGE_GUARD_PCT = int(cfg["usage_guard_pct"])
+    if "usage_interval" in cfg:
+        claudit.USAGE_TTL = max(30, int(cfg["usage_interval"]))
     if "max_live_age_days" in cfg:
         cs.MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
     if "auto_update" in cfg:

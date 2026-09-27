@@ -512,9 +512,13 @@ class UsageFetcher(QtCore.QThread):
     numbers Claude Code's /usage shows). Emits the parsed dict, or {} when there is no login."""
     got = QtCore.pyqtSignal(dict)
 
+    def __init__(self, force=False):
+        super().__init__()
+        self.force = force                   # skip the cache: a claude call just moved the windows
+
     def run(self):
         try:
-            self.got.emit(claudit.plan_usage() or {})
+            self.got.emit(claudit.plan_usage(max_age=0 if self.force else None) or {})
         except Exception as e:
             print("usage fetch failed:", e, file=sys.stderr)
             self.got.emit({})

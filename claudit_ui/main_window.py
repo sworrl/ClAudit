@@ -10,7 +10,7 @@ import claudit
 import claudit_scan as cs
 from .common import QSvgWidget, QUIT_FLAG, REPO_DIR, STATE_LOCK, _HAVE_SVG, _iso_epoch, _rp, _snap, chain_color, fmt_ts, git_commit, spawn_watchdog
 from .dialogs import IssueDetailDialog, MuteListDialog, ScrubListDialog
-from .widgets import BreakdownBars, ChainGraphDelegate, ChronoLine, DwellRingDelegate, Sparkline, TitleChipDelegate, ToggleSwitch, make_banner
+from .widgets import BreakdownBars, ChainGraphDelegate, ChronoLine, DwellRingDelegate, Sparkline, TitleChipDelegate, ToggleSwitch, UsageBars, make_banner
 from . import updater
 from .workers import ClosureWorker, CommunityFetcher, DedupWorker, DefendAllWorker, NotifyWatcher, PollWorker, ReopenOneWorker, RepoStatsFetcher, Reporter, UpdateApplier, UpdateChecker, UsageFetcher, Watcher
 
@@ -131,6 +131,8 @@ class Main(QtWidgets.QMainWindow):
         self.tok_label = QtWidgets.QLabel("")    # usage meter: live plan windows + ClAudit's own spend
         self._usage = claudit.plan_usage(fetch=False) or {}   # disk cache only; the fetcher refreshes it
         self._usage_dirty = True
+        self._usage_last_fetch = time.time()
+        self._tray_status = "ClAudit watcher"
         self.tok_label.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
         hl.addWidget(self.tok_label)
         hl.addSpacing(8)
@@ -250,6 +252,27 @@ class Main(QtWidgets.QMainWindow):
         self._uc.updated.connect(self._restart)
         self._uc.newer.connect(self._on_newer_release)
         self._uc.start()
+
+    def _set_tray_tooltip(self, status=None):
+        if status is not None:
+            self._tray_status = status
+        if getattr(self, "tray", None):
+            self.tray.setToolTip(claudit.usage_tooltip(self._usage, self._tray_status, cs.__version__))
+
+    def _paint_usage(self):
+        """Bars on the Project tab, the tray mouseover, and the note under the bars."""
+        if getattr(self, "usage_bars", None):
+            self.usage_bars.set_rows(claudit.usage_rows(self._usage))
+            u = self._usage or {}
+            if u:
+                age = time.time() - float(u.get("fetched", 0) or 0)
+                self.usage_note.setText(f"Plan: {u.get('plan') or '?'} · refreshed every "
+                                        f"{max(30, int(claudit.USAGE_TTL or 60))} s and right after any claude call "
+                                        f"ClAudit makes · updated {int(age // 60)} min ago"
+                                        + (" · stale" if age > claudit.USAGE_STALE_AFTER else ""))
+            else:
+                self.usage_note.setText("No Claude Code login found; run `claude` and sign in.")
+        self._set_tray_tooltip()
 
     def _on_update_info(self, info):
         """Fresh snapshot from the monitor: header pill, Settings panel, and (if asked) the dialog."""
@@ -433,11 +456,12 @@ class Main(QtWidgets.QMainWindow):
             return f"{n / 1_000:.1f}K"
         return str(int(n))
 
-    def _refresh_usage(self):
+    def _refresh_usage(self, force=False):
         """Kick an off-thread fetch of the live plan usage (no-op while one is running)."""
         if getattr(self, "_uf", None) and self._uf.isRunning():
             return
-        self._uf = UsageFetcher()
+        self._usage_last_fetch = time.time()
+        self._uf = UsageFetcher(force=force)
         self._uf.got.connect(self._on_usage)
         self._uf.start()
 
@@ -446,6 +470,7 @@ class Main(QtWidgets.QMainWindow):
     def _on_usage(self, u):
         if u:
             self._usage = u
+            self._paint_usage()
             peak = max(u["five_hour"]["pct"], u["seven_day"]["pct"])
             level = max((lv for lv in self.USAGE_ALERTS if peak >= lv), default=0)
             seen = getattr(self, "_usage_alerted", 0)
@@ -468,13 +493,18 @@ class Main(QtWidgets.QMainWindow):
             mt = 0.0
         burn = bool(claudit.BURN_TOKENS)
         self._tok_tick = getattr(self, "_tok_tick", 0) + 1
-        if self._tok_tick == 2 or self._tok_tick % claudit.USAGE_TTL == 0:
-            self._refresh_usage()                 # at startup, then every USAGE_TTL seconds
+        every = max(30, int(claudit.USAGE_TTL or 60))
+        if self._tok_tick == 2 or self._tok_tick % every == 0:
+            self._refresh_usage()                 # at startup, then every `every` seconds (config usage_interval)
+        elif claudit.usage_poked_since(getattr(self, "_usage_last_fetch", time.time())):
+            self._refresh_usage(force=True)       # ClAudit just spent claude tokens: show it now
         stale = self._tok_tick % 60 == 0          # reset countdowns tick down once a minute
         changed = (mt, burn) != getattr(self, "_tok_seen", None) or self._usage_dirty
         if not changed and not burn and not stale:
             return
         redraw = stale or changed
+        if stale:
+            self._paint_usage()
         self._tok_seen = (mt, burn)
         self._usage_dirty = False
         if not redraw:                            # burn mode: still pulse the colors each tick
@@ -491,7 +521,7 @@ class Main(QtWidgets.QMainWindow):
             parts = [f"5h {u['five_hour']['pct']:.0f}%", f"7d {u['seven_day']['pct']:.0f}%"]
             parts += [f"{s['name']} {s['pct']:.0f}%" for s in u.get("scoped", []) if s.get("active")]
             age = time.time() - float(u.get("fetched", 0) or 0)
-            self.tok_label.setText("🔥 " + " · ".join(parts) + (" · stale" if age > 3 * claudit.USAGE_TTL else ""))
+            self.tok_label.setText("🔥 " + " · ".join(parts) + (" · stale" if age > claudit.USAGE_STALE_AFTER else ""))
             frac = min(claudit.usage_peak(u) / 100.0, 1.0)
         else:
             wk, plans = claudit.plan_estimates(t)
@@ -546,7 +576,7 @@ class Main(QtWidgets.QMainWindow):
         self.tray = QtWidgets.QSystemTrayIcon(self)
         self.tray.setIcon(QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                           else self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning))
-        self.tray.setToolTip("ClAudit watcher")
+        self._set_tray_tooltip("watcher starting")
         menu = QtWidgets.QMenu()
         self.act_pending = menu.addAction("Report 0 pending")
         self.act_pending.triggered.connect(self.report_pending)
@@ -1022,6 +1052,8 @@ class Main(QtWidgets.QMainWindow):
                          lambda m: m * 60)
         self._slider_row(form, "Watch interval", 10, 300, int(w.interval if w else 30), "s", "interval",
                          lambda s: s)
+        self._slider_row(form, "Usage meter refresh", 30, 600, int(claudit.USAGE_TTL or 60), "s", "usage_interval",
+                         lambda s: s)
         v.addWidget(tbox)
 
         ubox = QtWidgets.QGroupBox("Updates")
@@ -1187,6 +1219,9 @@ class Main(QtWidgets.QMainWindow):
             claudit.LLM_ENGINE = str(val)
         elif key == "usage_guard_pct":
             claudit.USAGE_GUARD_PCT = int(val)
+        elif key == "usage_interval":
+            claudit.USAGE_TTL = max(30, int(val))
+            self._refresh_usage(force=True)
         elif key == "auto_update":
             updater.AUTO_UPDATE = bool(val)
             self._refresh_update_panel()
@@ -1239,6 +1274,15 @@ class Main(QtWidgets.QMainWindow):
     def _build_stats_tab(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
+        ubox = QtWidgets.QGroupBox("Claude plan usage")
+        ul = QtWidgets.QVBoxLayout(ubox)
+        self.usage_bars = UsageBars()
+        self.usage_bars.set_rows(claudit.usage_rows(self._usage))
+        ul.addWidget(self.usage_bars)
+        self.usage_note = QtWidgets.QLabel("")
+        self.usage_note.setObjectName("subtle")
+        ul.addWidget(self.usage_note)
+        v.addWidget(ubox)
         v.addWidget(self._build_poll_panel())
         charts = QtWidgets.QHBoxLayout()
         if _HAVE_SVG:
@@ -1869,7 +1913,7 @@ class Main(QtWidgets.QMainWindow):
         icon = (QtGui.QIcon(cs.ICON) if os.path.exists(cs.ICON)
                 else QtWidgets.QSystemTrayIcon.MessageIcon.Information)
         if kind == "backfill":   # historical: from your backlog, not just-happened
-            self.tray.setToolTip("ClAudit — backfilling (historical)")
+            self._set_tray_tooltip("backfilling (historical)")
             self.tray.showMessage("ClAudit · 📦 HISTORICAL",
                                   f"Backfilled {n} block(s) from your backlog.", icon)
             self._log(f"📦 backfilled {n} historical block(s)")
@@ -1907,13 +1951,13 @@ class Main(QtWidgets.QMainWindow):
             self._update_bf()
             return
         if kind == "dwell":      # dwell auto-filer: ripe Request IDs, LLM-judged, filed + cross-linked
-            self.tray.setToolTip("ClAudit — dwell auto-filing")
+            self._set_tray_tooltip("dwell auto-filing")
             self.tray.showMessage("ClAudit · 🕒 DWELL FILED",
                                   f"Filed {n} bespoke report(s) after the dwell (one per Request ID, "
                                   f"cross-linked) — {self.repo}.", icon)
             self._log(f"🕒 dwell-filed {n} linked bespoke report(s)")
         elif kind == "auto":     # live: a block that just happened
-            self.tray.setToolTip("ClAudit — watching live")
+            self._set_tray_tooltip("watching live")
             self.tray.showMessage("ClAudit · 🔴 LIVE",
                                   f"Reported {n} block(s) the moment it happened — {self.repo}.", icon)
             self._log(f"🔴 filed {n} LIVE block(s)")

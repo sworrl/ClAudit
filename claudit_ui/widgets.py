@@ -814,6 +814,69 @@ class ChronoLine(QtWidgets.QWidget):
             p.drawText(int(bx + 10), int(y), row)
             y += fm.height() + 2
 
+class UsageBars(QtWidgets.QWidget):
+    """One horizontal bar per Claude plan window (5-hour, 7-day, per-model, extra usage): label,
+    fill by percent, the percent, and the reset countdown. Green under 50, amber under 80, red past.
+    QPainter only; repaints only when set_rows() changes something."""
+    ROW_H = 26
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []
+        self.setMinimumHeight(self.ROW_H * 2 + 8)
+        self.setToolTip("Live from Anthropic's usage endpoint, the same numbers Claude Code's /usage shows.")
+
+    def set_rows(self, rows):
+        rows = list(rows or [])
+        if rows == self.rows:
+            return
+        self.rows = rows
+        self.setMinimumHeight(self.ROW_H * max(2, len(rows)) + 8)
+        self.updateGeometry()
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        f = p.font()
+        f.setPointSizeF(max(8.0, f.pointSizeF() - 0.5))
+        p.setFont(f)
+        if not self.rows:
+            p.setPen(QtGui.QColor("#6b7280"))
+            p.drawText(self.rect(), int(QtCore.Qt.AlignmentFlag.AlignCenter),
+                       "Plan usage unavailable: sign in to Claude Code (`claude`) to show the windows here.")
+            return
+        label_w, pct_w, right_w = 118, 44, 190
+        bar_x = label_w + 8
+        bar_w = max(40, w - bar_x - pct_w - right_w - 12)
+        for i, r in enumerate(self.rows):
+            y = 4 + i * self.ROW_H
+            frac = max(0.0, min(float(r.get("pct", 0.0)) / 100.0, 1.0))
+            col = QtGui.QColor("#3fb950" if frac < 0.5 else "#e3b341" if frac < 0.8 else "#f85149")
+            p.setPen(QtGui.QColor("#e8eaed" if r.get("active") else "#aeb6c2"))
+            p.drawText(QtCore.QRectF(0, y, label_w, self.ROW_H - 6),
+                       int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft), r.get("label", ""))
+            track = QtCore.QRectF(bar_x, y + 5, bar_w, self.ROW_H - 16)
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor("#12141a"))
+            p.drawRoundedRect(track, 5, 5)
+            if frac > 0:
+                fill = QtCore.QRectF(bar_x, y + 5, max(3.0, bar_w * frac), self.ROW_H - 16)
+                p.setBrush(col)
+                p.drawRoundedRect(fill, 5, 5)
+            p.setPen(col)
+            p.drawText(QtCore.QRectF(bar_x + bar_w + 6, y, pct_w, self.ROW_H - 6),
+                       int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignRight),
+                       f"{float(r.get('pct', 0.0)):.0f}%")
+            p.setPen(QtGui.QColor("#6b7280"))
+            tail = ("resets " + r["resets"]) if r.get("resets") else ""
+            if r.get("active"):
+                tail = (tail + "  ·  " if tail else "") + "active limit"
+            p.drawText(QtCore.QRectF(bar_x + bar_w + pct_w + 12, y, right_w, self.ROW_H - 6),
+                       int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft), tail)
+
+
 class Sparkline(QtWidgets.QWidget):
     """Tiny inline trend line for the header: cumulative reports over the last 30 days, drawn as a
     soft gradient-filled polyline. Pure QPainter; repaints only when the data actually changes."""

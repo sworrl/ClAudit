@@ -3,6 +3,12 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.13.0] — 2026-09-27
+**Usage meter, live.** The plan windows now refresh every 60 seconds (Settings, "Usage meter refresh", 30 to 600; config `usage_interval`) instead of every five minutes, and again immediately after any `claude` call ClAudit makes, which is when the numbers move. A snapshot counts as stale after 15 minutes regardless of the interval.
+- Project tab: a "Claude plan usage" panel at the top with one bar per window (5-hour, 7-day, each per-model weekly cap, extra usage when enabled), percent, reset countdown, and which one is the active limit. Green under 50%, amber under 80%, red past.
+- Tray icon mouseover: the watcher state plus one line per window with percent and reset time, refreshed with every snapshot.
+- Fix: a fresh window could start a usage fetch before its own first tick; the GUI smoke test caught it as a crash at teardown.
+
 ## [2.12.2] — 2026-09-26
 - Fix: the feedback endpoint answered 403 to anything that did not look like Claude Code. Sends now carry the same client headers as the CLI (`x-app: cli`, `User-Agent: claude-cli/<version> (external, cli)`, `anthropic-version`, the session id). Verified live: the first queued draft came back with a feedback id.
 

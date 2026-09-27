@@ -154,6 +154,8 @@ def _record_tokens(usage, cost, engine="claude"):
     if not usage:
         return
     engine = engine if engine in ENGINE_NAMES else "claude"
+    if engine == "claude":
+        _USAGE_POKE[0] = time.time()      # the plan windows just moved; the meter refetches on its next tick
     with _TOK_LOCK:
         d = load_tokens()
         in_tok = usage.get("input_tokens", 0) or usage.get("input", 0) or 0
@@ -199,7 +201,9 @@ USAGE_GUARD_PCT = 90
 _GUARD_LAST_NOTE = [0.0]
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_CACHE = os.path.expanduser("~/.claude/claudit/usage.json")
-USAGE_TTL = 300                     # seconds between live fetches (the GUI polls the cache)
+USAGE_TTL = 60                      # seconds between live fetches (config usage_interval, min 30)
+USAGE_STALE_AFTER = 900             # a snapshot older than this is shown as stale
+_USAGE_POKE = [0.0]                 # epoch of the last claude call ClAudit made: refetch right away
 CREDENTIALS_FILE = os.path.expanduser("~/.claude/.credentials.json")
 
 
@@ -247,6 +251,11 @@ def _parse_usage(data, plan=""):
                               "active": bool(lim.get("is_active"))})
     extra = data.get("extra_usage") if isinstance(data.get("extra_usage"), dict) else {}
     out["extra_usage"] = bool(extra.get("is_enabled"))
+    if extra.get("utilization") is not None:
+        try:
+            out["extra_pct"] = float(extra["utilization"])
+        except (TypeError, ValueError):
+            pass
     return out
 
 
@@ -258,12 +267,19 @@ def usage_peak(u):
                + [s.get("pct", 0.0) for s in u.get("scoped", [])])
 
 
-def plan_usage(max_age=USAGE_TTL, fetch=True):
+def usage_poked_since(epoch):
+    """True when ClAudit made a claude call after `epoch` (so a cached snapshot is behind)."""
+    return _USAGE_POKE[0] > float(epoch or 0)
+
+
+def plan_usage(max_age=None, fetch=True):
     """The real plan utilization, cached on disk for `max_age` seconds. Returns the parsed dict
     (with `fetched` epoch) or None when there is no Claude Code login. A failed fetch keeps the
     previous snapshot (its `fetched` age tells the UI it is stale) rather than blanking the meter.
     fetch=False only reads the cache (safe on a UI thread)."""
     now = time.time()
+    if max_age is None:
+        max_age = USAGE_TTL
     cached = None
     try:
         with open(USAGE_CACHE, encoding="utf-8") as fh:
@@ -338,6 +354,39 @@ def fmt_reset(iso, now=None):
     return f"in {d}d {h}h" if d else f"in {h}h {m:02d}m"
 
 
+def usage_rows(u):
+    """The windows as bar rows: [{label, pct, resets, active}], 5-hour and 7-day first, then each
+    model-scoped weekly limit, then extra usage when the account has it enabled."""
+    if not u:
+        return []
+    rows = [{"label": "5-hour window", "pct": float(u.get("five_hour", {}).get("pct", 0.0) or 0.0),
+             "resets": fmt_reset(u.get("five_hour", {}).get("resets_at", "")), "active": False},
+            {"label": "7-day window", "pct": float(u.get("seven_day", {}).get("pct", 0.0) or 0.0),
+             "resets": fmt_reset(u.get("seven_day", {}).get("resets_at", "")), "active": False}]
+    for sc in u.get("scoped", []) or []:
+        rows.append({"label": f"7-day {sc.get('name') or 'model'}", "pct": float(sc.get("pct", 0.0) or 0.0),
+                     "resets": fmt_reset(sc.get("resets_at", "")), "active": bool(sc.get("active"))})
+    if u.get("extra_usage") and isinstance(u.get("extra_pct"), (int, float)):
+        rows.append({"label": "Extra usage", "pct": float(u["extra_pct"]), "resets": "", "active": False})
+    return rows
+
+
+def usage_tooltip(u, status="", version=""):
+    """Plain text for the tray icon's mouseover: the watcher status line, then one line per window."""
+    head = "ClAudit" + (f" v{version}" if version else "") + (f": {status}" if status else "")
+    rows = usage_rows(u)
+    if not rows:
+        return head + "\nPlan usage: not available (no Claude Code login)"
+    plan = (u or {}).get("plan") or "plan"
+    L = [head, f"Claude {plan} usage:"]
+    for r in rows:
+        L.append(f"  {r['label']:<14} {r['pct']:3.0f}%" + (f"  resets {r['resets']}" if r["resets"] else "")
+                 + ("  (active limit)" if r["active"] else ""))
+    age = time.time() - float((u or {}).get("fetched", 0) or 0)
+    L.append(f"  updated {int(age // 60)} min ago" if age >= 60 else "  updated just now")
+    return "\n".join(L)
+
+
 def usage_summary(u=None, t=None):
     """Plain-text usage report for the CLI (--usage) and the GUI tooltip."""
     u = plan_usage(fetch=False) if u is None else u
@@ -353,7 +402,7 @@ def usage_summary(u=None, t=None):
             L.append(f"  7-day {s['name']:<9} {s['pct']:5.1f}%   resets {fmt_reset(s['resets_at'])}"
                      + ("   (active limit)" if s.get("active") else ""))
         age = time.time() - float(u.get("fetched", 0) or 0)
-        L.append(f"  fetched {int(age // 60)} min ago" + ("  (stale)" if age > 3 * USAGE_TTL else ""))
+        L.append(f"  fetched {int(age // 60)} min ago" + ("  (stale)" if age > USAGE_STALE_AFTER else ""))
     else:
         wkc, plans = plan_estimates(t)
         L.append("Live plan usage unavailable (no Claude Code login found; run `claude` and sign in).")

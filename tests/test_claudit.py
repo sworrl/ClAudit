@@ -1534,3 +1534,45 @@ def test_process_drafts_muted_and_stale_and_mirror(tmp_path, monkeypatch):
     assert edits == []
     assert cs.with_feedback_line("a\n\n---\n<sub>f</sub>", "fb1").count("Anthropic feedback id") == 1
     assert cs.with_feedback_line(cs.with_feedback_line("a\n\n---\n<sub>f</sub>", "fb1"), "fb2").count("fb1") == 0
+
+
+def test_usage_meter_refetches_after_a_claude_call(tmp_path, monkeypatch):
+    """The meter polls every USAGE_TTL seconds, and a claude call ClAudit makes pokes it so the next
+    tick refetches with the cache bypassed; agy calls do not touch the Claude plan."""
+    monkeypatch.setattr(claudit, "TOKENS_FILE", str(tmp_path / "tokens.json"))
+    monkeypatch.setattr(claudit, "_USAGE_POKE", [0.0])
+    import time
+    t0 = time.time() - 10
+    assert claudit.usage_poked_since(t0) is False
+    claudit._record_tokens({"input_tokens": 1, "output_tokens": 1}, None, engine="agy")
+    assert claudit.usage_poked_since(t0) is False
+    claudit._record_tokens({"input_tokens": 1, "output_tokens": 1}, 0.01, engine="claude")
+    assert claudit.usage_poked_since(t0) is True
+    assert claudit.usage_poked_since(claudit._USAGE_POKE[0]) is False       # a fetch after the call clears it
+    # plan_usage(None) reads USAGE_TTL at call time, so a Settings change applies without a restart
+    monkeypatch.setattr(claudit, "USAGE_CACHE", str(tmp_path / "usage.json"))
+    (tmp_path / "usage.json").write_text(json.dumps({"seven_day": {"pct": 1}, "five_hour": {"pct": 1},
+                                                     "scoped": [], "fetched": t0}))
+    monkeypatch.setattr(claudit, "USAGE_TTL", 10 ** 12)
+    assert claudit.plan_usage(fetch=False)["fetched"] == t0
+    assert claudit.plan_usage()["fetched"] == t0                            # fresh enough: no fetch
+    assert claudit.USAGE_TTL >= 30 and claudit.USAGE_STALE_AFTER == 900
+
+
+def test_usage_rows_and_tray_tooltip():
+    u = {"plan": "max", "five_hour": {"pct": 18.0, "resets_at": "2099-01-01T07:50:00+00:00"},
+         "seven_day": {"pct": 40.0, "resets_at": "2099-01-03T06:00:00+00:00"},
+         "scoped": [{"name": "Fable", "pct": 63.0, "resets_at": "2099-01-03T06:00:00+00:00", "active": True}],
+         "extra_usage": True, "extra_pct": 5.0, "fetched": 0}
+    rows = claudit.usage_rows(u)
+    assert [r["label"] for r in rows] == ["5-hour window", "7-day window", "7-day Fable", "Extra usage"]
+    assert [r["pct"] for r in rows] == [18.0, 40.0, 63.0, 5.0] and rows[2]["active"] is True
+    assert rows[0]["resets"].startswith("in ") and rows[3]["resets"] == ""
+    tip = claudit.usage_tooltip(u, status="watching live", version="2.13.0")
+    assert tip.splitlines()[0] == "ClAudit v2.13.0: watching live"
+    assert "Claude max usage:" in tip and re.search(r"7-day Fable\s+63%.*\(active limit\)", tip)
+    assert claudit.usage_tooltip({}, status="x").endswith("not available (no Claude Code login)")
+    assert claudit.usage_rows(None) == []
+    parsed = claudit._parse_usage({"five_hour": {"utilization": 1}, "seven_day": {"utilization": 2},
+                                   "extra_usage": {"is_enabled": True, "utilization": 12.5}}, "pro")
+    assert parsed["extra_usage"] is True and parsed["extra_pct"] == 12.5

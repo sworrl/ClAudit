@@ -47,6 +47,7 @@ from claudit_ui.common import (
     watchdog_running,
 )
 from claudit_ui.widgets import (
+    UsageBars,
     AnimatedBanner,
     BreakdownBars,
     ChainGraphDelegate,
@@ -64,6 +65,7 @@ from claudit_ui.widgets import (
     make_banner,
 )
 from claudit_ui.workers import (
+    UpdateApplier,
     ClosureWorker,
     CommunityFetcher,
     DedupWorker,
