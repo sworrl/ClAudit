@@ -1,5 +1,5 @@
 {
- "updated": "2026-09-27 01:01 UTC",
+ "updated": "2026-09-27 01:30 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 1,
@@ -7,28 +7,47 @@
   "by_latest_version": {
    "2.8.0": 1
   },
-  "issues": 1000
+  "issues": 1470
  },
  "github": {
-  "nodes": 0,
-  "active": 0,
+  "nodes": 1,
+  "active": 1,
   "quiet": 0,
-  "by_version": {},
-  "list": []
+  "by_version": {
+   "2.10.0": 1
+  },
+  "list": [
+   {
+    "login": "sworrl",
+    "version": "2.10.0",
+    "os": "linux",
+    "mode": "git",
+    "node": "a4239e46",
+    "last": "2026-09-27T01:06:20+00:00",
+    "active": true
+   }
+  ]
  },
  "anon": {
-  "generated": "2026-09-27T00:58:49.238Z",
+  "generated": "2026-09-27T01:13:10.958Z",
   "active_window_min": 30,
   "retain_days": 8,
-  "active": 0,
+  "active": 1,
   "stopped": 1,
   "quiet": 0,
-  "seen_24h": 1,
-  "seen_7d": 1,
-  "versions": {},
-  "os": {},
-  "mode": {},
+  "seen_24h": 2,
+  "seen_7d": 2,
+  "versions": {
+   "2.10.0": 1
+  },
+  "os": {
+   "linux": 1
+  },
+  "mode": {
+   "git": 1
+  },
   "versions_24h": {
+   "2.10.0": 1,
    "2.9.0": 1
   }
  }
