@@ -1424,13 +1424,16 @@ def test_send_feedback_payload_and_failures(tmp_path, monkeypatch):
         def __exit__(self, *a):
             return False
     def urlopen(req, timeout=0):
-        got.update(url=req.full_url, body=json.loads(req.data), auth=req.get_header("Authorization"),
+        got.update(url=req.full_url, outer=json.loads(req.data), auth=req.get_header("Authorization"),
                    beta=req.get_header("Anthropic-beta"))
         return Resp()
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     d = dict(DRAFT, request_ids=["req_011CfA", "req_011CfB"])
     assert cs.send_draft_to_anthropic(d, ["https://github.com/o/r/issues/7"]) == (True, "fb_42")
-    b = got["body"]
+    outer = got["outer"]
+    assert set(outer) == {"content", "session_id"} and outer["session_id"] == "s"   # the envelope the API wants
+    assert isinstance(outer["content"], str)
+    b = json.loads(outer["content"])
     assert got["url"] == cs.FEEDBACK_URL and got["auth"] == "Bearer tok123" and got["beta"] == "oauth-2025-04-20"
     assert b["latestAssistantMessageId"] == "req_011CfB" and b["transcript"] == [] and b["surface"] == "cli"
     assert b["version"] == "2.1.283" and b["message_count"] == 147 and b["gitRepo"] is False

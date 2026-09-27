@@ -52,7 +52,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.12.0"
+__version__ = "2.12.1"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -425,6 +425,7 @@ FEEDBACK_URL = "https://api.anthropic.com/api/claude_cli_feedback"
 SEND_DRAFTS = True          # config send_drafts
 FILE_DRAFTS = True          # config file_drafts (GitHub; only while auto / dwell filing is on)
 DRAFTS_INTERVAL = 60
+SEND_RETRY = 6 * 3600       # between retries of a draft the endpoint rejected
 SAFETY_HINTS = ("safety classifier", "safeguard", "cyber", "usage policy", "policy block",
                 "false positive", "flagged", "refus", "blocked by")
 
@@ -503,7 +504,8 @@ FEEDBACK_MIRROR = True      # config feedback_mirror: every ClAudit GitHub repor
 FEEDBACK_LINE = "**Anthropic feedback id:**"
 
 
-def send_feedback(description, reqs=(), message_count=0, cli_version="", url=None, timeout=30):
+def send_feedback(description, reqs=(), message_count=0, cli_version="", url=None, timeout=30,
+                  session_id=None):
     """POST one report to the CLI feedback endpoint the way Claude Code's send key does, minus the
     transcript, using the machine's own Claude Code login. Returns (ok, feedback_id_or_reason)."""
     import urllib.error
@@ -523,7 +525,12 @@ def send_feedback(description, reqs=(), message_count=0, cli_version="", url=Non
                 platform.system().lower(), platform.system().lower()),
             "gitRepo": False, "commitSha": None, "version": str(cli_version or ""),
             "transcript": []}
-    req = urllib.request.Request((url or FEEDBACK_URL), data=json.dumps(body).encode(), method="POST",
+    # The endpoint wants the report as a JSON string under "content" (what Claude Code's packer
+    # emits), with session_id as an outer field when known.
+    outer = {"content": json.dumps(body)}
+    if session_id:
+        outer["session_id"] = str(session_id)
+    req = urllib.request.Request((url or FEEDBACK_URL), data=json.dumps(outer).encode(), method="POST",
                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {tok}",
                                           "anthropic-beta": "oauth-2025-04-20", "User-Agent": "ClAudit"})
     try:
@@ -540,7 +547,8 @@ def send_feedback(description, reqs=(), message_count=0, cli_version="", url=Non
 def send_draft_to_anthropic(d, related=(), url=None, timeout=30):
     """A SendFeedback draft to Anthropic, with the ClAudit issue links for its Request IDs."""
     return send_feedback(draft_description(d, related), d.get("request_ids") or [],
-                         d.get("message_count") or 0, d.get("cli_version") or "", url=url, timeout=timeout)
+                         d.get("message_count") or 0, d.get("cli_version") or "", url=url, timeout=timeout,
+                         session_id=d.get("source_session_id"))
 
 
 def issue_url(repo, num):
@@ -633,7 +641,7 @@ def _draft_muted(d):
     return any(term in t for term in muted_terms())
 
 
-def process_drafts(state, repo, github=True, on_event=None, path=None):
+def process_drafts(state, repo, github=True, on_event=None, path=None, force=False):
     """One pass over the queued drafts, tying the two channels together. For each draft not yet
     handled: (1) if it is about the safety classifier and `github` is on, a ClAudit issue is created
     (or the issue already carrying one of its Request IDs is chosen); (2) if SEND_DRAFTS, the draft
@@ -693,8 +701,11 @@ def process_drafts(state, repo, github=True, on_event=None, path=None):
                             on_event("draft-filed", title, url)
                     except subprocess.CalledProcessError as e:
                         rec["file_error"] = str(e)[:200]
-        # (2) Anthropic side, carrying every ClAudit link for these Request IDs
-        if SEND_DRAFTS and not rec.get("sent"):
+        # (2) Anthropic side, carrying every ClAudit link for these Request IDs. A failed send is
+        # retried no sooner than SEND_RETRY (the endpoint answered; hammering it changes nothing).
+        if (SEND_DRAFTS and not rec.get("sent")
+                and (force or rec.get("send_fail_ver") != __version__      # a new version may have fixed it
+                     or time.time() - float(rec.get("send_fail_at", 0)) >= SEND_RETRY)):
             ok, info = send_draft_to_anthropic(d, related)
             if ok:
                 rec["sent"] = info
@@ -711,13 +722,19 @@ def process_drafts(state, repo, github=True, on_event=None, path=None):
                 if on_event:
                     on_event("draft-sent", rec["title"], f"feedback {info}")
             else:
-                rec["send_error"] = info
+                rec["send_error"], rec["send_fail_at"], rec["send_fail_ver"] = info, time.time(), __version__
                 print(f"  drafts: send failed for {did[:8]}: {info}", file=sys.stderr)
         # (3) the ids back onto GitHub
         fid = rec.get("sent") or ""
         try:
             if new_issue and fid:
                 gh_edit_body(repo, new_issue[0], with_feedback_line(new_issue[1], fid, did))
+                rec["annotated"] = True
+            elif fid and not rec.get("annotated") and str(rec.get("issue", "")).startswith("http"):
+                num = rec["issue"].rsplit("/", 1)[-1]           # issue filed in an earlier pass
+                cur = _gh_json(["api", f"repos/{repo}/issues/{num}", "--jq", "{body: .body}"]) or {}
+                if cur.get("body") and gh_edit_body(repo, num, with_feedback_line(cur["body"], fid, did)):
+                    rec["annotated"] = True
             elif existing and not rec.get("issue"):
                 _t, body = build_draft_issue(d, draft_kind(d, req_kinds), related)
                 note = body.split("### Request IDs")[0].strip()
@@ -3069,7 +3086,7 @@ def main():
         return
 
     if args.process_drafts:
-        n = process_drafts(state, args.repo, github=True,
+        n = process_drafts(state, args.repo, github=True, force=True,
                            on_event=lambda a, t, u: print(f"  {a}: {t[:70]} {u}", file=sys.stderr))
         print(f"drafts: {n} action(s).")
         print(drafts_summary(state))

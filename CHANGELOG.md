@@ -3,6 +3,10 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.12.1] — 2026-09-26
+- Fix: the feedback endpoint rejected every send with `content: Field required`. Claude Code wraps the report as a JSON string under `content` (plus `session_id`); ClAudit now sends that envelope. Verified against the live endpoint.
+- A rejected send is retried after six hours, or immediately after an upgrade (the failure is stamped with the version that produced it). `--process-drafts` always retries. An issue filed in an earlier pass gets the feedback id written in once the send succeeds.
+
 ## [2.12.0] — 2026-09-26
 **Claude Code's own bug reports, sent for you and tied to ClAudit's.** Claude Code 2.1.28x drafts a bug report itself when a safeguards block (or its own mistake) derails a session, stores it in `~/.claude/feedback/drafts/`, and waits for "2 to send". Five sat queued on the reference machine, one of them about the classifier.
 - `process_drafts()` runs every 60 s in both watchers. For each queued draft: a safety-classifier draft becomes a ClAudit issue on GitHub first (or is appended to the issue already carrying one of its Request IDs), then the draft is POSTed to `api.anthropic.com/api/claude_cli_feedback` exactly as the send key does (same payload shape, the CLI's own OAuth login, no transcript) with every related ClAudit issue URL in its description, then the feedback id and draft id are written onto the GitHub issue. Model-behavior drafts go to Anthropic only. A sent draft is copied to `~/.claude/claudit/drafts-sent/` and the card clears.
