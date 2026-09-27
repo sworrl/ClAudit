@@ -3,6 +3,14 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.10.0] — 2026-09-26
+**Install census: how many nodes run ClAudit, on which version, and whether they are still up.** Three sources, merged hourly into `docs/nodes.json`, an Installs block in the README, a card on the project page, and the Project tab in the app.
+- **Anonymous heartbeat (on by default).** Every 10 minutes the app or the CLI watcher POSTs `{node, v, os, mode, event}` to a Cloudflare Worker in `telemetry/` (deployed at `claudit-census.fogbank.workers.dev`). `node` is a random id made on first run (`~/.claude/claudit/node_id`); the Worker keeps those fields and a timestamp for eight days and never reads the request IP. A clean quit sends `stop`. The Worker's cron sorts nodes into running (beat within 30 min), stopped (said stop within 24 h), and quiet (seen within 24 h, then silent: crash, sleep, offline), with version, OS, and install-mode breakdowns at `/stats`.
+- **GitHub heartbeat (off by default, login-visible).** Every 6 hours the node creates or edits one comment on sworrl/ClAudit#14 under the user's own login: version, OS family, install mode, a short non-reversible node hash, time. Quiet after 24 h without an edit. Delete the comment to leave.
+- **Passive census.** Every filed issue ends with the version that filed it; the aggregator counts distinct reporters, the version each last used, and 7/30-day activity. No heartbeat involved.
+- Settings gains a Census group with the two toggles (turning the anonymous one off sends a final stop; turning the GitHub one on posts immediately). `claudit_scan.py --census` prints the live numbers and exactly what this node sends. Config: `census_anon`, `census_github`, `census_url`.
+- Tests: node id persistence and payload shape (no PII fields, hostname and home path asserted absent), tick scheduling for both cadences and the stop, the POST body, the comment upsert (edit own, create when absent, skip when signed out), and the aggregator on fixtures. 120 total.
+
 ## [2.9.0] — 2026-09-26
 **Update monitor with in-app updates.** Until now a git clone updated itself silently and a pip install got one tray toast with a command to paste. Both now go through one monitor (`claudit_ui/updater.py`, pure stdlib so it tests without Qt):
 - Every three minutes the app compares what runs with what GitHub has: for a clone, commits behind/ahead of `origin/<branch>`, the version on the remote branch, whether the tree is dirty, and whether the waiting commits touch code; for a pip install, the latest GitHub Release. Release notes are shown when the remote version has a release; otherwise the waiting commit subjects (poll-bot commits filtered out).

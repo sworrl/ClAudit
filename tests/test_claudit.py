@@ -1212,3 +1212,127 @@ def test_stale_blocks_go_to_backlog_not_live(monkeypatch):
     assert cs.auto_cycle({"__baselined__": True}, "o/r", 0, lambda *a: None) == 2
     monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 7)
     assert cs._ts_epoch("garbage") == 0 and cs._too_old_to_live_file("") is True   # no timestamp = stale
+
+
+# ---------------- install census ----------------
+def test_node_id_is_random_persistent_and_payload_has_no_pii(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "NODE_FILE", str(tmp_path / "node_id"))
+    a = cs.node_id()
+    assert re.fullmatch(r"[0-9a-f]{32}", a) and cs.node_id() == a           # stable across calls
+    (tmp_path / "node_id").write_text("not-hex\n")
+    b = cs.node_id()
+    assert re.fullmatch(r"[0-9a-f]{32}", b) and b != a                     # a damaged file is replaced
+    p = cs.census_payload()
+    assert set(p) == {"node", "v", "os", "mode", "event"}                   # nothing else, ever
+    assert p["v"] == cs.__version__ and p["os"] in ("linux", "darwin", "windows", "other")
+    assert p["mode"] in ("git", "pip") and p["event"] == "beat"
+    assert cs.census_payload("stop")["event"] == "stop"
+    for bad in (os.path.expanduser("~"), platform_node(), "@"):
+        assert bad not in json.dumps(p)
+
+
+def platform_node():
+    import platform
+    return platform.node() or "\x00"
+
+
+def test_census_tick_schedules_both_beats_and_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "CENSUS_FILE", str(tmp_path / "census.json"))
+    monkeypatch.setattr(cs, "NODE_FILE", str(tmp_path / "node_id"))
+    sent = []
+    monkeypatch.setattr(cs, "census_beat_anon", lambda event="beat", url=None, timeout=8: sent.append(("anon", event)) or True)
+    monkeypatch.setattr(cs, "census_beat_github", lambda repo=None, issue=None: sent.append(("github", "beat")) or True)
+    monkeypatch.setattr(cs, "CENSUS_ANON", True)
+    monkeypatch.setattr(cs, "CENSUS_GITHUB", False)
+    t0 = 1_800_000_000.0
+    assert cs.census_tick(now=t0) == ["anon"]
+    assert cs.census_tick(now=t0 + 60) == []                                # not due
+    assert cs.census_tick(now=t0 + cs.CENSUS_INTERVAL + 1) == ["anon"]
+    monkeypatch.setattr(cs, "CENSUS_GITHUB", True)
+    assert cs.census_tick(now=t0 + cs.CENSUS_INTERVAL + 2) == ["github"]   # anon just went, github due
+    assert cs.census_tick(now=t0 + cs.CENSUS_INTERVAL + 3) == []
+    monkeypatch.setattr(cs, "CENSUS_ANON", False)
+    cs.census_stop()                                                        # anon off: nothing sent
+    monkeypatch.setattr(cs, "CENSUS_ANON", True)
+    cs.census_stop()
+    assert sent[-1] == ("anon", "stop")
+
+
+def test_census_beat_anon_posts_json_and_swallows_failures(tmp_path, monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(cs, "NODE_FILE", str(tmp_path / "node_id"))
+    got = {}
+
+    class Resp:
+        status = 204
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    def urlopen(req, timeout=0):
+        got["url"], got["body"], got["ct"] = req.full_url, json.loads(req.data), req.get_header("Content-type")
+        return Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert cs.census_beat_anon("beat", url="https://x.example/") is True
+    assert got["url"] == "https://x.example/beat" and got["ct"] == "application/json"
+    assert set(got["body"]) == {"node", "v", "os", "mode", "event"}
+    def boom(req, timeout=0):
+        raise OSError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert cs.census_beat_anon() is False
+
+
+def test_census_beat_github_edits_own_comment_or_creates(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "NODE_FILE", str(tmp_path / "node_id"))
+    monkeypatch.setattr(cs, "gh_login", lambda: "me")
+    body_now = cs.census_github_body()
+    short = body_now.split("node ")[1].split(" ")[0]
+    assert cs.CENSUS_MARKER in body_now and f"v{cs.__version__}" in body_now and len(short) == 8
+    assert cs.node_id() not in body_now                                     # only the hash goes public
+    calls = []
+    monkeypatch.setattr(cs.subprocess, "run", lambda cmd, capture_output, text: calls.append(cmd) or
+                        type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr(cs, "_gh_json", lambda args: [
+        {"id": 1, "user": {"login": "someone"}, "body": f"heartbeat node {short} {cs.CENSUS_MARKER}"},
+        {"id": 2, "user": {"login": "me"}, "body": f"ClAudit census heartbeat: v0.0.1 · linux · git · node {short} · last beat x\n\n{cs.CENSUS_MARKER}"},
+        {"id": 3, "user": {"login": "me"}, "body": f"other machine node deadbeef {cs.CENSUS_MARKER}"}])
+    assert cs.census_beat_github("o/r", 14) is True
+    assert calls[-1][:4] == ["gh", "api", "-X", "PATCH"] and "/issues/comments/2" in calls[-1][4]
+    monkeypatch.setattr(cs, "_gh_json", lambda args: [])
+    assert cs.census_beat_github("o/r", 14) is True
+    assert calls[-1][:4] == ["gh", "api", "-X", "POST"] and calls[-1][4].endswith("/issues/14/comments")
+    monkeypatch.setattr(cs, "gh_login", lambda: "")
+    assert cs.census_beat_github("o/r", 14) is False
+
+
+def test_census_aggregator(tmp_path):
+    import datetime
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    import census as cz
+    now = datetime.datetime(2026, 9, 27, 12, 0, tzinfo=datetime.timezone.utc)
+    items = [
+        {"author": {"login": "a"}, "body": "x Filed automatically by ClAudit v2.8.0 y", "createdAt": "2026-09-26T10:00:00Z"},
+        {"author": {"login": "a"}, "body": "x ClAudit v2.9.0", "createdAt": "2026-09-27T10:00:00Z"},
+        {"author": {"login": "b"}, "body": "ClAudit v2.2.5", "createdAt": "2026-08-01T10:00:00Z"},
+        {"author": {"login": "c"}, "body": "no version marker", "createdAt": "2026-09-27T10:00:00Z"},
+    ]
+    p = cz.passive_census(items, now)
+    assert p["reporters"] == 2 and p["issues"] == 3
+    assert p["by_latest_version"] == {"2.9.0": 1, "2.2.5": 1}                # a's latest wins; ordered newest first
+    assert (p["active_7d"], p["active_30d"]) == (1, 1)
+    comments = [
+        {"user": {"login": "a"}, "updated_at": "2026-09-27T09:00:00Z",
+         "body": f"ClAudit census heartbeat: v2.9.0 · linux · git · node 0123abcd · last beat x\n\n{cs.CENSUS_MARKER}"},
+        {"user": {"login": "b"}, "updated_at": "2026-09-20T09:00:00Z",
+         "body": f"ClAudit census heartbeat: v2.8.0 · windows · pip · node 89abcdef · last beat x\n\n{cs.CENSUS_MARKER}"},
+        {"user": {"login": "z"}, "updated_at": "2026-09-27T09:00:00Z", "body": "just a comment"},
+    ]
+    g = cz.github_census(comments, now)
+    assert (g["nodes"], g["active"], g["quiet"]) == (2, 1, 1) and g["by_version"] == {"2.9.0": 1}
+    assert g["list"][1]["active"] is False and g["list"][0]["os"] == "linux"
+    md = cz.render_md({"passive": p, "github": g, "updated": "2026-09-27 12:00 UTC",
+                       "anon": {"generated": "x", "active": 3, "quiet": 1, "stopped": 2, "seen_7d": 9,
+                                "versions": {"2.9.0": 2, "2.8.0": 1}}})
+    assert md.startswith(cz.START) and md.rstrip().endswith(cz.END)
+    assert "**3** node(s), 1 gone quiet and 2 stopped cleanly" in md and "2.9.0 (2), 2.8.0 (1)" in md
+    assert "1 active, 1 quiet" in md and "2 accounts" in md

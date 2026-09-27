@@ -71,6 +71,17 @@ ul.links li{margin:4px 0}
 </div>
 
 <div class="card">
+  <h2>Running ClAudit</h2>
+  <div class="tiles">
+    <div class="tile open"><div class="n" id="nRun">…</div><div class="l">nodes running now</div></div>
+    <div class="tile harness"><div class="n" id="nQuiet">…</div><div class="l">gone quiet in 24 h</div></div>
+    <div class="tile closed"><div class="n" id="nSeen">…</div><div class="l">seen in 7 days</div></div>
+  </div>
+  <p class="note" id="nVersions"></p>
+  <p class="note">From the anonymous heartbeat: a random node id, version, OS family, and install mode every 10 minutes; no IP or account is kept. "Quiet" is a node seen in the last day that stopped beating without saying goodbye. <span id="nGithub"></span> <span id="nRep"></span></p>
+</div>
+
+<div class="card">
   <h2>Will Anthropic fix it?</h2>
   <div id="poll"><p class="total">Loading the live tally…</p></div>
   <a class="vote" href="https://github.com/sworrl/ClAudit/issues/6" target="_blank" rel="noopener">Cast your vote on GitHub</a>
@@ -130,6 +141,19 @@ fetch(`https://api.github.com/repos/${REPO}/issues/${ISSUE}`,
   .then(r=>r.ok?r.json():Promise.reject())
   .then(d=>renderPoll({plus:d.reactions["+1"],minus:d.reactions["-1"],eyes:d.reactions.eyes}, "just now"))
   .catch(()=>{});
+// install census: the hourly nodes.json, then the Worker's live stats if reachable
+function renderNodes(d){
+  const a = d.anon || {}, g = d.github || {}, p = d.passive || {};
+  const fmt = v => (v==null ? "…" : Number(v).toLocaleString());
+  $("nRun").textContent = fmt(a.active); $("nQuiet").textContent = fmt(a.quiet); $("nSeen").textContent = fmt(a.seen_7d);
+  const vs = Object.entries(a.versions || {}).sort((x,y)=>y[1]-x[1]).map(([v,n])=>`${v} (${n})`).join(", ");
+  $("nVersions").textContent = vs ? "Versions running: " + vs + "." : "";
+  if (g.active != null) $("nGithub").textContent = `Opt-in GitHub heartbeats: ${g.active} active, ${g.quiet||0} quiet.`;
+  if (p.reporters != null) $("nRep").textContent = `Accounts that have filed a report: ${p.reporters}, ${p.active_30d||0} in the last 30 days.`;
+}
+fetch("nodes.json",{cache:"no-store"}).then(r=>r.json()).then(renderNodes).catch(()=>{});
+fetch("https://claudit-census.fogbank.workers.dev/stats",{cache:"no-store"}).then(r=>r.json())
+  .then(a=>{ if(a && a.generated) renderNodes({anon:a}); }).catch(()=>{});
 // counter tiles: the last point of the hourly history the poll Action commits
 fetch("counter-history.json",{cache:"no-store"}).then(r=>r.json())
   .then(h=>{ if(Array.isArray(h) && h.length) renderCounter(h[h.length-1]); })

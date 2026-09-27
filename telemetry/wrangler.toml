@@ -1,0 +1,11 @@
+name = "claudit-census"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[kv_namespaces]]
+binding = "CENSUS"
+id = "c8bc446a554b494a882e08d476a334ac"

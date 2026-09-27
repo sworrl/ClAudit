@@ -100,6 +100,10 @@ class Watcher(QtCore.QThread):
         self.acted.emit(0, "pruned")             # nudge the UI to refresh the backlog count
         while self._run:
             now = time.monotonic()
+            try:
+                cs.census_tick()                 # install census heartbeats, only when one is due
+            except Exception:
+                pass
             # LIVE: new blocks always fire as soon as they're seen (every `interval` secs),
             # never gated by the backfill schedule.
             if now - self.last_live >= self.interval:
@@ -398,6 +402,14 @@ class RepoStatsFetcher(QtCore.QThread):
             d["followers"] = json.loads(fl or "[]")
         except Exception:
             pass
+        try:                                     # install census, as the hourly Action published it
+            import urllib.request
+            req = urllib.request.Request("https://sworrl.github.io/ClAudit/nodes.json",
+                                         headers={"User-Agent": "ClAudit", "Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d["nodes"] = json.load(r) or {}
+        except Exception:
+            d["nodes"] = {}
         self.fetched.emit(d)
 
 class PollWorker(QtCore.QThread):

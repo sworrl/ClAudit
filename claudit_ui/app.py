@@ -98,6 +98,12 @@ def main():
         cs.MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
     if "auto_update" in cfg:
         updater.AUTO_UPDATE = bool(cfg["auto_update"])
+    if "census_anon" in cfg:
+        cs.CENSUS_ANON = bool(cfg["census_anon"])
+    if "census_github" in cfg:
+        cs.CENSUS_GITHUB = bool(cfg["census_github"])
+    if cfg.get("census_url"):
+        cs.CENSUS_URL = str(cfg["census_url"])
     if args.screenshot:
         Main.SCREENSHOT_DIR = args.screenshot
     elif not cs.acquire_singleton():

@@ -1057,6 +1057,14 @@ class Main(QtWidgets.QMainWindow):
         v.addWidget(ubox)
         self._refresh_update_panel()
 
+        grp("Census", [
+            ("census_anon", "Anonymous heartbeat", "Every 10 minutes: a random node id, the version, the OS "
+             "family, and git-or-pip to a Cloudflare Worker the maintainer runs. No IP, hostname, or account is "
+             "kept. Shows how many nodes run and on what version.", cs.CENSUS_ANON),
+            ("census_github", "GitHub heartbeat (login-visible)", f"Every 6 hours: edit one comment on "
+             f"sworrl/ClAudit#{cs.CENSUS_ISSUE} under YOUR GitHub login with version, OS, mode, and a short node "
+             "hash. Public. Off unless you want your name on the census.", cs.CENSUS_GITHUB)])
+
         prow = QtWidgets.QHBoxLayout()
         pii = QtWidgets.QPushButton("Edit PII denylist…")
         pii.clicked.connect(self._edit_scrub)
@@ -1168,6 +1176,14 @@ class Main(QtWidgets.QMainWindow):
         elif key == "auto_update":
             updater.AUTO_UPDATE = bool(val)
             self._refresh_update_panel()
+        elif key == "census_anon":
+            cs.CENSUS_ANON = bool(val)
+            if not val:
+                cs.census_beat_anon("stop")        # leave cleanly rather than going 'quiet'
+        elif key == "census_github":
+            cs.CENSUS_GITHUB = bool(val)
+            if val:
+                threading.Thread(target=lambda: cs.census_tick(force=True), daemon=True).start()
         elif key == "interval" and w:
             w.interval = float(val)
         cfg = cs.load_config()
@@ -1302,9 +1318,19 @@ class Main(QtWidgets.QMainWindow):
 
     def _on_stats(self, d):
         o = d.get("owner", {}) or {}
+        n = d.get("nodes") or {}
+        a, g, pv = n.get("anon") or {}, n.get("github") or {}, n.get("passive") or {}
+        census = ""
+        if a.get("generated") or g or pv:
+            vs = ", ".join(f"{v} ({c})" for v, c in sorted((a.get("versions") or {}).items(),
+                                                          key=lambda kv: cs.version_tuple(kv[0]), reverse=True)[:4])
+            census = (f"\nInstalls: {a.get('active', 0)} running now · {a.get('quiet', 0)} quiet · "
+                      f"{a.get('stopped', 0)} stopped (24 h) · {a.get('seen_7d', 0)} seen in 7 d"
+                      + (f" · versions {vs}" if vs else "")
+                      + f" · GitHub opt-in {g.get('active', 0)} · reporters {pv.get('reporters', 0)}")
         self.stats_summary.setText(
             f"⭐ {d.get('stars', 0)} stars  ·  🍴 {d.get('forks', 0)} forks  ·  👁 {d.get('watchers', 0)} watchers"
-            f"  ·  👥 {o.get('followers', 0)} followers  ·  📦 {o.get('public_repos', '?')} repos")
+            f"  ·  👥 {o.get('followers', 0)} followers  ·  📦 {o.get('public_repos', '?')} repos" + census)
         self.lst_stars.clear()
         now = datetime.datetime.now(datetime.timezone.utc)
         # newest stars first, color-coded by recency
@@ -1903,4 +1929,8 @@ class Main(QtWidgets.QMainWindow):
         if self.watcher:
             self.watcher.stop()
             self.watcher.wait(1500)
+        try:
+            cs.census_stop()                       # 'stopped', not 'quiet', in the census
+        except Exception:
+            pass
         QtWidgets.QApplication.quit()

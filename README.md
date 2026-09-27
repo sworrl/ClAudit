@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.9.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.10.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -63,6 +63,16 @@ Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken
 Vote by reacting on [the pinned issue](https://github.com/sworrl/ClAudit/issues/6), or with one click from the ClAudit app.
 <!-- POLL:END -->
 
+<!-- NODES:START -->
+### Installs
+
+Running right now (anonymous heartbeat): **0** node(s), 0 gone quiet and 1 stopped cleanly in the last 24 h, 1 seen in 7 days.
+Opt-in GitHub heartbeats ([#14](https://github.com/sworrl/ClAudit/issues/14)): 0 active, 0 quiet.
+Reporters seen in filed issues: 1 accounts, 1 active in 30 days, 1 in 7. Latest version per reporter: 2.8.0 (1).
+
+_Updated 2026-09-27 01:01 UTC. What each number means and what is sent: [Census](#census)._
+<!-- NODES:END -->
+
 ## Screenshots
 
 <img src="docs/screenshot.png" alt="Issues tab" width="780">
@@ -106,6 +116,7 @@ button, mirrored in the tray menu.
 - [Configuration](#configuration)
 - [Updates](#updates)
 - [Autostart](#autostart)
+- [Census](#census)
 - [Local data](#local-data)
 - [Responsible use](#responsible-use)
 - [Troubleshooting](#troubleshooting)
@@ -492,9 +503,11 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `agy_project`, `agy_review_model`, `umbrella_issue` |
+| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `census_anon`, `census_github`, `census_url`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage per engine, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your plan windows. Safe to delete |
+| `node_id` | This install's random census id. Delete it to become a new node |
+| `census.json` | When each heartbeat last went out |
 | `scrub.txt` | Your PII denylist. Never committed |
 | `mute.txt` | Terms that stop a finding from being filed or sent to any LLM at all |
 | `filed.json` | Dedup state: filed and baselined findings, dwell holds, session chains, closure records |
@@ -545,6 +558,35 @@ generated launcher if you want auto-filing at login.
 The macOS and Windows installers were written against the platform docs, not on a Mac or a Windows
 box. If one misbehaves, say so on [#4](https://github.com/sworrl/ClAudit/issues/4).
 
+## Census
+
+Two heartbeats answer "how many people run this, on which version, and are they updating". Both
+are small, both are listed here in full, and both have a toggle in Settings under Census.
+
+- Anonymous (on by default). Every 10 minutes while the app or the CLI watcher runs, it POSTs
+  `{"node": "<random id>", "v": "2.10.0", "os": "linux", "mode": "git", "event": "beat"}` to a
+  Cloudflare Worker the maintainer runs (`telemetry/worker.js` in this repo, deployed at
+  `claudit-census.fogbank.workers.dev`). The id is made up on first run and stored in
+  `~/.claude/claudit/node_id`; delete the file to become a new node. The Worker keeps those five
+  fields and the time, for eight days, and nothing else: it never reads the request IP, and there
+  is no account, hostname, or content in the payload. A clean quit sends one `stop` event. The
+  Worker counts nodes as running (beat within 30 minutes), stopped (said stop within 24 hours), or
+  quiet (seen within 24 hours, then silent: a crash, a sleeping laptop, an offline machine), and
+  publishes version, OS, and install-mode breakdowns at `/stats`.
+- GitHub (off by default). Every 6 hours it creates or edits one comment on
+  [sworrl/ClAudit#14](https://github.com/sworrl/ClAudit/issues/14) under your own GitHub login:
+  version, OS family, install mode, a short non-reversible node hash, and the time. This one is
+  public and tied to your name, which is why it is off; turn it on if you want to be counted by
+  name. A comment not edited for 24 hours counts as quiet. Delete the comment to leave.
+
+A third source needs no heartbeat at all: every issue ClAudit files ends with the version that
+filed it, so the census also counts distinct reporters and the version each one last used.
+
+The hourly Action merges the three into `docs/nodes.json`, the Installs block above, the
+[project page](https://sworrl.github.io/ClAudit/), and the Project tab in the app.
+`python3 claudit_scan.py --census` prints the live numbers and exactly what this node sends.
+Config keys: `census_anon`, `census_github`, `census_url`.
+
 ## Local data
 
 Nothing is stored outside `~/.claude/claudit/` and the repo. The raw conversation lead-up stays in
@@ -593,6 +635,8 @@ prerequisite in one pass and prints one line per check.
 | `scripts/install-macos.sh` | macOS launchd Login Item |
 | `scripts/install-windows.ps1` | Windows Start Menu and Startup shortcuts |
 | `scripts/render_poll.py` | Hourly Action: poll tally, report counter, trend SVG, README blocks |
+| `scripts/census.py` | Hourly Action: install census from the Worker, the census issue, and filed issues |
+| `telemetry/` | The census Cloudflare Worker and how to deploy it |
 | `scripts/githooks/pre-commit` | Auto-bump the version on code commits, keep the README version line in step |
 | `packaging/` | Homebrew head formula and Arch `claudit-git` PKGBUILD |
 | `docs/` | GitHub Pages site: live counter, trend, poll |

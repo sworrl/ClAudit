@@ -24,12 +24,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # gh api auth (reads issue reactions)
         run: python scripts/render_poll.py
+      - name: Render install census
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/census.py
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- README.md docs/poll.json docs/counter.json docs/counter-history.json docs/trend.svg; then
-            git add README.md docs/poll.json docs/counter.json docs/counter-history.json docs/trend.svg
+          if ! git diff --quiet -- README.md docs/poll.json docs/counter.json docs/counter-history.json docs/trend.svg docs/nodes.json; then
+            git add README.md docs/poll.json docs/counter.json docs/counter-history.json docs/trend.svg docs/nodes.json
             git commit -m "chore: refresh poll + report counter + trend graphic [skip ci]"
             git push
           else

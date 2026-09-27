@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.9.0"
+__version__ = "2.10.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -229,6 +229,162 @@ def reqs_of(f):
             seen.add(o["req"])
             out.append(o)
     return out
+
+
+# ---- install census: two heartbeats, both small, both documented in README "Census" ----
+# anon: POST {node, v, os, mode, event} to a Cloudflare Worker the maintainer runs (telemetry/).
+#       `node` is a random id made on first run and kept in NODE_FILE; delete the file to get a new
+#       one. No IP, hostname, account, or content is kept anywhere. On by default.
+# github: edit ONE comment on the census issue under the user's own GitHub login (version, OS
+#       family, install mode, short node hash, time). Public and login-visible, so off by default.
+CENSUS_URL = "https://claudit-census.fogbank.workers.dev"
+CENSUS_ISSUE = 14
+CENSUS_MARKER = "<!-- claudit:census -->"
+CENSUS_ANON = True
+CENSUS_GITHUB = False
+CENSUS_INTERVAL = 600            # anonymous beat cadence (the Worker calls a node down after 30 min)
+CENSUS_GITHUB_INTERVAL = 6 * 3600
+NODE_FILE = os.path.join(STATE_DIR, "node_id")
+CENSUS_FILE = os.path.join(STATE_DIR, "census.json")
+
+
+def node_id():
+    """This install's random id (32 hex). Created once, never derived from anything."""
+    try:
+        with open(NODE_FILE, encoding="utf-8") as fh:
+            nid = fh.read().strip().lower()
+        if re.fullmatch(r"[0-9a-f]{32}", nid):
+            return nid
+    except OSError:
+        pass
+    import uuid
+    nid = uuid.uuid4().hex
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(NODE_FILE, "w", encoding="utf-8") as fh:
+            fh.write(nid + "\n")
+    except OSError:
+        pass
+    return nid
+
+
+def install_mode():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return "git" if os.path.isdir(os.path.join(here, ".git")) else "pip"
+
+
+def census_payload(event="beat"):
+    """Exactly what the anonymous beat sends. Nothing here identifies a person or a machine."""
+    return {"node": node_id(), "v": __version__,
+            "os": {"Linux": "linux", "Darwin": "darwin", "Windows": "windows"}.get(platform.system(), "other"),
+            "mode": install_mode(), "event": "stop" if event == "stop" else "beat"}
+
+
+def census_beat_anon(event="beat", url=None, timeout=8):
+    import urllib.request
+    data = json.dumps(census_payload(event)).encode()
+    req = urllib.request.Request((url or CENSUS_URL).rstrip("/") + "/beat", data=data, method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": "ClAudit"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+def census_github_body():
+    p = census_payload()
+    short = hashlib.sha256(p["node"].encode()).hexdigest()[:8]
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    return (f"ClAudit census heartbeat: v{p['v']} · {p['os']} · {p['mode']} · node {short} · last beat {when}"
+            f"\n\n{CENSUS_MARKER}")
+
+
+def census_beat_github(repo=None, issue=None):
+    """Create or edit this login's ONE heartbeat comment on the census issue. Returns True on success."""
+    repo, issue = repo or POLL_REPO, issue or CENSUS_ISSUE
+    me = gh_login()
+    if not me:
+        return False
+    body = census_github_body()
+    short = body.split("node ")[1].split(" ")[0]
+    mine = None
+    for c in _gh_json(["api", "--paginate", f"repos/{repo}/issues/{issue}/comments"]) or []:
+        if (isinstance(c, dict) and (c.get("user") or {}).get("login") == me
+                and CENSUS_MARKER in (c.get("body") or "") and f"node {short}" in (c.get("body") or "")):
+            mine = c.get("id")
+            break
+    if mine:
+        r = subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{repo}/issues/comments/{mine}",
+                            "-f", f"body={body}"], capture_output=True, text=True)
+    else:
+        r = subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{issue}/comments",
+                            "-f", f"body={body}"], capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def census_tick(now=None, force=False):
+    """Send whichever heartbeats are due. Cheap when nothing is due (one small file read).
+    Returns the list of beats sent: subset of ['anon', 'github']."""
+    now = now or time.time()
+    try:
+        with open(CENSUS_FILE, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        st = {}
+    sent = []
+    if CENSUS_ANON and (force or now - float(st.get("anon", 0)) >= CENSUS_INTERVAL):
+        st["anon"] = now
+        if census_beat_anon():
+            sent.append("anon")
+    if CENSUS_GITHUB and (force or now - float(st.get("github", 0)) >= CENSUS_GITHUB_INTERVAL):
+        st["github"] = now
+        if census_beat_github():
+            sent.append("github")
+    if sent or force:
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(CENSUS_FILE, "w", encoding="utf-8") as fh:
+                json.dump(st, fh)
+        except OSError:
+            pass
+    return sent
+
+
+def census_stop():
+    """Clean quit: tell the Worker this node stopped (so it is 'stopped', not 'quiet')."""
+    if CENSUS_ANON:
+        census_beat_anon("stop")
+
+
+def census_summary(url=None):
+    """Plain-text census for --census: the Worker's live stats plus this node's id."""
+    import urllib.request
+    try:
+        req = urllib.request.Request((url or CENSUS_URL).rstrip("/") + "/stats", headers={"User-Agent": "ClAudit"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            a = json.load(r) or {}
+    except Exception:
+        a = {}
+    L = ["ClAudit census (anonymous heartbeat, Cloudflare Worker):"]
+    if a.get("generated"):
+        L += [f"  running now   {a.get('active', 0)}   (beat within {a.get('active_window_min', 30)} min)",
+              f"  quiet 24h     {a.get('quiet', 0)}   (seen, then silent; crash, sleep, or offline)",
+              f"  stopped 24h   {a.get('stopped', 0)}   (clean quit)",
+              f"  seen 24h/7d   {a.get('seen_24h', 0)} / {a.get('seen_7d', 0)}"]
+        for label, key in (("versions", "versions"), ("os", "os"), ("mode", "mode")):
+            d = a.get(key) or {}
+            if d:
+                L.append(f"  {label:<13} " + ", ".join(f"{k} ({v})" for k, v in
+                                                        sorted(d.items(), key=lambda kv: -kv[1])))
+        L.append(f"  generated     {a['generated']}")
+    else:
+        L.append("  unavailable (offline, or nothing reported yet)")
+    L += ["", f"This node: {node_id()} (random; delete {NODE_FILE} for a new one)",
+          f"  anonymous beat {'on' if CENSUS_ANON else 'off'} every {CENSUS_INTERVAL // 60} min · "
+          f"GitHub heartbeat {'on' if CENSUS_GITHUB else 'off'} (issue #{CENSUS_ISSUE})",
+          f"  sends: {json.dumps(census_payload())}"]
+    return "\n".join(L)
 
 
 MUTE_FILE = os.path.join(STATE_DIR, "mute.txt")
@@ -2377,7 +2533,7 @@ def update_tracking(repo, num):
 
 
 def main():
-    global MAX_LIVE_AGE_DAYS
+    global MAX_LIVE_AGE_DAYS, CENSUS_ANON, CENSUS_GITHUB, CENSUS_URL
     p = argparse.ArgumentParser(description="Watch Claude Code sessions for safety/AUP blocks.")
     p.add_argument("--version", action="version", version=f"ClAudit {__version__}")
     p.add_argument("--baseline", action="store_true", help="mark all current findings seen, file nothing")
@@ -2433,6 +2589,8 @@ def main():
     p.add_argument("--doctor", action="store_true",
                    help="check the environment (gh, LLM CLIs, Claude login, PyQt6, notifications, state, "
                         "version) and exit non-zero on a hard failure")
+    p.add_argument("--census", action="store_true",
+                   help="print the install census (running nodes by version) and what this node sends, then exit")
     p.add_argument("--usage", action="store_true",
                    help="print your live Claude plan usage (5-hour / 7-day windows) and ClAudit's own "
                         "LLM spend per engine, then exit")
@@ -2465,6 +2623,12 @@ def main():
         MAX_LIVE_AGE_DAYS = int(args.max_live_age)
     elif "max_live_age_days" in cfg:
         MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
+    if "census_anon" in cfg:
+        CENSUS_ANON = bool(cfg["census_anon"])
+    if "census_github" in cfg:
+        CENSUS_GITHUB = bool(cfg["census_github"])
+    if cfg.get("census_url"):
+        CENSUS_URL = str(cfg["census_url"])
     if args.engine:
         claudit.LLM_ENGINE = str(args.engine)
     elif cfg.get("llm_engine"):
@@ -2509,6 +2673,10 @@ def main():
         rows = doctor_rows()
         print(doctor_text(rows))
         sys.exit(1 if any(r[0] == 'fail' for r in rows) else 0)
+
+    if args.census:
+        print(census_summary())
+        return
 
     if args.usage:
         print(claudit.usage_summary(claudit.plan_usage()))
@@ -2587,9 +2755,14 @@ def main():
         last_live, last_bf, bf_done = 0.0, 0.0, 0
         last_defend, last_track, last_reopen, last_closures = 0.0, 0.0, 0.0, 0.0
         bf_delay = max(4.0, float(args.backfill_interval))
+        atexit.register(census_stop)
         try:
             while True:
                 now = time.monotonic()
+                try:
+                    census_tick()
+                except Exception:
+                    pass
                 if now - last_live >= args.interval:   # LIVE: new blocks fire as seen
                     last_live = now
                     if args.auto:

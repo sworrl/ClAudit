@@ -1,0 +1,35 @@
+{
+ "updated": "2026-09-27 01:01 UTC",
+ "passive": {
+  "reporters": 1,
+  "active_7d": 1,
+  "active_30d": 1,
+  "by_latest_version": {
+   "2.8.0": 1
+  },
+  "issues": 1000
+ },
+ "github": {
+  "nodes": 0,
+  "active": 0,
+  "quiet": 0,
+  "by_version": {},
+  "list": []
+ },
+ "anon": {
+  "generated": "2026-09-27T00:58:49.238Z",
+  "active_window_min": 30,
+  "retain_days": 8,
+  "active": 0,
+  "stopped": 1,
+  "quiet": 0,
+  "seen_24h": 1,
+  "seen_7d": 1,
+  "versions": {},
+  "os": {},
+  "mode": {},
+  "versions_24h": {
+   "2.9.0": 1
+  }
+ }
+}
