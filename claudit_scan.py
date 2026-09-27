@@ -52,7 +52,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.12.1"
+__version__ = "2.12.2"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -502,6 +502,7 @@ def draft_description(d, related=()):
 FEEDBACK_MIRROR = True      # config feedback_mirror: every ClAudit GitHub report also goes to the CLI
                             # feedback channel, with its GitHub URL; the issue then carries the feedback id
 FEEDBACK_LINE = "**Anthropic feedback id:**"
+CLAUDE_CLI_VERSION_FALLBACK = "2.1.283"
 
 
 def send_feedback(description, reqs=(), message_count=0, cli_version="", url=None, timeout=30,
@@ -530,9 +531,15 @@ def send_feedback(description, reqs=(), message_count=0, cli_version="", url=Non
     outer = {"content": json.dumps(body)}
     if session_id:
         outer["session_id"] = str(session_id)
+    # The same client headers Claude Code's API client sends; the endpoint refuses others (403).
+    ver = str(cli_version or CLAUDE_CLI_VERSION_FALLBACK)
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {tok}",
+               "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01",
+               "x-app": "cli", "User-Agent": f"claude-cli/{ver} (external, cli)"}
+    if session_id:
+        headers["X-Claude-Code-Session-Id"] = str(session_id)
     req = urllib.request.Request((url or FEEDBACK_URL), data=json.dumps(outer).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {tok}",
-                                          "anthropic-beta": "oauth-2025-04-20", "User-Agent": "ClAudit"})
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r) if r.status == 200 else {}

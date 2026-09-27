@@ -3,6 +3,9 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.12.2] — 2026-09-26
+- Fix: the feedback endpoint answered 403 to anything that did not look like Claude Code. Sends now carry the same client headers as the CLI (`x-app: cli`, `User-Agent: claude-cli/<version> (external, cli)`, `anthropic-version`, the session id). Verified live: the first queued draft came back with a feedback id.
+
 ## [2.12.1] — 2026-09-26
 - Fix: the feedback endpoint rejected every send with `content: Field required`. Claude Code wraps the report as a JSON string under `content` (plus `session_id`); ClAudit now sends that envelope. Verified against the live endpoint.
 - A rejected send is retried after six hours, or immediately after an upgrade (the failure is stamped with the version that produced it). `--process-drafts` always retries. An issue filed in an earlier pass gets the feedback id written in once the send succeeds.

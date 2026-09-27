@@ -1425,7 +1425,8 @@ def test_send_feedback_payload_and_failures(tmp_path, monkeypatch):
             return False
     def urlopen(req, timeout=0):
         got.update(url=req.full_url, outer=json.loads(req.data), auth=req.get_header("Authorization"),
-                   beta=req.get_header("Anthropic-beta"))
+                   beta=req.get_header("Anthropic-beta"), app=req.get_header("X-app"),
+                   ua=req.get_header("User-agent"), sid=req.get_header("X-claude-code-session-id"))
         return Resp()
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     d = dict(DRAFT, request_ids=["req_011CfA", "req_011CfB"])
@@ -1435,6 +1436,7 @@ def test_send_feedback_payload_and_failures(tmp_path, monkeypatch):
     assert isinstance(outer["content"], str)
     b = json.loads(outer["content"])
     assert got["url"] == cs.FEEDBACK_URL and got["auth"] == "Bearer tok123" and got["beta"] == "oauth-2025-04-20"
+    assert got["app"] == "cli" and got["ua"] == "claude-cli/2.1.283 (external, cli)" and got["sid"] == "s"
     assert b["latestAssistantMessageId"] == "req_011CfB" and b["transcript"] == [] and b["surface"] == "cli"
     assert b["version"] == "2.1.283" and b["message_count"] == 147 and b["gitRepo"] is False
     assert "issues/7" in b["description"] and "tok123" not in b["description"]
