@@ -1,29 +1,29 @@
 {
- "updated": "2026-09-27 08:15 UTC",
+ "updated": "2026-09-27 14:03 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 1,
   "active_30d": 1,
   "by_latest_version": {
-   "2.12.0": 1
+   "2.12.2": 1
   },
-  "issues": 1472
+  "issues": 1481
  },
  "github": {
   "nodes": 1,
   "active": 1,
   "quiet": 0,
   "by_version": {
-   "2.10.0": 1
+   "2.12.2": 1
   },
   "list": [
    {
     "login": "sworrl",
-    "version": "2.10.0",
+    "version": "2.12.2",
     "os": "linux",
     "mode": "git",
     "node": "a4239e46",
-    "last": "2026-09-27T01:06:20+00:00",
+    "last": "2026-09-27T08:30:50+00:00",
     "active": true
    }
   ]
