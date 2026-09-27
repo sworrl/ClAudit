@@ -1359,7 +1359,7 @@ def test_census_settings_env_var_and_notice(monkeypatch):
 def test_no_census_flag_persists(tmp_path, monkeypatch):
     """`claudit_scan.py --no-census --census` writes census_anon=false to config and reports off."""
     import subprocess
-    env = dict(os.environ, HOME=str(tmp_path))
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path))   # expanduser on POSIX / Windows
     env.pop("CLAUDIT_NO_CENSUS", None)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(root, "claudit_scan.py"), "--no-census", "--census"],
