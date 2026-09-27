@@ -381,8 +381,8 @@ def census_summary(url=None):
     else:
         L.append("  unavailable (offline, or nothing reported yet)")
     L += ["", f"This node: {node_id()} (random; delete {NODE_FILE} for a new one)",
-          f"  anonymous beat {'on' if CENSUS_ANON else 'off'} every {CENSUS_INTERVAL // 60} min · "
-          f"GitHub heartbeat {'on' if CENSUS_GITHUB else 'off'} (issue #{CENSUS_ISSUE})",
+          (f"  anonymous beat {'on' if CENSUS_ANON else 'off'} every {CENSUS_INTERVAL // 60} min · "
+          f"GitHub heartbeat {'on' if CENSUS_GITHUB else 'off'} (issue #{CENSUS_ISSUE})"),
           f"  sends: {json.dumps(census_payload())}"]
     return "\n".join(L)
 

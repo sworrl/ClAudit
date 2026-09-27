@@ -1058,12 +1058,12 @@ class Main(QtWidgets.QMainWindow):
         self._refresh_update_panel()
 
         grp("Census", [
-            ("census_anon", "Anonymous heartbeat", "Every 10 minutes: a random node id, the version, the OS "
+            ("census_anon", "Anonymous heartbeat", ("Every 10 minutes: a random node id, the version, the OS "
              "family, and git-or-pip to a Cloudflare Worker the maintainer runs. No IP, hostname, or account is "
-             "kept. Shows how many nodes run and on what version.", cs.CENSUS_ANON),
-            ("census_github", "GitHub heartbeat (login-visible)", f"Every 6 hours: edit one comment on "
+             "kept. Shows how many nodes run and on what version."), cs.CENSUS_ANON),
+            ("census_github", "GitHub heartbeat (login-visible)", (f"Every 6 hours: edit one comment on "
              f"sworrl/ClAudit#{cs.CENSUS_ISSUE} under YOUR GitHub login with version, OS, mode, and a short node "
-             "hash. Public. Off unless you want your name on the census.", cs.CENSUS_GITHUB)])
+             "hash. Public. Off unless you want your name on the census."), cs.CENSUS_GITHUB)])
 
         prow = QtWidgets.QHBoxLayout()
         pii = QtWidgets.QPushButton("Edit PII denylist…")
