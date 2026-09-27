@@ -104,6 +104,12 @@ def main():
         cfg["census_anon"] = False
         cs.save_config(cfg)
     cs.CENSUS_ANON, cs.CENSUS_GITHUB, cs.CENSUS_URL = cs.census_settings(cfg)
+    if "send_drafts" in cfg:
+        cs.SEND_DRAFTS = bool(cfg["send_drafts"])
+    if "file_drafts" in cfg:
+        cs.FILE_DRAFTS = bool(cfg["file_drafts"])
+    if "feedback_mirror" in cfg:
+        cs.FEEDBACK_MIRROR = bool(cfg["feedback_mirror"])
     if cs.CENSUS_ANON and not cfg.get("census_notice_shown") and not args.screenshot:
         # first launch with the heartbeat on: say so in red, once, with the off switch right there
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Information, "ClAudit: install census",

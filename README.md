@@ -7,7 +7,7 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.11.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.12.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
@@ -124,6 +124,7 @@ button, mirrored in the tray menu.
 - [Configuration](#configuration)
 - [Updates](#updates)
 - [Autostart](#autostart)
+- [Claude Code's own bug reports, and the feedback channel](#claude-codes-own-bug-reports-and-the-feedback-channel)
 - [Census](#census)
 - [Local data](#local-data)
 - [Responsible use](#responsible-use)
@@ -408,6 +409,8 @@ Filing and detection:
 | `--gate` | Opt-in LLM pre-filter that skips blocks it deems clearly correct |
 | `--limit N` | Cap findings handled this run (0 = all) |
 | `--no-census` | Turn the anonymous install heartbeat off and remember it |
+| `--drafts` | List Claude Code's queued bug-report drafts and what ClAudit did with each |
+| `--process-drafts` | One pass: send queued drafts to Anthropic, file the safety-classifier ones on GitHub |
 | `--max-live-age N` | Live-file only blocks younger than N days; older ones go to the backlog (default 7; 0 = no cutoff) |
 
 Backfill:
@@ -526,11 +529,12 @@ State and config live in `~/.claude/claudit/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `census_anon`, `census_github`, `census_url`, `agy_project`, `agy_review_model`, `umbrella_issue` |
+| `config.json` | Saved settings, all live in the Settings tab: `llm_scrub`, `burn_tokens`, `gate`, `dwell_autofile`, `dwell_seconds`, `auto`, `backfill`, `defend`, `reopen`, `closures`, `amplify`, `report_harness`, `interval`, `watchdog`, `llm_engine`, `llm_model`, `llm_effort`, `usage_guard_pct`, `max_live_age_days`, `auto_update`, `census_anon`, `census_github`, `census_url`, `send_drafts`, `file_drafts`, `feedback_mirror`, `agy_project`, `agy_review_model`, `umbrella_issue` |
 | `tokens.json` | ClAudit's own LLM usage per engine, plus a rolling 7-day per-call history |
 | `usage.json` | Five-minute cache of your plan windows. Safe to delete |
 | `node_id` | This install's random census id. Delete it to become a new node |
 | `census.json` | When each heartbeat last went out |
+| `drafts-sent/` | Copies of Claude Code drafts ClAudit sent, with their feedback ids and issue links |
 | `scrub.txt` | Your PII denylist. Never committed |
 | `mute.txt` | Terms that stop a finding from being filed or sent to any LLM at all |
 | `filed.json` | Dedup state: filed and baselined findings, dwell holds, session chains, closure records |
@@ -580,6 +584,30 @@ generated launcher if you want auto-filing at login.
 
 The macOS and Windows installers were written against the platform docs, not on a Mac or a Windows
 box. If one misbehaves, say so on [#4](https://github.com/sworrl/ClAudit/issues/4).
+
+## Claude Code's own bug reports, and the feedback channel
+
+Claude Code now drafts a bug report itself when a block (or its own mistake) derails a session,
+stores it under `~/.claude/feedback/drafts/`, and shows a card: "1 to review · 2 to send · 0 to
+dismiss". Pressing 2 posts the draft to Anthropic's CLI feedback endpoint with your Claude Code
+login. ClAudit does the keypress for you, and ties that channel to its own:
+
+- Every queued draft is sent to Anthropic, without a transcript, with the ClAudit GitHub issue links
+  for the same Request IDs in its description. A copy goes to `~/.claude/claudit/drafts-sent/` and
+  the card clears, the same as after a manual send. Config `send_drafts` (on).
+- Drafts about the safety classifier also become ClAudit issues on GitHub, quoting Claude Code's
+  own account of the block, with the feedback id and draft id on the issue. If ClAudit already filed
+  one of the draft's Request IDs, the account is appended to that issue instead. Only while auto-post
+  or dwell filing is on, and only inside the live window. Config `file_drafts` (on). Drafts about the
+  model's own mistakes (a wrong answer, a destructive action) are sent to Anthropic only; they are not
+  false-positive reports.
+- The other direction: every report ClAudit files on GitHub is also sent to the feedback endpoint
+  with its GitHub URL, and the issue body then carries the feedback id it received. One report, two
+  channels, each pointing at the other. Config `feedback_mirror` (on).
+
+A draft that contains a mute term is not sent anywhere. `CLAUDE_CODE_DISABLE_FEEDBACK=1` stops all
+sending. `python3 claudit_scan.py --drafts` lists the queue and what happened to each;
+`--process-drafts` runs one pass. The three toggles are in Settings under "Anthropic feedback channel".
 
 ## Census
 

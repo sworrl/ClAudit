@@ -22,6 +22,7 @@ Flags: --interval N (watch poll secs, default 30), --delay N (secs between posts
 import argparse
 import atexit
 import collections
+import glob
 import hashlib
 import json
 import os
@@ -51,7 +52,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -407,6 +408,352 @@ def census_summary(url=None):
           (f"  anonymous beat {'on' if CENSUS_ANON else 'off'} every {CENSUS_INTERVAL // 60} min · "
           f"GitHub heartbeat {'on' if CENSUS_GITHUB else 'off'} (issue #{CENSUS_ISSUE})"),
           f"  sends: {json.dumps(census_payload())}"]
+    return "\n".join(L)
+
+
+# ---- Claude Code's own bug-report drafts (SendFeedback) ----
+# Since 2.1.28x Claude Code drafts a bug report itself when a safeguards block (or its own
+# mistake) derails a session, stores it under ~/.claude/feedback/drafts/, and shows a card:
+# "1 to review · 2 to send · 0 to dismiss". Pressing 2 POSTs the draft to
+# api.anthropic.com/api/claude_cli_feedback with the CLI's OAuth login. ClAudit can do both halves
+# without the keypress: send every queued draft to Anthropic (send_drafts), and file the ones about
+# the safety classifier as ClAudit issues on GitHub (file_drafts), deduped against the Request IDs
+# it already reported. Drafts are never sent with a transcript.
+DRAFTS_DIR = os.path.expanduser("~/.claude/feedback/drafts")
+DRAFTS_SENT_DIR = os.path.join(STATE_DIR, "drafts-sent")
+FEEDBACK_URL = "https://api.anthropic.com/api/claude_cli_feedback"
+SEND_DRAFTS = True          # config send_drafts
+FILE_DRAFTS = True          # config file_drafts (GitHub; only while auto / dwell filing is on)
+DRAFTS_INTERVAL = 60
+SAFETY_HINTS = ("safety classifier", "safeguard", "cyber", "usage policy", "policy block",
+                "false positive", "flagged", "refus", "blocked by")
+
+
+def list_drafts(path=None):
+    """Queued SendFeedback drafts, oldest first. request_ids arrives as a JSON string; normalized."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(path or DRAFTS_DIR, "*.json"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or not d.get("draft_id"):
+            continue
+        r = d.get("request_ids")
+        if isinstance(r, str):
+            try:
+                r = json.loads(r)
+            except ValueError:
+                r = REQ_ID.findall(r)
+        d["request_ids"] = [x for x in (r or []) if isinstance(x, str) and REQ_ID.fullmatch(x)]
+        d["_path"] = f
+        out.append(d)
+    out.sort(key=lambda d: d.get("created_at", ""))
+    return out
+
+
+def draft_text(d):
+    return " ".join(str(d.get(k) or "") for k in ("title", "details", "area"))
+
+
+def draft_is_safety(d, req_kinds=None):
+    """A draft about the safety classifier (as opposed to the model's own mistake): any of its
+    Request IDs is a cyber/aup block ClAudit knows, or the text says so."""
+    if req_kinds and any(req_kinds.get(r) in FILE_KINDS for r in d.get("request_ids", [])):
+        return True
+    t = draft_text(d).lower()
+    return any(h in t for h in SAFETY_HINTS) and ("classifier" in t or "safeguard" in t or "block" in t)
+
+
+def draft_kind(d, req_kinds=None):
+    for r in d.get("request_ids", []):
+        if req_kinds and req_kinds.get(r) in FILE_KINDS:
+            return req_kinds[r]
+    t = draft_text(d).lower()
+    # "safety classifier" in Claude Code's wording is the cybersecurity classifier; the Usage
+    # Policy block calls itself that, so only explicit policy wording maps to aup.
+    if "usage policy" in t or "policy block" in t or "acceptable use" in t:
+        return "aup"
+    return "cyber"
+
+
+def draft_description(d, related=()):
+    """The description Claude Code would upload for this draft, rebuilt from the stored fields
+    (title, details, area, failure mode, task, Request IDs), plus the ClAudit GitHub reports that
+    carry the same Request IDs so both channels point at each other. No cwd, no transcript."""
+    L = [str(d.get("title") or "").strip(), "", str(d.get("details") or "").strip(), ""]
+    if related:
+        L += ["ClAudit GitHub reports for these Request IDs:"] + [f"- {u}" for u in related] + [""]
+    meta = [f"Type: {d.get('type') or 'bug'}"]
+    for key, label in (("area", "Area"), ("failure_mode", "Failure mode"), ("task_category", "Task"),
+                       ("trigger", "Trigger"), ("model", "Model"), ("cli_version", "Claude Code"), ("os", "OS")):
+        if d.get(key):
+            meta.append(f"{label}: {d[key]}")
+    if d.get("request_ids"):
+        meta.append("Request IDs: " + ", ".join(d["request_ids"]))
+    L += meta
+    L += ["", (f"Submitted from a Claude Code SendFeedback draft ({d.get('draft_id')}) by ClAudit v{__version__} "
+              f"({PROJECT_URL}), no transcript attached.")]
+    return "\n".join(L)
+
+
+FEEDBACK_MIRROR = True      # config feedback_mirror: every ClAudit GitHub report also goes to the CLI
+                            # feedback channel, with its GitHub URL; the issue then carries the feedback id
+FEEDBACK_LINE = "**Anthropic feedback id:**"
+
+
+def send_feedback(description, reqs=(), message_count=0, cli_version="", url=None, timeout=30):
+    """POST one report to the CLI feedback endpoint the way Claude Code's send key does, minus the
+    transcript, using the machine's own Claude Code login. Returns (ok, feedback_id_or_reason)."""
+    import urllib.error
+    import urllib.request
+    if os.environ.get("CLAUDE_CODE_DISABLE_FEEDBACK", "").strip().lower() in ("1", "true", "yes"):
+        return False, "feedback disabled by CLAUDE_CODE_DISABLE_FEEDBACK"
+    tok = claudit._oauth_credentials().get("accessToken")
+    if not tok:
+        return False, "no Claude Code login (~/.claude/.credentials.json)"
+    reqs = list(reqs or [])
+    body = {"latestAssistantMessageId": reqs[-1] if reqs else None,
+            "latestAssistantAPIMessageId": None, "lastInterruptedAssistantAPIMessageId": None,
+            "message_count": int(message_count or 0),
+            "datetime": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "description": description, "surface": "cli",
+            "platform": {"linux": "linux", "darwin": "darwin", "windows": "win32"}.get(
+                platform.system().lower(), platform.system().lower()),
+            "gitRepo": False, "commitSha": None, "version": str(cli_version or ""),
+            "transcript": []}
+    req = urllib.request.Request((url or FEEDBACK_URL), data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {tok}",
+                                          "anthropic-beta": "oauth-2025-04-20", "User-Agent": "ClAudit"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r) if r.status == 200 else {}
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code}: {(e.read() or b'')[:200].decode('utf-8', 'replace')}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    fid = (data or {}).get("feedback_id")
+    return (True, str(fid)) if fid else (False, "request did not return feedback_id")
+
+
+def send_draft_to_anthropic(d, related=(), url=None, timeout=30):
+    """A SendFeedback draft to Anthropic, with the ClAudit issue links for its Request IDs."""
+    return send_feedback(draft_description(d, related), d.get("request_ids") or [],
+                         d.get("message_count") or 0, d.get("cli_version") or "", url=url, timeout=timeout)
+
+
+def issue_url(repo, num):
+    return f"https://github.com/{repo}/issues/{str(num).lstrip('#')}"
+
+
+def related_issue_urls(repo, reqs, state):
+    """ClAudit issues already carrying any of these Request IDs (dwell map + baseline records)."""
+    urls = []
+    filed = state.get("__filed_reqs__", {})
+    for r in reqs or []:
+        if r in filed:
+            urls.append(issue_url(repo, filed[r]))
+    for sig, rec in state.items():
+        if sig.startswith("__") or not isinstance(rec, dict) or not rec.get("issue"):
+            continue
+        if any(r in (rec.get("reqs") or []) for r in reqs or []):
+            urls.append(rec.get("url") or issue_url(repo, rec["issue"]))
+    return sorted(set(urls))
+
+
+def mirror_report_to_feedback(title, body, url, reqs):
+    """The other direction: a ClAudit GitHub report also goes to the CLI feedback channel, carrying
+    its GitHub URL, and the issue body then gets the feedback id. Never raises."""
+    if not FEEDBACK_MIRROR:
+        return ""
+    desc = (f"{title}\n\n{body}\n\nGitHub report: {url}\n"
+            f"Submitted by ClAudit v{__version__} ({PROJECT_URL}); the GitHub issue above is the same report.")
+    try:
+        ok, info = send_feedback(desc, reqs)
+    except Exception as e:
+        ok, info = False, str(e)
+    if not ok:
+        print(f"  feedback mirror failed: {info}", file=sys.stderr)
+        return ""
+    return info
+
+
+def gh_edit_body(repo, num, body):
+    r = subprocess.run(["gh", "issue", "edit", str(num).lstrip("#"), "-R", repo, "--body", body],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def with_feedback_line(body, fid, draft_id=""):
+    """Put the feedback id (and draft id) on the report, above the ClAudit footer."""
+    line = f"{FEEDBACK_LINE} `{fid}`" + (f" · Claude Code draft `{draft_id}`" if draft_id else "")
+    if FEEDBACK_LINE in body:
+        return re.sub(re.escape(FEEDBACK_LINE) + r".*", line, body, count=1)
+    marker = "\n---\n<sub>"
+    return body.replace(marker, f"\n{line}\n{marker}", 1) if marker in body else body + f"\n\n{line}\n"
+
+
+def build_draft_issue(d, kind, related=()):
+    """A ClAudit issue from a safety-classifier draft: Claude Code's own account of the block."""
+    reqs = d.get("request_ids") or []
+    related_block = ("\n### Related ClAudit reports (same Request IDs)\n"
+                     + "\n".join(f"- {u}" for u in related) + "\n") if related else ""
+    lead = reqs[0] if reqs else f"draft-{str(d.get('draft_id'))[:8]}"
+    title = scrub(f"[Bug][{kind}] {str(d.get('title') or 'Claude Code drafted a report of a safety block').strip()[:110]} ({lead})")[0]
+    details = scrub(str(d.get("details") or "").strip())[0]
+    req_lines = "\n".join(f"- `{r}`" for r in reqs) or "- (none recorded on the draft)"
+    mdl = model_label(str(d.get("model") or "")) or ""
+    triage = (f"**Triage:** kind `{kind}` · source `claude-code-draft` · "
+              + (f"model `{mdl}` · " if mdl else "")
+              + f"failure mode `{d.get('failure_mode') or '?'}` · severity **session-halted** (blocked authorized work) · "
+              "reproducible: yes, server-side via the Request ID(s) below")
+    body = f"""{triage}
+
+**Type:** {FILE_KINDS.get(kind, kind)}  ·  **Written by:** Claude Code itself (SendFeedback draft {d.get('draft_id')})
+
+### Claude Code's own report of this block
+Claude Code drafted the text below at the time of the block, unprompted, as a bug report for Anthropic. It is reproduced as written (PII-scrubbed). The same draft was submitted through the CLI feedback channel.
+
+{details}
+
+### Request IDs (lookup-able server-side)
+{req_lines}
+
+**Environment:** Claude Code {d.get('cli_version') or '?'} on {d.get('os') or '?'}{(' · ' + mdl) if mdl else ''}
+{FEEDBACK_LINE} sending
+{related_block}
+---
+<sub>Filed automatically by [ClAudit v{__version__}]({PROJECT_URL}) from a bug report Claude Code drafted on its own. ClAudit is a FOSS tool for reporting false-positive Claude Code blocks.</sub>"""
+    return title, claudit.llm_redact(body)
+
+
+def _draft_muted(d):
+    t = draft_text(d).lower() + " " + str(d.get("cwd") or "").lower()
+    return any(term in t for term in muted_terms())
+
+
+def process_drafts(state, repo, github=True, on_event=None, path=None):
+    """One pass over the queued drafts, tying the two channels together. For each draft not yet
+    handled: (1) if it is about the safety classifier and `github` is on, a ClAudit issue is created
+    (or the issue already carrying one of its Request IDs is chosen); (2) if SEND_DRAFTS, the draft
+    goes to Anthropic with every related ClAudit issue URL in its description; (3) the feedback id
+    and draft id are written onto the GitHub issue (body edit for a new issue, a comment on an
+    existing one). A draft with a mute term is never sent anywhere. Filing honors the live window;
+    sending does not (a queued draft is the user's own pending report). Returns actions taken."""
+    done = state.setdefault("__drafts__", {})
+    filed_reqs = state.setdefault("__filed_reqs__", {})
+    drafts = list_drafts(path)
+    if not drafts:
+        return 0
+    req_kinds = {}
+    try:
+        for f in scan(ttl=8)[0].values():
+            for o in f.get("occ", []):
+                if o.get("req"):
+                    req_kinds[o["req"]] = f["kind"]
+    except Exception:
+        pass
+    acted = 0
+    for d in drafts:
+        did = d["draft_id"]
+        rec = done.get(did) or {}
+        if rec.get("skipped") or (rec.get("sent") and (rec.get("issue") or not github)):
+            continue
+        if _draft_muted(d):
+            done[did] = {"skipped": "muted", "at": time.time()}
+            save_state(state)
+            print(f"  drafts: {did[:8]} contains a mute term; not sent anywhere", file=sys.stderr)
+            continue
+        rec = done.setdefault(did, {"title": str(d.get("title") or "")[:120], "reqs": d.get("request_ids", []),
+                                    "at": time.time()})
+        reqs = d.get("request_ids", [])
+        related = related_issue_urls(repo, reqs, state)
+        safety = draft_is_safety(d, req_kinds)
+        new_issue, existing = None, None
+        # (1) GitHub side, so the Anthropic submission can point at it
+        if github and FILE_DRAFTS and safety and not rec.get("issue") and not rec.get("filed_skip"):
+            if _too_old_to_live_file(d.get("created_at", "")):
+                rec["filed_skip"] = "older than the live window"
+            else:
+                kind = draft_kind(d, req_kinds)
+                existing = next((filed_reqs[r] for r in reqs if r in filed_reqs), None)
+                if not existing:
+                    try:
+                        title, body = build_draft_issue(d, kind, related)
+                        url = gh_create(repo, title, body, mirror=False)
+                        num = url.rsplit("/", 1)[-1]
+                        new_issue = (num, body)
+                        rec["issue"] = url
+                        for r in reqs:
+                            filed_reqs.setdefault(r, num)
+                        related = sorted(set(related) | {url})
+                        acted += 1
+                        if on_event:
+                            on_event("draft-filed", title, url)
+                    except subprocess.CalledProcessError as e:
+                        rec["file_error"] = str(e)[:200]
+        # (2) Anthropic side, carrying every ClAudit link for these Request IDs
+        if SEND_DRAFTS and not rec.get("sent"):
+            ok, info = send_draft_to_anthropic(d, related)
+            if ok:
+                rec["sent"] = info
+                rec["related"] = related
+                try:                                    # keep a copy, then clear the card like Claude Code does
+                    os.makedirs(DRAFTS_SENT_DIR, exist_ok=True)
+                    with open(os.path.join(DRAFTS_SENT_DIR, os.path.basename(d["_path"])), "w", encoding="utf-8") as fh:
+                        json.dump(dict({k: v for k, v in d.items() if k != "_path"}, feedback_id=info,
+                                       claudit_issues=related), fh, indent=1)
+                    os.remove(d["_path"])
+                except OSError:
+                    pass
+                acted += 1
+                if on_event:
+                    on_event("draft-sent", rec["title"], f"feedback {info}")
+            else:
+                rec["send_error"] = info
+                print(f"  drafts: send failed for {did[:8]}: {info}", file=sys.stderr)
+        # (3) the ids back onto GitHub
+        fid = rec.get("sent") or ""
+        try:
+            if new_issue and fid:
+                gh_edit_body(repo, new_issue[0], with_feedback_line(new_issue[1], fid, did))
+            elif existing and not rec.get("issue"):
+                _t, body = build_draft_issue(d, draft_kind(d, req_kinds), related)
+                note = body.split("### Request IDs")[0].strip()
+                note = note.replace(f"{FEEDBACK_LINE} sending", "").strip()
+                gh_comment(repo, str(existing), note + "\n\n"
+                           + (f"{FEEDBACK_LINE} `{fid}` · " if fid else "") + f"Claude Code draft `{did}`"
+                           + f"\n\n<sub>Appended by ClAudit v{__version__}: Claude Code's own draft for this block.</sub>")
+                rec["issue"] = f"comment:#{existing}"
+                acted += 1
+                if on_event:
+                    on_event("draft-appended", rec["title"], f"#{existing}")
+        except subprocess.CalledProcessError as e:
+            rec["file_error"] = str(e)[:200]
+        save_state(state)
+    return acted
+
+
+def drafts_summary(state=None):
+    state = state or load_state()
+    done = state.get("__drafts__", {})
+    L = [f"Claude Code bug-report drafts in {DRAFTS_DIR}:"]
+    drafts = list_drafts()
+    if not drafts:
+        L.append("  (none queued)")
+    for d in drafts:
+        rec = done.get(d["draft_id"], {})
+        L.append(f"  {d.get('created_at', '')[:10]}  {'safety' if draft_is_safety(d) else 'model '}  "
+                 f"{len(d.get('request_ids', []))} req  {str(d.get('title') or '')[:70]}"
+                 + (f"  [sent {rec['sent']}]" if rec.get("sent") else "")
+                 + (f"  [{rec['issue']}]" if rec.get("issue") else ""))
+    sent = sum(1 for r in done.values() if r.get("sent"))
+    filed = sum(1 for r in done.values() if r.get("issue"))
+    L.append(f"Handled so far: {sent} sent to Anthropic, {filed} filed or appended on GitHub, "
+             f"{sum(1 for r in done.values() if r.get('skipped'))} muted.")
+    L.append(f"send_drafts {'on' if SEND_DRAFTS else 'off'} · file_drafts {'on' if FILE_DRAFTS else 'off'} · "
+             f"feedback_mirror {'on' if FEEDBACK_MIRROR else 'off'}")
     return "\n".join(L)
 
 
@@ -917,9 +1264,15 @@ def log_issue(f, repo, url):
         fh.write(json.dumps(rec) + "\n")
 
 
-def gh_create(repo, title, body):
+def gh_create(repo, title, body, mirror=True):
+    """Create the issue; then, for a ClAudit report, mirror it to the CLI feedback channel and write
+    the feedback id it received into the issue body (mirror=False for drafts, which are the feedback)."""
     out = subprocess.run(["gh", "issue", "create", "-R", repo, "--title", title, "--body", body],
                          capture_output=True, text=True, check=True).stdout.strip()
+    if mirror and FEEDBACK_MIRROR and "Filed automatically by" in body:
+        fid = mirror_report_to_feedback(title, body, out, REQ_ID.findall(body))
+        if fid:
+            gh_edit_body(repo, out.rsplit("/", 1)[-1], with_feedback_line(body, fid))
     return out  # issue URL
 
 
@@ -2559,7 +2912,7 @@ def update_tracking(repo, num):
 
 
 def main():
-    global MAX_LIVE_AGE_DAYS, CENSUS_ANON, CENSUS_GITHUB, CENSUS_URL
+    global MAX_LIVE_AGE_DAYS, CENSUS_ANON, CENSUS_GITHUB, CENSUS_URL, SEND_DRAFTS, FILE_DRAFTS, FEEDBACK_MIRROR
     p = argparse.ArgumentParser(description="Watch Claude Code sessions for safety/AUP blocks.")
     p.add_argument("--version", action="version", version=f"ClAudit {__version__}")
     p.add_argument("--baseline", action="store_true", help="mark all current findings seen, file nothing")
@@ -2615,6 +2968,10 @@ def main():
     p.add_argument("--doctor", action="store_true",
                    help="check the environment (gh, LLM CLIs, Claude login, PyQt6, notifications, state, "
                         "version) and exit non-zero on a hard failure")
+    p.add_argument("--drafts", action="store_true",
+                   help="list Claude Code's queued bug-report drafts and what ClAudit did with them, then exit")
+    p.add_argument("--process-drafts", dest="process_drafts", action="store_true",
+                   help="one shot: send every queued draft to Anthropic and file the safety-classifier ones on GitHub")
     p.add_argument("--no-census", dest="no_census", action="store_true",
                    help="turn the anonymous install heartbeat OFF and remember it (config census_anon=false)")
     p.add_argument("--census", action="store_true",
@@ -2656,6 +3013,12 @@ def main():
         save_config(cfg)
         print("census: anonymous heartbeat turned OFF and saved to config.json", file=sys.stderr)
     CENSUS_ANON, CENSUS_GITHUB, CENSUS_URL = census_settings(cfg)
+    if "send_drafts" in cfg:
+        SEND_DRAFTS = bool(cfg["send_drafts"])
+    if "file_drafts" in cfg:
+        FILE_DRAFTS = bool(cfg["file_drafts"])
+    if "feedback_mirror" in cfg:
+        FEEDBACK_MIRROR = bool(cfg["feedback_mirror"])
     if args.engine:
         claudit.LLM_ENGINE = str(args.engine)
     elif cfg.get("llm_engine"):
@@ -2700,6 +3063,17 @@ def main():
         rows = doctor_rows()
         print(doctor_text(rows))
         sys.exit(1 if any(r[0] == 'fail' for r in rows) else 0)
+
+    if args.drafts:
+        print(drafts_summary(state))
+        return
+
+    if args.process_drafts:
+        n = process_drafts(state, args.repo, github=True,
+                           on_event=lambda a, t, u: print(f"  {a}: {t[:70]} {u}", file=sys.stderr))
+        print(f"drafts: {n} action(s).")
+        print(drafts_summary(state))
+        return
 
     if args.census:
         print(census_summary())
@@ -2783,6 +3157,7 @@ def main():
             announce_pending(state, args.repo, args.delay)   # surface anything already queued
         last_live, last_bf, bf_done = 0.0, 0.0, 0
         last_defend, last_track, last_reopen, last_closures = 0.0, 0.0, 0.0, 0.0
+        last_drafts = 0.0
         bf_delay = max(4.0, float(args.backfill_interval))
         atexit.register(census_stop)
         try:
@@ -2792,6 +3167,12 @@ def main():
                     census_tick()
                 except Exception:
                     pass
+                if now - last_drafts >= DRAFTS_INTERVAL:   # Claude Code's own drafts: send, file if auto
+                    last_drafts = now
+                    try:
+                        process_drafts(state, args.repo, github=args.auto, on_event=notify)
+                    except Exception as e:
+                        print(f"  ! drafts: {e}", file=sys.stderr)
                 if now - last_live >= args.interval:   # LIVE: new blocks fire as seen
                     last_live = now
                     if args.auto:

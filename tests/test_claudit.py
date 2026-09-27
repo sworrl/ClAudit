@@ -1368,3 +1368,164 @@ def test_no_census_flag_persists(tmp_path, monkeypatch):
     cfg = json.load(open(tmp_path / ".claude" / "claudit" / "config.json"))
     assert cfg["census_anon"] is False
     assert "GitHub heartbeat off" in r.stdout and "anonymous beat off" in r.stdout
+
+
+# ---------------- Claude Code's own bug-report drafts, tied to ClAudit reports ----------------
+DRAFT = {
+    "draft_id": "1626a3e8-1d42-4af2-9110-6a278bd1bd67", "created_at": None, "source_session_id": "s",
+    "cwd": "/home/u/Documents/GitHub/acme-fleet", "model": "claude-opus-4-8", "cli_version": "2.1.283",
+    "os": "linux x64", "request_ids": '["req_011CfA", "req_011CfB"]', "type": "bug",
+    "title": "Safety classifier repeatedly blocks assistant from completing authorized MSP endpoint deployment",
+    "details": "**What happened:** the safety classifier hard-stopped my response 3x on host 10.0.0.5 for acme-corp.",
+    "area": "safety classifier", "failure_mode": "over_correction", "task_category": "other",
+    "trigger": "model_judgment", "message_count": 147, "status": "queued",
+}
+MODEL_DRAFT = dict(DRAFT, draft_id="24f97f95-2210-410b-8996-fba88b72bff9", request_ids='["req_011CfZ"]',
+                   title="Confident wrong answer on a live incident", area=None, failure_mode="overconfidence_and_hallucination",
+                   details="**What happened:** answered from a snapshot instead of the log.")
+
+
+def _write_drafts(tmp_path, *drafts, age_s=60):
+    import time
+    ddir = tmp_path / "drafts"
+    ddir.mkdir(parents=True, exist_ok=True)
+    for d in drafts:
+        d = dict(d, created_at=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - age_s)))
+        (ddir / f"{d['draft_id']}.json").write_text(json.dumps(d))
+    return str(ddir)
+
+
+def test_list_drafts_and_classification(tmp_path):
+    ddir = _write_drafts(tmp_path, DRAFT, MODEL_DRAFT)
+    ds = cs.list_drafts(ddir)
+    assert [d["draft_id"] for d in ds] == [DRAFT["draft_id"], MODEL_DRAFT["draft_id"]]
+    assert ds[0]["request_ids"] == ["req_011CfA", "req_011CfB"]              # JSON string normalized
+    assert cs.draft_is_safety(ds[0]) is True and cs.draft_is_safety(ds[1]) is False
+    assert cs.draft_is_safety(ds[1], {"req_011CfZ": "cyber"}) is True         # a known cyber block wins
+    assert cs.draft_kind(ds[0], {}) == "cyber" and cs.draft_kind(ds[1], {"req_011CfZ": "aup"}) == "aup"
+    desc = cs.draft_description(ds[0], ["https://github.com/o/r/issues/7"])
+    assert desc.startswith(DRAFT["title"]) and "Request IDs: req_011CfA, req_011CfB" in desc
+    assert "ClAudit GitHub reports for these Request IDs:\n- https://github.com/o/r/issues/7" in desc
+    assert "/home/u/" not in desc and "no transcript attached" in desc
+
+
+def test_send_feedback_payload_and_failures(tmp_path, monkeypatch):
+    import urllib.request
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_FEEDBACK", raising=False)
+    monkeypatch.setattr(claudit, "_oauth_credentials", lambda: {"accessToken": "tok123"})
+    got = {}
+
+    class Resp:
+        status = 200
+        def read(self):
+            return b'{"feedback_id": "fb_42"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    def urlopen(req, timeout=0):
+        got.update(url=req.full_url, body=json.loads(req.data), auth=req.get_header("Authorization"),
+                   beta=req.get_header("Anthropic-beta"))
+        return Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    d = dict(DRAFT, request_ids=["req_011CfA", "req_011CfB"])
+    assert cs.send_draft_to_anthropic(d, ["https://github.com/o/r/issues/7"]) == (True, "fb_42")
+    b = got["body"]
+    assert got["url"] == cs.FEEDBACK_URL and got["auth"] == "Bearer tok123" and got["beta"] == "oauth-2025-04-20"
+    assert b["latestAssistantMessageId"] == "req_011CfB" and b["transcript"] == [] and b["surface"] == "cli"
+    assert b["version"] == "2.1.283" and b["message_count"] == 147 and b["gitRepo"] is False
+    assert "issues/7" in b["description"] and "tok123" not in b["description"]
+    assert set(b) == {"latestAssistantMessageId", "latestAssistantAPIMessageId", "lastInterruptedAssistantAPIMessageId",
+                      "message_count", "datetime", "description", "surface", "platform", "gitRepo", "commitSha",
+                      "version", "transcript"}
+    monkeypatch.setattr(claudit, "_oauth_credentials", lambda: {})
+    assert cs.send_feedback("x")[0] is False
+    monkeypatch.setattr(claudit, "_oauth_credentials", lambda: {"accessToken": "tok123"})
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_FEEDBACK", "1")
+    assert "disabled" in cs.send_feedback("x")[1]
+
+
+def test_process_drafts_ties_both_channels(tmp_path, monkeypatch):
+    """Safety draft: GitHub issue first (so Anthropic gets the link), then the feedback id and draft
+    id go onto the issue. Model-behavior draft: sent to Anthropic only. Second pass: nothing."""
+    ddir = _write_drafts(tmp_path, DRAFT, MODEL_DRAFT)
+    monkeypatch.setattr(cs, "DRAFTS_SENT_DIR", str(tmp_path / "sent"))
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: ({}, {}))
+    monkeypatch.setattr(cs, "save_state", lambda st: None)
+    monkeypatch.setattr(cs, "muted_terms", lambda: [])
+    monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 7)
+    monkeypatch.setattr(cs, "SEND_DRAFTS", True)
+    monkeypatch.setattr(cs, "FILE_DRAFTS", True)
+    created, edited, comments, sent = [], [], [], []
+    monkeypatch.setattr(cs, "gh_create", lambda r, t, b, mirror=True: created.append((t, b, mirror)) or f"https://github.com/{r}/issues/{40 + len(created)}")
+    monkeypatch.setattr(cs, "gh_edit_body", lambda r, n, b: edited.append((n, b)) or True)
+    monkeypatch.setattr(cs, "gh_comment", lambda r, n, b: comments.append((n, b)))
+    monkeypatch.setattr(cs, "send_draft_to_anthropic", lambda d, related=(), **k: sent.append((d["draft_id"], list(related))) or (True, f"fb_{d['draft_id'][:4]}"))
+    monkeypatch.setattr(claudit, "llm_redact", lambda b: b)
+    state = {}
+    events = []
+    n = cs.process_drafts(state, "o/r", github=True, on_event=lambda a, t, u: events.append(a), path=ddir)
+    assert n == 3 and sorted(events) == ["draft-filed", "draft-sent", "draft-sent"]
+    title, body, mirror = created[0]
+    assert title.startswith("[Bug][cyber]") and "(req_011CfA)" in title and mirror is False
+    assert "10.0.0.5" not in body and "[IP]" in body                                  # regex-scrubbed
+    assert "### Claude Code's own report of this block" in body and "`req_011CfB`" in body
+    assert sent[0] == (DRAFT["draft_id"], ["https://github.com/o/r/issues/41"])      # Anthropic got the link
+    assert sent[1] == (MODEL_DRAFT["draft_id"], [])                                   # model draft: no issue
+    assert edited[0][0] == "41" and "**Anthropic feedback id:** `fb_1626` · Claude Code draft `1626a3e8" in edited[0][1]
+    assert "sending" not in edited[0][1]
+    assert state["__filed_reqs__"] == {"req_011CfA": "41", "req_011CfB": "41"}
+    assert not os.path.exists(os.path.join(ddir, f"{DRAFT['draft_id']}.json"))          # card cleared
+    kept = json.load(open(tmp_path / "sent" / f"{DRAFT['draft_id']}.json"))
+    assert kept["feedback_id"] == "fb_1626" and kept["claudit_issues"] == ["https://github.com/o/r/issues/41"]
+    assert cs.process_drafts(state, "o/r", github=True, path=ddir) == 0                 # idempotent
+    # a draft whose Request ID was already filed: comment on that issue, no new issue
+    ddir2 = _write_drafts(tmp_path / "two", dict(DRAFT, draft_id="aaaaaaaa-0000-0000-0000-000000000000",
+                                                request_ids='["req_011CfA"]'))
+    state2 = {"__filed_reqs__": {"req_011CfA": "12"}}
+    assert cs.process_drafts(state2, "o/r", github=True, path=ddir2) == 2
+    assert len(created) == 1 and comments[0][0] == "12"
+    assert "Claude Code draft `aaaaaaaa" in comments[0][1] and "`fb_aaaa`" in comments[0][1]
+    assert sent[-1][1] == ["https://github.com/o/r/issues/12"]
+
+
+def test_process_drafts_muted_and_stale_and_mirror(tmp_path, monkeypatch):
+    real_create = cs.gh_create
+    ddir = _write_drafts(tmp_path, dict(DRAFT, draft_id="bbbbbbbb-0000-0000-0000-000000000000"), age_s=30 * 86400)
+    monkeypatch.setattr(cs, "scan", lambda ttl=0: ({}, {}))
+    monkeypatch.setattr(cs, "save_state", lambda st: None)
+    monkeypatch.setattr(cs, "MAX_LIVE_AGE_DAYS", 7)
+    monkeypatch.setattr(cs, "DRAFTS_SENT_DIR", str(tmp_path / "sent"))
+    sent, created = [], []
+    monkeypatch.setattr(cs, "send_draft_to_anthropic", lambda d, related=(), **k: sent.append(d["draft_id"]) or (True, "fb"))
+    monkeypatch.setattr(cs, "gh_create", lambda *a, **k: created.append(a) or "https://github.com/o/r/issues/1")
+    monkeypatch.setattr(cs, "gh_edit_body", lambda *a: True)
+    # muted: nothing anywhere
+    monkeypatch.setattr(cs, "muted_terms", lambda: ["acme-corp"])
+    st = {}
+    assert cs.process_drafts(st, "o/r", path=ddir) == 0 and sent == [] and created == []
+    assert st["__drafts__"]["bbbbbbbb-0000-0000-0000-000000000000"]["skipped"] == "muted"
+    # stale: sent to Anthropic (the user's own pending report) but not live-filed on GitHub
+    monkeypatch.setattr(cs, "muted_terms", lambda: [])
+    ddir = _write_drafts(tmp_path / "s", dict(DRAFT, draft_id="cccccccc-0000-0000-0000-000000000000"), age_s=30 * 86400)
+    st = {}
+    assert cs.process_drafts(st, "o/r", path=ddir) == 1 and created == [] and sent == ["cccccccc-0000-0000-0000-000000000000"]
+    assert st["__drafts__"]["cccccccc-0000-0000-0000-000000000000"]["filed_skip"] == "older than the live window"
+    # the mirror on gh_create: feedback id lands in the issue body
+    calls = []
+    monkeypatch.setattr(cs.subprocess, "run", lambda cmd, capture_output, text, check=False: calls.append(cmd) or
+                        type("R", (), {"returncode": 0, "stdout": "https://github.com/o/r/issues/99", "stderr": ""})())
+    monkeypatch.setattr(cs, "send_feedback", lambda desc, reqs=(), *a, **k: (True, "fb_mirror") if "issues/99" in desc else (False, "no url"))
+    monkeypatch.setattr(cs, "FEEDBACK_MIRROR", True)
+    edits = []
+    monkeypatch.setattr(cs, "gh_edit_body", lambda r, n, b: edits.append((n, b)) or True)
+    body = "**Triage:** x\n\nreq_011CfQ\n\n---\n<sub>Filed automatically by ClAudit</sub>"
+    assert real_create("o/r", "t", body) == "https://github.com/o/r/issues/99"
+    assert edits == [("99", cs.with_feedback_line(body, "fb_mirror"))]
+    assert "**Anthropic feedback id:** `fb_mirror`" in edits[0][1]
+    monkeypatch.setattr(cs, "FEEDBACK_MIRROR", False)
+    edits.clear()
+    real_create("o/r", "t", body)
+    assert edits == []
+    assert cs.with_feedback_line("a\n\n---\n<sub>f</sub>", "fb1").count("Anthropic feedback id") == 1
+    assert cs.with_feedback_line(cs.with_feedback_line("a\n\n---\n<sub>f</sub>", "fb1"), "fb2").count("fb1") == 0

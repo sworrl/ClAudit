@@ -3,6 +3,14 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.12.0] — 2026-09-26
+**Claude Code's own bug reports, sent for you and tied to ClAudit's.** Claude Code 2.1.28x drafts a bug report itself when a safeguards block (or its own mistake) derails a session, stores it in `~/.claude/feedback/drafts/`, and waits for "2 to send". Five sat queued on the reference machine, one of them about the classifier.
+- `process_drafts()` runs every 60 s in both watchers. For each queued draft: a safety-classifier draft becomes a ClAudit issue on GitHub first (or is appended to the issue already carrying one of its Request IDs), then the draft is POSTed to `api.anthropic.com/api/claude_cli_feedback` exactly as the send key does (same payload shape, the CLI's own OAuth login, no transcript) with every related ClAudit issue URL in its description, then the feedback id and draft id are written onto the GitHub issue. Model-behavior drafts go to Anthropic only. A sent draft is copied to `~/.claude/claudit/drafts-sent/` and the card clears.
+- `gh_create()` now mirrors every ClAudit report to the same feedback endpoint with its GitHub URL and edits the feedback id into the issue body, so each report exists in both channels with a pointer each way. `feedback_mirror` turns it off.
+- Mute terms stop a draft from going anywhere. Filing honors the live window; sending does not. `CLAUDE_CODE_DISABLE_FEEDBACK=1` stops all sending.
+- CLI `--drafts` and `--process-drafts`; Settings group "Anthropic feedback channel" with `send_drafts`, `file_drafts`, `feedback_mirror`.
+- Tests: draft parsing and classification, the exact feedback payload and headers, the two-way tie (new issue, existing issue, model draft, idempotence), mute and stale handling, the mirror on create. 126 total.
+
 ## [2.11.0] — 2026-09-26
 **The census stays on by default, and now nobody can miss it.** The anonymous heartbeat is spelled out in red in five places and can be declined at install time:
 - README: a red CAUTION callout under the intro, in Install, in Quick start, and at the top of Census, each with the exact payload and every opt-out. The project page carries the same text in red.

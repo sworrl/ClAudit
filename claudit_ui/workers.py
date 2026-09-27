@@ -104,6 +104,16 @@ class Watcher(QtCore.QThread):
                 cs.census_tick()                 # install census heartbeats, only when one is due
             except Exception:
                 pass
+            if now - getattr(self, "last_drafts", 0.0) >= cs.DRAFTS_INTERVAL:
+                self.last_drafts = now           # Claude Code's own bug-report drafts: send + file
+                try:
+                    with STATE_LOCK:
+                        n = cs.process_drafts(self.state, self.repo, github=(self.auto or self.dwell),
+                                              on_event=lambda a, t, u: None)
+                    if n:
+                        self.acted.emit(n, "drafts")
+                except Exception as e:
+                    print("drafts pass failed:", e, file=sys.stderr)
             # LIVE: new blocks always fire as soon as they're seen (every `interval` secs),
             # never gated by the backfill schedule.
             if now - self.last_live >= self.interval:

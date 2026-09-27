@@ -1057,6 +1057,17 @@ class Main(QtWidgets.QMainWindow):
         v.addWidget(ubox)
         self._refresh_update_panel()
 
+        grp("Anthropic feedback channel", [
+            ("send_drafts", "Send Claude Code's own bug-report drafts", ("Claude Code drafts a bug report when a block "
+             "derails a session and waits for you to press 2. ClAudit sends every queued draft to Anthropic's "
+             "feedback endpoint for you (no transcript), with links to the ClAudit issues for the same Request IDs."),
+             cs.SEND_DRAFTS),
+            ("file_drafts", "File the safety-classifier drafts on GitHub", ("Drafts about the classifier become "
+             "ClAudit issues (or a comment on the issue already carrying the Request ID), quoting Claude Code's own "
+             "account and the feedback id it got. Only while auto-post or dwell is on."), cs.FILE_DRAFTS),
+            ("feedback_mirror", "Mirror every ClAudit report to Anthropic", ("Each GitHub report ClAudit files also "
+             "goes to the feedback endpoint with its GitHub URL, and the issue gets the feedback id back. Two "
+             "channels, one report, cross-referenced."), cs.FEEDBACK_MIRROR)])
         grp("Census", [
             ("census_anon", "Anonymous heartbeat (ON by default)",
              ("<span style='color:#f85149;font-weight:600'>Sends, every 10 minutes while ClAudit runs: a random "
@@ -1179,6 +1190,12 @@ class Main(QtWidgets.QMainWindow):
         elif key == "auto_update":
             updater.AUTO_UPDATE = bool(val)
             self._refresh_update_panel()
+        elif key == "send_drafts":
+            cs.SEND_DRAFTS = bool(val)
+        elif key == "file_drafts":
+            cs.FILE_DRAFTS = bool(val)
+        elif key == "feedback_mirror":
+            cs.FEEDBACK_MIRROR = bool(val)
         elif key == "census_anon":
             cs.CENSUS_ANON = bool(val)
             if not val:
