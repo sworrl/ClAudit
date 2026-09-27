@@ -7,11 +7,18 @@ catches the server-side safety and Usage Policy blocks that stop legitimate work
 and files one clean GitHub issue per blocked request on `anthropics/claude-code`. It runs as a PyQt6
 tray app with a dashboard, or as a headless watcher.
 
-Current version: 2.10.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
+Current version: 2.11.0. GPL-3.0. Python 3.9 or newer. Linux, macOS, and Windows.
 [CI](https://github.com/sworrl/ClAudit/actions/workflows/ci.yml) ·
 [Releases](https://github.com/sworrl/ClAudit/releases) ·
 [Changelog](CHANGELOG.md) ·
 [Live counter and poll](https://sworrl.github.io/ClAudit/)
+
+> [!CAUTION]
+> **ClAudit phones home, anonymously, and it is on by default.** Every 10 minutes while it runs it sends
+> a random node id, the version, the OS family, and git-or-pip to a Cloudflare Worker the maintainer
+> runs. No IP, hostname, account, or content is kept. It exists to count running nodes by version.
+> Turn it off with `--no-census` (once, remembered), `CLAUDIT_NO_CENSUS=1`, the installers'
+> `--no-census` / `-NoCensus`, or Settings > Census. Full detail under [Census](#census).
 
 ## Why this exists
 
@@ -260,6 +267,13 @@ lead-up and project paths stay in your local database only.
 
 ## Install
 
+> [!CAUTION]
+> **ClAudit phones home, anonymously, and it is on by default.** Every 10 minutes while it runs it sends
+> a random node id, the version, the OS family, and git-or-pip to a Cloudflare Worker the maintainer
+> runs. No IP, hostname, account, or content is kept. It exists to count running nodes by version.
+> Turn it off with `--no-census` (once, remembered), `CLAUDIT_NO_CENSUS=1`, the installers'
+> `--no-census` / `-NoCensus`, or Settings > Census. Full detail under [Census](#census).
+
 ```bash
 git clone https://github.com/sworrl/ClAudit.git
 cd ClAudit
@@ -297,6 +311,13 @@ GUI, and for burn-tokens, LLM scrub, or the gate, the `claude` or `agy` CLI on y
 Run `python3 claudit_scan.py --doctor` after install. It checks all of that in one pass.
 
 ## Quick start
+
+> [!CAUTION]
+> **ClAudit phones home, anonymously, and it is on by default.** Every 10 minutes while it runs it sends
+> a random node id, the version, the OS family, and git-or-pip to a Cloudflare Worker the maintainer
+> runs. No IP, hostname, account, or content is kept. It exists to count running nodes by version.
+> Turn it off with `--no-census` (once, remembered), `CLAUDIT_NO_CENSUS=1`, the installers'
+> `--no-census` / `-NoCensus`, or Settings > Census. Add `--no-census` to the first command below to start opted out.
 
 ```bash
 python3 claudit_scan.py --baseline     # run once: mark existing blocks seen so you do not flood the backlog
@@ -386,6 +407,7 @@ Filing and detection:
 | `--report-harness` | Also file harness denials (default: log only) |
 | `--gate` | Opt-in LLM pre-filter that skips blocks it deems clearly correct |
 | `--limit N` | Cap findings handled this run (0 = all) |
+| `--no-census` | Turn the anonymous install heartbeat off and remember it |
 | `--max-live-age N` | Live-file only blocks younger than N days; older ones go to the backlog (default 7; 0 = no cutoff) |
 
 Backfill:
@@ -560,6 +582,26 @@ The macOS and Windows installers were written against the platform docs, not on 
 box. If one misbehaves, say so on [#4](https://github.com/sworrl/ClAudit/issues/4).
 
 ## Census
+
+> [!CAUTION]
+> **ClAudit phones home, anonymously, and it is on by default.** Every 10 minutes while it runs it sends
+> a random node id, the version, the OS family, and git-or-pip to a Cloudflare Worker the maintainer
+> runs. No IP, hostname, account, or content is kept. It exists to count running nodes by version.
+> Turn it off with `--no-census` (once, remembered), `CLAUDIT_NO_CENSUS=1`, the installers'
+> `--no-census` / `-NoCensus`, or Settings > Census. Full detail under [Census](#census).
+
+Opting out at install time, per platform:
+
+| How you install | Opt-out |
+|---|---|
+| Linux installer | `./scripts/install-linux.sh --no-census` |
+| macOS installer | `./scripts/install-macos.sh --no-census` |
+| Windows installer | `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -NoCensus` |
+| pip / pipx, or any first run | `claudit-gui --no-census` or `claudit-watch --no-census` once; or `CLAUDIT_NO_CENSUS=1` in the environment |
+| Already running | Settings > Census, first toggle. A final `stop` is sent so the node reads as stopped, not quiet |
+
+On first launch the app also shows this notice, in red, with a "Turn it off" button. The CLI watcher
+prints it in red at start. `--doctor` reports the current state.
 
 Two heartbeats answer "how many people run this, on which version, and are they updating". Both
 are small, both are listed here in full, and both have a toggle in Settings under Census.

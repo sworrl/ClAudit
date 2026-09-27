@@ -51,7 +51,7 @@ STATE_FILE = os.path.join(STATE_DIR, "filed.json")
 ERROR_LOG = os.path.join(STATE_DIR, "error-log.jsonl")
 LOCK_FILE = os.path.join(STATE_DIR, "watcher.lock")
 ISSUES_DB = os.path.join(STATE_DIR, "issues.jsonl")   # local record of every filed issue
-__version__ = "2.10.0"
+__version__ = "2.11.0"
 DEFAULT_REPO = "anthropics/claude-code"
 REPORT_HARNESS = False   # harness (auto-mode-classifier) denials are LOG-ONLY by default.
                          # They are local permission decisions, not server-side API false positives,
@@ -244,6 +244,12 @@ CENSUS_ANON = True
 CENSUS_GITHUB = False
 CENSUS_INTERVAL = 600            # anonymous beat cadence (the Worker calls a node down after 30 min)
 CENSUS_GITHUB_INTERVAL = 6 * 3600
+CENSUS_NOTICE = ("ClAudit sends an anonymous heartbeat every 10 minutes while it runs: a random node id, "
+                 "the version, the OS family, and git-or-pip, to a Cloudflare Worker the maintainer runs. "
+                 "No IP, hostname, account, or content is kept. It is ON by default.")
+CENSUS_OPT_OUT = ("Opt out: Settings > Census, or `--no-census` once (it is remembered), or the env var "
+                  "CLAUDIT_NO_CENSUS=1, or `\"census_anon\": false` in ~/.claude/claudit/config.json.")
+RED, RESET = "\033[31m", "\033[0m"
 NODE_FILE = os.path.join(STATE_DIR, "node_id")
 CENSUS_FILE = os.path.join(STATE_DIR, "census.json")
 
@@ -349,6 +355,23 @@ def census_tick(now=None, force=False):
         except OSError:
             pass
     return sent
+
+
+def census_settings(cfg):
+    """(anon, github, url) from config plus the CLAUDIT_NO_CENSUS env var, which wins for both."""
+    anon = bool(cfg.get("census_anon", CENSUS_ANON))
+    github = bool(cfg.get("census_github", CENSUS_GITHUB))
+    if os.environ.get("CLAUDIT_NO_CENSUS", "").strip().lower() in ("1", "true", "yes", "on"):
+        anon = github = False
+    return anon, github, str(cfg.get("census_url") or CENSUS_URL)
+
+
+def census_notice_lines(color=True):
+    """The red notice for terminals: what is sent, that it is on, how to turn it off."""
+    if not CENSUS_ANON:
+        return ["census: anonymous heartbeat is OFF for this install."]
+    r, z = (RED, RESET) if color and sys.stderr.isatty() else ("", "")
+    return [f"{r}CENSUS: {CENSUS_NOTICE}{z}", f"{r}{CENSUS_OPT_OUT}{z}"]
 
 
 def census_stop():
@@ -2412,6 +2435,9 @@ def doctor_rows(fetch=True):
         or (shutil.which("powershell") if sysname == "Windows" else None)
     (ok if toast else warn)("Desktop notifications", toast or "no notify-send / osascript / powershell found")
 
+    (warn if CENSUS_ANON else ok)("Census", ("anonymous heartbeat ON (random id, version, OS, mode; "
+                                             "no IP or account). Off: --no-census or Settings > Census")
+                                 if CENSUS_ANON else "anonymous heartbeat off")
     (ok if os.path.isdir(PROJECTS) else fail)(
         "Claude Code sessions", f"{PROJECTS} · {sum(len([f for f in fs if f.endswith('.jsonl')]) for _r, _d, fs in os.walk(PROJECTS))} transcripts"
         if os.path.isdir(PROJECTS) else f"{PROJECTS} missing (has Claude Code run on this machine?)")
@@ -2589,6 +2615,8 @@ def main():
     p.add_argument("--doctor", action="store_true",
                    help="check the environment (gh, LLM CLIs, Claude login, PyQt6, notifications, state, "
                         "version) and exit non-zero on a hard failure")
+    p.add_argument("--no-census", dest="no_census", action="store_true",
+                   help="turn the anonymous install heartbeat OFF and remember it (config census_anon=false)")
     p.add_argument("--census", action="store_true",
                    help="print the install census (running nodes by version) and what this node sends, then exit")
     p.add_argument("--usage", action="store_true",
@@ -2623,12 +2651,11 @@ def main():
         MAX_LIVE_AGE_DAYS = int(args.max_live_age)
     elif "max_live_age_days" in cfg:
         MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
-    if "census_anon" in cfg:
-        CENSUS_ANON = bool(cfg["census_anon"])
-    if "census_github" in cfg:
-        CENSUS_GITHUB = bool(cfg["census_github"])
-    if cfg.get("census_url"):
-        CENSUS_URL = str(cfg["census_url"])
+    if args.no_census:                      # one-shot flag, remembered in config
+        cfg["census_anon"] = False
+        save_config(cfg)
+        print("census: anonymous heartbeat turned OFF and saved to config.json", file=sys.stderr)
+    CENSUS_ANON, CENSUS_GITHUB, CENSUS_URL = census_settings(cfg)
     if args.engine:
         claudit.LLM_ENGINE = str(args.engine)
     elif cfg.get("llm_engine"):
@@ -2747,6 +2774,8 @@ def main():
         mode = "AUTO-FILING new" if args.auto else "notify-only"
         bf = f" + adaptive backfill ({backlog_size(state)} queued)" if args.backfill else ""
         print(f"Watching {PROJECTS} ({mode}{bf}). Ctrl-C to stop.", file=sys.stderr)
+        for line in census_notice_lines():
+            print(line, file=sys.stderr)
 
         def on_detect(fresh):
             announce_pending(state, args.repo, args.delay)

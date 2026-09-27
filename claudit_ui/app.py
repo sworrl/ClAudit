@@ -2,7 +2,7 @@
 import argparse
 import os
 import sys
-from PyQt6 import QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 import claudit
 import claudit_scan as cs
 from . import updater
@@ -26,6 +26,8 @@ def main():
                    help="bespoke LLM-written titles/bodies — the strongest PII defense")
     p.add_argument("--hidden", action="store_true", help="start minimized to tray")
     p.add_argument("--version", action="version", version=f"ClAudit {cs.__version__}")
+    p.add_argument("--no-census", dest="no_census", action="store_true",
+                   help="turn the anonymous install heartbeat OFF and remember it (config census_anon=false)")
     p.add_argument("--screenshot", metavar="DIR",
                    help="(docs) build the window read-only, save one PNG per tab into DIR, exit. "
                         "Files nothing; bypasses the single-instance lock. Use QT_QPA_PLATFORM=offscreen")
@@ -98,12 +100,35 @@ def main():
         cs.MAX_LIVE_AGE_DAYS = int(cfg["max_live_age_days"])
     if "auto_update" in cfg:
         updater.AUTO_UPDATE = bool(cfg["auto_update"])
-    if "census_anon" in cfg:
-        cs.CENSUS_ANON = bool(cfg["census_anon"])
-    if "census_github" in cfg:
-        cs.CENSUS_GITHUB = bool(cfg["census_github"])
-    if cfg.get("census_url"):
-        cs.CENSUS_URL = str(cfg["census_url"])
+    if args.no_census:                                   # one-shot flag, remembered
+        cfg["census_anon"] = False
+        cs.save_config(cfg)
+    cs.CENSUS_ANON, cs.CENSUS_GITHUB, cs.CENSUS_URL = cs.census_settings(cfg)
+    if cs.CENSUS_ANON and not cfg.get("census_notice_shown") and not args.screenshot:
+        # first launch with the heartbeat on: say so in red, once, with the off switch right there
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Information, "ClAudit: install census",
+                                    "<p style='color:#f85149;font-weight:700;font-size:15px'>ClAudit sends an "
+                                    "anonymous heartbeat while it runs.</p>"
+                                    "<p style='color:#f85149'>Every 10 minutes: a random node id, the version, "
+                                    "the OS family, and whether this is a git or pip install, to a Cloudflare "
+                                    "Worker the maintainer runs. No IP, hostname, account, or content is kept. "
+                                    "It only answers \"how many nodes run ClAudit, on which version\".</p>"
+                                    "<p>It is <b>on by default</b>. You can turn it off now, or any time under "
+                                    "Settings &gt; Census, with <code>--no-census</code>, or with "
+                                    "<code>CLAUDIT_NO_CENSUS=1</code>. The README's Census section lists the "
+                                    "exact payload.</p>")
+        box.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        if os.path.exists(cs.ICON):
+            box.setIconPixmap(QtGui.QIcon(cs.ICON).pixmap(56, 56))
+        keep = box.addButton("Keep it on", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        off = box.addButton("Turn it off", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        if box.clickedButton() is off:
+            cs.CENSUS_ANON = False
+            cfg["census_anon"] = False
+        cfg["census_notice_shown"] = True
+        cs.save_config(cfg)
     if args.screenshot:
         Main.SCREENSHOT_DIR = args.screenshot
     elif not cs.acquire_singleton():

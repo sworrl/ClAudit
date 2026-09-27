@@ -1058,9 +1058,12 @@ class Main(QtWidgets.QMainWindow):
         self._refresh_update_panel()
 
         grp("Census", [
-            ("census_anon", "Anonymous heartbeat", ("Every 10 minutes: a random node id, the version, the OS "
-             "family, and git-or-pip to a Cloudflare Worker the maintainer runs. No IP, hostname, or account is "
-             "kept. Shows how many nodes run and on what version."), cs.CENSUS_ANON),
+            ("census_anon", "Anonymous heartbeat (ON by default)",
+             ("<span style='color:#f85149;font-weight:600'>Sends, every 10 minutes while ClAudit runs: a random "
+              "node id, the version, the OS family, and git-or-pip, to a Cloudflare Worker the maintainer runs. "
+              "No IP, hostname, account, or content is kept.</span> It answers one question: how many nodes run "
+              "ClAudit, on which version. Flip this off and a final stop is sent; nothing else changes."),
+             cs.CENSUS_ANON),
             ("census_github", "GitHub heartbeat (login-visible)", (f"Every 6 hours: edit one comment on "
              f"sworrl/ClAudit#{cs.CENSUS_ISSUE} under YOUR GitHub login with version, OS, mode, and a short node "
              "hash. Public. Off unless you want your name on the census."), cs.CENSUS_GITHUB)])

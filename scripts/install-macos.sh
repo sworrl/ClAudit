@@ -3,8 +3,11 @@
 # Paths are detected at install time, so nothing machine-specific is committed to the repo.
 #
 #   ./scripts/install-macos.sh              # install + start now, run at every login
+#   ./scripts/install-macos.sh --no-census  # same, with the anonymous heartbeat OFF
 #   ./scripts/install-macos.sh --uninstall  # stop and remove the agent
 set -euo pipefail
+NO_CENSUS=0
+for a in "$@"; do [ "$a" = "--no-census" ] && NO_CENSUS=1; done
 
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$(command -v python3)"
@@ -48,6 +51,25 @@ cat > "$PLIST" <<PL
 </plist>
 PL
 
+RED=$'\033[31m'; NC=$'\033[0m'
+if [ "$NO_CENSUS" = 1 ]; then
+  "$PY" - <<'PYEOF2'
+import json, os
+p = os.path.expanduser("~/.claude/claudit/config.json"); os.makedirs(os.path.dirname(p), exist_ok=True)
+try:
+    cfg = json.load(open(p, encoding="utf-8"))
+except (OSError, ValueError):
+    cfg = {}
+cfg["census_anon"] = False; cfg["census_notice_shown"] = True
+json.dump(cfg, open(p, "w", encoding="utf-8"), indent=1)
+PYEOF2
+  echo "Anonymous install heartbeat: OFF (saved to ~/.claude/claudit/config.json)."
+else
+  echo "${RED}CENSUS: ClAudit sends an anonymous heartbeat every 10 minutes while it runs: a random node id,"
+  echo "the version, the OS family, and git-or-pip, to a Cloudflare Worker the maintainer runs. No IP,"
+  echo "hostname, account, or content is kept. It is ON by default."
+  echo "Opt out: re-run with --no-census, or Settings > Census in the app, or CLAUDIT_NO_CENSUS=1.${NC}"
+fi
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
 echo "Installed Login Item -> $PLIST"

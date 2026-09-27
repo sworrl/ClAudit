@@ -78,7 +78,8 @@ ul.links li{margin:4px 0}
     <div class="tile closed"><div class="n" id="nSeen">…</div><div class="l">seen in 7 days</div></div>
   </div>
   <p class="note" id="nVersions"></p>
-  <p class="note">From the anonymous heartbeat: a random node id, version, OS family, and install mode every 10 minutes; no IP or account is kept. "Quiet" is a node seen in the last day that stopped beating without saying goodbye. <span id="nGithub"></span> <span id="nRep"></span></p>
+  <p class="note" style="color:var(--broken);font-weight:600">ClAudit phones home, anonymously, and it is on by default: every 10 minutes a random node id, the version, the OS family, and git-or-pip go to a Cloudflare Worker the maintainer runs. No IP, hostname, account, or content is kept. Opt out with <code>--no-census</code>, <code>CLAUDIT_NO_CENSUS=1</code>, or Settings &gt; Census.</p>
+  <p class="note">"Quiet" is a node seen in the last day that stopped beating without saying goodbye. <span id="nGithub"></span> <span id="nRep"></span></p>
 </div>
 
 <div class="card">

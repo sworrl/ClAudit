@@ -1336,3 +1336,35 @@ def test_census_aggregator(tmp_path):
     assert md.startswith(cz.START) and md.rstrip().endswith(cz.END)
     assert "**3** node(s), 1 gone quiet and 2 stopped cleanly" in md and "2.9.0 (2), 2.8.0 (1)" in md
     assert "1 active, 1 quiet" in md and "2 accounts" in md
+
+
+def test_census_settings_env_var_and_notice(monkeypatch):
+    monkeypatch.delenv("CLAUDIT_NO_CENSUS", raising=False)
+    monkeypatch.setattr(cs, "CENSUS_ANON", True)
+    monkeypatch.setattr(cs, "CENSUS_GITHUB", False)
+    assert cs.census_settings({}) == (True, False, cs.CENSUS_URL)                 # defaults: anon on
+    assert cs.census_settings({"census_anon": False, "census_github": True, "census_url": "https://x/"}) \
+        == (False, True, "https://x/")
+    monkeypatch.setenv("CLAUDIT_NO_CENSUS", "1")
+    assert cs.census_settings({"census_github": True})[:2] == (False, False)      # env var wins for both
+    monkeypatch.setenv("CLAUDIT_NO_CENSUS", "0")
+    assert cs.census_settings({})[0] is True
+    lines = cs.census_notice_lines(color=False)
+    assert lines[0].startswith("CENSUS:") and "random node id" in lines[0] and "ON by default" in lines[0]
+    assert "--no-census" in lines[1] and "CLAUDIT_NO_CENSUS" in lines[1]
+    monkeypatch.setattr(cs, "CENSUS_ANON", False)
+    assert cs.census_notice_lines() == ["census: anonymous heartbeat is OFF for this install."]
+
+
+def test_no_census_flag_persists(tmp_path, monkeypatch):
+    """`claudit_scan.py --no-census --census` writes census_anon=false to config and reports off."""
+    import subprocess
+    env = dict(os.environ, HOME=str(tmp_path))
+    env.pop("CLAUDIT_NO_CENSUS", None)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    r = subprocess.run([sys.executable, os.path.join(root, "claudit_scan.py"), "--no-census", "--census"],
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert "turned OFF" in r.stderr
+    cfg = json.load(open(tmp_path / ".claude" / "claudit" / "config.json"))
+    assert cfg["census_anon"] is False
+    assert "GitHub heartbeat off" in r.stdout and "anonymous beat off" in r.stdout

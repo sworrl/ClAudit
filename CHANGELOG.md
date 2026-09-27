@@ -3,6 +3,13 @@
 All notable changes to ClAudit are documented here. Each filed issue records the ClAudit
 version that submitted it (in the issue footer and in `~/.claude/claudit/issues.jsonl`).
 
+## [2.11.0] — 2026-09-26
+**The census stays on by default, and now nobody can miss it.** The anonymous heartbeat is spelled out in red in five places and can be declined at install time:
+- README: a red CAUTION callout under the intro, in Install, in Quick start, and at the top of Census, each with the exact payload and every opt-out. The project page carries the same text in red.
+- The app shows a red notice once on first launch with "Keep it on" and "Turn it off" buttons (`census_notice_shown` in config). The Settings > Census description is red. The CLI watcher prints the notice in red at start, and `--doctor` reports the census state as a warning line while it is on.
+- `--no-census` on `claudit_gui.py` and `claudit_scan.py` turns it off and remembers it. `CLAUDIT_NO_CENSUS=1` in the environment turns both heartbeats off for that run (pip installs have no installer to pass a flag to). The installers take `--no-census` (Linux, macOS) and `-NoCensus` (Windows) and write the config before the first run; without the flag they print the red notice.
+- `census_settings(cfg)` is the one place the three inputs (config, flag, env var) resolve. Tests cover the env override, the flag persisting, and the notice text.
+
 ## [2.10.0] — 2026-09-26
 **Install census: how many nodes run ClAudit, on which version, and whether they are still up.** Three sources, merged hourly into `docs/nodes.json`, an Installs block in the README, a card on the project page, and the Project tab in the app.
 - **Anonymous heartbeat (on by default).** Every 10 minutes the app or the CLI watcher POSTs `{node, v, os, mode, event}` to a Cloudflare Worker in `telemetry/` (deployed at `claudit-census.fogbank.workers.dev`). `node` is a random id made on first run (`~/.claude/claudit/node_id`); the Worker keeps those fields and a timestamp for eight days and never reads the request IP. A clean quit sends `stop`. The Worker's cron sorts nodes into running (beat within 30 min), stopped (said stop within 24 h), and quiet (seen within 24 h, then silent: crash, sleep, offline), with version, OS, and install-mode breakdowns at `/stats`.
