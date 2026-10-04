@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-04 17:37 UTC",
+ "updated": "2026-10-04 21:31 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 1,
@@ -11,9 +11,11 @@
  },
  "github": {
   "nodes": 1,
-  "active": 0,
-  "quiet": 1,
-  "by_version": {},
+  "active": 1,
+  "quiet": 0,
+  "by_version": {
+   "2.13.0": 1
+  },
   "list": [
    {
     "login": "sworrl",
@@ -21,8 +23,8 @@
     "os": "linux",
     "mode": "git",
     "node": "a4239e46",
-    "last": "2026-09-30T12:45:26+00:00",
-    "active": false
+    "last": "2026-10-04T21:06:33+00:00",
+    "active": true
    }
   ]
  },
