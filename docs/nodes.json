@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-05 07:06 UTC",
+ "updated": "2026-10-05 16:04 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 1,
@@ -28,27 +28,5 @@
    }
   ]
  },
- "anon": {
-  "generated": "2026-09-27T01:46:57.318Z",
-  "active_window_min": 30,
-  "retain_days": 8,
-  "active": 1,
-  "stopped": 1,
-  "quiet": 0,
-  "seen_24h": 2,
-  "seen_7d": 2,
-  "versions": {
-   "2.11.0": 1
-  },
-  "os": {
-   "linux": 1
-  },
-  "mode": {
-   "git": 1
-  },
-  "versions_24h": {
-   "2.11.0": 1,
-   "2.9.0": 1
-  }
- }
+ "anon": {}
 }
