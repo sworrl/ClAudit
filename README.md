@@ -49,7 +49,7 @@ is to wave off.
 <!-- COUNTER:START -->
 ### 216 open false-positive reports right now
 
-Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 746 closed by Anthropic. Updated 2026-10-05 16:04 UTC.
+Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthropics/claude-code](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22). 746 closed by Anthropic. Updated 2026-10-05 22:40 UTC.
 
 [![ClAudit reports over time](docs/trend.svg)](https://github.com/anthropics/claude-code/issues?q=is%3Aissue+is%3Aopen+%22Filed+automatically+by+ClAudit%22)
 
@@ -59,7 +59,7 @@ Cyber and AUP API blocks filed by every ClAudit user, counted hourly from [anthr
 <!-- POLL:START -->
 ### Community poll
 
-Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-10-05 16:04 UTC.
+Will Anthropic fix Claude Code's false-positive blocking, or does it stay broken? 4 vote(s), updated 2026-10-05 22:40 UTC.
 
 | Answer | | Share |
 |---|---:|---|
@@ -77,7 +77,7 @@ Anonymous heartbeat: no data yet.
 Opt-in GitHub heartbeats ([#14](https://github.com/sworrl/ClAudit/issues/14)): 1 active, 0 quiet.
 Reporters seen in filed issues: 1 accounts, 1 active in 30 days, 1 in 7. Latest version per reporter: 2.13.0 (1).
 
-_Updated 2026-10-05 16:04 UTC. What each number means and what is sent: [Census](#census)._
+_Updated 2026-10-05 22:40 UTC. What each number means and what is sent: [Census](#census)._
 <!-- NODES:END -->
 
 ## Screenshots
