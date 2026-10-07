@@ -1,8 +1,8 @@
 {
- "updated": "2026-10-07 08:43 UTC",
+ "updated": "2026-10-07 16:33 UTC",
  "passive": {
   "reporters": 1,
-  "active_7d": 1,
+  "active_7d": 0,
   "active_30d": 1,
   "by_latest_version": {
    "2.13.0": 1
