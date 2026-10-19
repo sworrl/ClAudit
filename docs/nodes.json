@@ -1,8 +1,8 @@
 {
- "updated": "2026-10-19 01:22 UTC",
+ "updated": "2026-10-19 07:51 UTC",
  "passive": {
   "reporters": 1,
-  "active_7d": 1,
+  "active_7d": 0,
   "active_30d": 1,
   "by_latest_version": {
    "2.13.0": 1
@@ -27,7 +27,7 @@
   ]
  },
  "anon": {
-  "generated": "2026-10-19T01:20:38.808Z",
+  "generated": "2026-10-19T07:50:43.047Z",
   "active_window_min": 30,
   "retain_days": 8,
   "active": 0,
