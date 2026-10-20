@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-20 00:23 UTC",
+ "updated": "2026-10-20 06:04 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 0,
@@ -27,14 +27,14 @@
   ]
  },
  "anon": {
-  "generated": "2026-10-20T00:20:36.371Z",
+  "generated": "2026-10-20T06:00:48.141Z",
   "active_window_min": 30,
   "retain_days": 8,
   "active": 0,
   "stopped": 0,
   "quiet": 0,
   "seen_24h": 0,
-  "seen_7d": 1,
+  "seen_7d": 0,
   "versions": {},
   "os": {},
   "mode": {},
