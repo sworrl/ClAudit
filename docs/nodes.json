@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-22 10:15 UTC",
+ "updated": "2026-10-22 15:21 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 0,
@@ -7,7 +7,7 @@
   "by_latest_version": {
    "2.13.0": 1
   },
-  "issues": 1495
+  "issues": 1198
  },
  "github": {
   "nodes": 1,
@@ -27,7 +27,7 @@
   ]
  },
  "anon": {
-  "generated": "2026-10-22T10:10:36.124Z",
+  "generated": "2026-10-22T15:20:36.241Z",
   "active_window_min": 30,
   "retain_days": 8,
   "active": 0,
