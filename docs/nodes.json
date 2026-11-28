@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-27 22:00 UTC",
+ "updated": "2026-11-28 03:56 UTC",
  "passive": {
   "reporters": 1,
   "active_7d": 0,
@@ -27,7 +27,7 @@
   ]
  },
  "anon": {
-  "generated": "2026-11-27T22:00:15.008Z",
+  "generated": "2026-11-28T03:55:27.172Z",
   "active_window_min": 30,
   "retain_days": 8,
   "active": 0,
